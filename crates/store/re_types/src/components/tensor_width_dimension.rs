@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Component**: Specifies which dimension to use for width.
@@ -23,15 +23,43 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 #[repr(transparent)]
 pub struct TensorWidthDimension(pub crate::datatypes::TensorDimensionSelection);
 
-impl ::re_types_core::SizeBytes for TensorWidthDimension {
+impl ::re_types_core::Component for TensorWidthDimension {
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.0.heap_size_bytes()
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("rerun.components.TensorWidthDimension")
+    }
+}
+
+::re_types_core::macros::impl_into_cow!(TensorWidthDimension);
+
+impl ::re_types_core::Loggable for TensorWidthDimension {
+    #[inline]
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        crate::datatypes::TensorDimensionSelection::arrow_datatype()
     }
 
-    #[inline]
-    fn is_pod() -> bool {
-        <crate::datatypes::TensorDimensionSelection>::is_pod()
+    fn to_arrow_opt<'a>(
+        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+    ) -> SerializationResult<arrow::array::ArrayRef>
+    where
+        Self: Clone + 'a,
+    {
+        crate::datatypes::TensorDimensionSelection::to_arrow_opt(data.into_iter().map(|datum| {
+            datum.map(|datum| match datum.into() {
+                ::std::borrow::Cow::Borrowed(datum) => ::std::borrow::Cow::Borrowed(&datum.0),
+                ::std::borrow::Cow::Owned(datum) => ::std::borrow::Cow::Owned(datum.0),
+            })
+        }))
+    }
+
+    fn from_arrow_opt(
+        arrow_data: &dyn arrow::array::Array,
+    ) -> DeserializationResult<Vec<Option<Self>>>
+    where
+        Self: Sized,
+    {
+        crate::datatypes::TensorDimensionSelection::from_arrow_opt(arrow_data)
+            .map(|v| v.into_iter().map(|v| v.map(Self)).collect())
     }
 }
 
@@ -64,42 +92,14 @@ impl std::ops::DerefMut for TensorWidthDimension {
     }
 }
 
-::re_types_core::macros::impl_into_cow!(TensorWidthDimension);
-
-impl ::re_types_core::Loggable for TensorWidthDimension {
-    type Name = ::re_types_core::ComponentName;
-
+impl ::re_byte_size::SizeBytes for TensorWidthDimension {
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.components.TensorWidthDimension".into()
+    fn heap_size_bytes(&self) -> u64 {
+        self.0.heap_size_bytes()
     }
 
     #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        crate::datatypes::TensorDimensionSelection::arrow_datatype()
-    }
-
-    fn to_arrow_opt<'a>(
-        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
-    where
-        Self: Clone + 'a,
-    {
-        crate::datatypes::TensorDimensionSelection::to_arrow_opt(data.into_iter().map(|datum| {
-            datum.map(|datum| match datum.into() {
-                ::std::borrow::Cow::Borrowed(datum) => ::std::borrow::Cow::Borrowed(&datum.0),
-                ::std::borrow::Cow::Owned(datum) => ::std::borrow::Cow::Owned(datum.0),
-            })
-        }))
-    }
-
-    fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
-    ) -> DeserializationResult<Vec<Option<Self>>>
-    where
-        Self: Sized,
-    {
-        crate::datatypes::TensorDimensionSelection::from_arrow_opt(arrow_data)
-            .map(|v| v.into_iter().map(|v| v.map(Self)).collect())
+    fn is_pod() -> bool {
+        <crate::datatypes::TensorDimensionSelection>::is_pod()
     }
 }

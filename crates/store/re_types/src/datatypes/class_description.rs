@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Datatype**: The description of a semantic Class.
@@ -44,37 +44,14 @@ pub struct ClassDescription {
     pub keypoint_connections: Vec<crate::datatypes::KeypointPair>,
 }
 
-impl ::re_types_core::SizeBytes for ClassDescription {
-    #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.info.heap_size_bytes()
-            + self.keypoint_annotations.heap_size_bytes()
-            + self.keypoint_connections.heap_size_bytes()
-    }
-
-    #[inline]
-    fn is_pod() -> bool {
-        <crate::datatypes::AnnotationInfo>::is_pod()
-            && <Vec<crate::datatypes::AnnotationInfo>>::is_pod()
-            && <Vec<crate::datatypes::KeypointPair>>::is_pod()
-    }
-}
-
 ::re_types_core::macros::impl_into_cow!(ClassDescription);
 
 impl ::re_types_core::Loggable for ClassDescription {
-    type Name = ::re_types_core::DatatypeName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.datatypes.ClassDescription".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
+    fn arrow_datatype() -> arrow::datatypes::DataType {
         #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
-        DataType::Struct(std::sync::Arc::new(vec![
+        use arrow::datatypes::*;
+        DataType::Struct(Fields::from(vec![
             Field::new(
                 "info",
                 <crate::datatypes::AnnotationInfo>::arrow_datatype(),
@@ -103,14 +80,40 @@ impl ::re_types_core::Loggable for ClassDescription {
 
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> SerializationResult<arrow::array::ArrayRef>
     where
         Self: Clone + 'a,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
+        #![allow(clippy::manual_is_variant_and)]
+        use ::re_types_core::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
+            let fields = Fields::from(vec![
+                Field::new(
+                    "info",
+                    <crate::datatypes::AnnotationInfo>::arrow_datatype(),
+                    false,
+                ),
+                Field::new(
+                    "keypoint_annotations",
+                    DataType::List(std::sync::Arc::new(Field::new(
+                        "item",
+                        <crate::datatypes::AnnotationInfo>::arrow_datatype(),
+                        false,
+                    ))),
+                    false,
+                ),
+                Field::new(
+                    "keypoint_connections",
+                    DataType::List(std::sync::Arc::new(Field::new(
+                        "item",
+                        <crate::datatypes::KeypointPair>::arrow_datatype(),
+                        false,
+                    ))),
+                    false,
+                ),
+            ]);
             let (somes, data): (Vec<_>, Vec<_>) = data
                 .into_iter()
                 .map(|datum| {
@@ -118,12 +121,12 @@ impl ::re_types_core::Loggable for ClassDescription {
                     (datum.is_some(), datum)
                 })
                 .unzip();
-            let bitmap: Option<arrow2::bitmap::Bitmap> = {
+            let validity: Option<arrow::buffer::NullBuffer> = {
                 let any_nones = somes.iter().any(|some| !*some);
                 any_nones.then(|| somes.into())
             };
-            StructArray::new(
-                Self::arrow_datatype(),
+            as_array_ref(StructArray::new(
+                fields,
                 vec![
                     {
                         let (somes, info): (Vec<_>, Vec<_>) = data
@@ -133,12 +136,12 @@ impl ::re_types_core::Loggable for ClassDescription {
                                 (datum.is_some(), datum)
                             })
                             .unzip();
-                        let info_bitmap: Option<arrow2::bitmap::Bitmap> = {
+                        let info_validity: Option<arrow::buffer::NullBuffer> = {
                             let any_nones = somes.iter().any(|some| !*some);
                             any_nones.then(|| somes.into())
                         };
                         {
-                            _ = info_bitmap;
+                            _ = info_validity;
                             crate::datatypes::AnnotationInfo::to_arrow_opt(info)?
                         }
                     },
@@ -152,41 +155,39 @@ impl ::re_types_core::Loggable for ClassDescription {
                                 (datum.is_some(), datum)
                             })
                             .unzip();
-                        let keypoint_annotations_bitmap: Option<arrow2::bitmap::Bitmap> = {
+                        let keypoint_annotations_validity: Option<arrow::buffer::NullBuffer> = {
                             let any_nones = somes.iter().any(|some| !*some);
                             any_nones.then(|| somes.into())
                         };
                         {
-                            use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                            let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
+                            let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
                                 keypoint_annotations
                                     .iter()
                                     .map(|opt| opt.as_ref().map_or(0, |datum| datum.len())),
-                            )?
-                            .into();
+                            );
                             let keypoint_annotations_inner_data: Vec<_> = keypoint_annotations
                                 .into_iter()
                                 .flatten()
                                 .flatten()
                                 .collect();
-                            let keypoint_annotations_inner_bitmap: Option<arrow2::bitmap::Bitmap> =
-                                None;
-                            ListArray::try_new(
-                                DataType::List(std::sync::Arc::new(Field::new(
+                            let keypoint_annotations_inner_validity: Option<
+                                arrow::buffer::NullBuffer,
+                            > = None;
+                            as_array_ref(ListArray::try_new(
+                                std::sync::Arc::new(Field::new(
                                     "item",
                                     <crate::datatypes::AnnotationInfo>::arrow_datatype(),
                                     false,
-                                ))),
+                                )),
                                 offsets,
                                 {
-                                    _ = keypoint_annotations_inner_bitmap;
+                                    _ = keypoint_annotations_inner_validity;
                                     crate::datatypes::AnnotationInfo::to_arrow_opt(
                                         keypoint_annotations_inner_data.into_iter().map(Some),
                                     )?
                                 },
-                                keypoint_annotations_bitmap,
-                            )?
-                            .boxed()
+                                keypoint_annotations_validity,
+                            )?)
                         }
                     },
                     {
@@ -199,63 +200,60 @@ impl ::re_types_core::Loggable for ClassDescription {
                                 (datum.is_some(), datum)
                             })
                             .unzip();
-                        let keypoint_connections_bitmap: Option<arrow2::bitmap::Bitmap> = {
+                        let keypoint_connections_validity: Option<arrow::buffer::NullBuffer> = {
                             let any_nones = somes.iter().any(|some| !*some);
                             any_nones.then(|| somes.into())
                         };
                         {
-                            use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                            let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
+                            let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
                                 keypoint_connections
                                     .iter()
                                     .map(|opt| opt.as_ref().map_or(0, |datum| datum.len())),
-                            )?
-                            .into();
+                            );
                             let keypoint_connections_inner_data: Vec<_> = keypoint_connections
                                 .into_iter()
                                 .flatten()
                                 .flatten()
                                 .collect();
-                            let keypoint_connections_inner_bitmap: Option<arrow2::bitmap::Bitmap> =
-                                None;
-                            ListArray::try_new(
-                                DataType::List(std::sync::Arc::new(Field::new(
+                            let keypoint_connections_inner_validity: Option<
+                                arrow::buffer::NullBuffer,
+                            > = None;
+                            as_array_ref(ListArray::try_new(
+                                std::sync::Arc::new(Field::new(
                                     "item",
                                     <crate::datatypes::KeypointPair>::arrow_datatype(),
                                     false,
-                                ))),
+                                )),
                                 offsets,
                                 {
-                                    _ = keypoint_connections_inner_bitmap;
+                                    _ = keypoint_connections_inner_validity;
                                     crate::datatypes::KeypointPair::to_arrow_opt(
                                         keypoint_connections_inner_data.into_iter().map(Some),
                                     )?
                                 },
-                                keypoint_connections_bitmap,
-                            )?
-                            .boxed()
+                                keypoint_connections_validity,
+                            )?)
                         }
                     },
                 ],
-                bitmap,
-            )
-            .boxed()
+                validity,
+            ))
         })
     }
 
     fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
+        arrow_data: &dyn arrow::array::Array,
     ) -> DeserializationResult<Vec<Option<Self>>>
     where
         Self: Sized,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
+        use ::re_types_core::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
             let arrow_data = arrow_data
                 .as_any()
-                .downcast_ref::<arrow2::array::StructArray>()
+                .downcast_ref::<arrow::array::StructArray>()
                 .ok_or_else(|| {
                     let expected = Self::arrow_datatype();
                     let actual = arrow_data.data_type().clone();
@@ -266,10 +264,10 @@ impl ::re_types_core::Loggable for ClassDescription {
                 Vec::new()
             } else {
                 let (arrow_data_fields, arrow_data_arrays) =
-                    (arrow_data.fields(), arrow_data.values());
+                    (arrow_data.fields(), arrow_data.columns());
                 let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data_fields
                     .iter()
-                    .map(|field| field.name.as_str())
+                    .map(|field| field.name().as_str())
                     .zip(arrow_data_arrays)
                     .collect();
                 let info = {
@@ -297,7 +295,7 @@ impl ::re_types_core::Loggable for ClassDescription {
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
+                            .downcast_ref::<arrow::array::ListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::List(std::sync::Arc::new(Field::new(
                                     "item",
@@ -323,34 +321,31 @@ impl ::re_types_core::Loggable for ClassDescription {
                                     .collect::<Vec<_>>()
                             };
                             let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|window| {
+                                        let start = window[0] as usize;
+                                        let end = window[1] as usize;
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data =
-                                        unsafe { arrow_data_inner.get_unchecked(start..end) };
-                                    let data = data
-                                        .iter()
-                                        .cloned()
-                                        .map(Option::unwrap_or_default)
-                                        .collect();
-                                    Ok(data)
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            unsafe { arrow_data_inner.get_unchecked(start..end) };
+                                        let data = data
+                                            .iter()
+                                            .cloned()
+                                            .map(Option::unwrap_or_default)
+                                            .collect();
+                                        Ok(data)
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
@@ -367,7 +362,7 @@ impl ::re_types_core::Loggable for ClassDescription {
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
+                            .downcast_ref::<arrow::array::ListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::List(std::sync::Arc::new(Field::new(
                                     "item",
@@ -393,41 +388,38 @@ impl ::re_types_core::Loggable for ClassDescription {
                                     .collect::<Vec<_>>()
                             };
                             let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|window| {
+                                        let start = window[0] as usize;
+                                        let end = window[1] as usize;
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data =
-                                        unsafe { arrow_data_inner.get_unchecked(start..end) };
-                                    let data = data
-                                        .iter()
-                                        .cloned()
-                                        .map(Option::unwrap_or_default)
-                                        .collect();
-                                    Ok(data)
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            unsafe { arrow_data_inner.get_unchecked(start..end) };
+                                        let data = data
+                                            .iter()
+                                            .cloned()
+                                            .map(Option::unwrap_or_default)
+                                            .collect();
+                                        Ok(data)
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                 };
-                arrow2::bitmap::utils::ZipValidity::new_with_validity(
+                ZipValidity::new_with_validity(
                     ::itertools::izip!(info, keypoint_annotations, keypoint_connections),
-                    arrow_data.validity(),
+                    arrow_data.nulls(),
                 )
                 .map(|opt| {
                     opt.map(|(info, keypoint_annotations, keypoint_connections)| {
@@ -453,5 +445,21 @@ impl ::re_types_core::Loggable for ClassDescription {
                 .with_context("rerun.datatypes.ClassDescription")?
             }
         })
+    }
+}
+
+impl ::re_byte_size::SizeBytes for ClassDescription {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.info.heap_size_bytes()
+            + self.keypoint_annotations.heap_size_bytes()
+            + self.keypoint_connections.heap_size_bytes()
+    }
+
+    #[inline]
+    fn is_pod() -> bool {
+        <crate::datatypes::AnnotationInfo>::is_pod()
+            && <Vec<crate::datatypes::AnnotationInfo>>::is_pod()
+            && <Vec<crate::datatypes::KeypointPair>>::is_pod()
     }
 }

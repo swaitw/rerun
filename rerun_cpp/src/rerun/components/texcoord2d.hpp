@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../datatypes/vec2d.hpp"
 #include "../result.hpp"
 
@@ -30,9 +31,7 @@ namespace rerun::components {
     struct Texcoord2D {
         rerun::datatypes::Vec2D uv;
 
-      public:
-        // Extensions to generated type defined in 'texcoord2d_ext.cpp'
-
+      public: // START of extensions from texcoord2d_ext.cpp:
         /// Construct Texcoord2D from u/v values.
         Texcoord2D(float u, float v) : uv{u, v} {}
 
@@ -43,6 +42,8 @@ namespace rerun::components {
         float v() const {
             return uv.y();
         }
+
+        // END of extensions from texcoord2d_ext.cpp, start of generated code:
 
       public:
         Texcoord2D() = default;
@@ -74,7 +75,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::Texcoord2D> {
-        static constexpr const char Name[] = "rerun.components.Texcoord2D";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.Texcoord2D";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -85,7 +86,16 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const components::Texcoord2D* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::Vec2D>::to_arrow(&instances->uv, num_instances);
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::Vec2D>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::Vec2D>::to_arrow(&instances->uv, num_instances);
+            }
         }
     };
 } // namespace rerun

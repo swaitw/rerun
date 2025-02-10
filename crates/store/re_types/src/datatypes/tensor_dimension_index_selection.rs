@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Datatype**: Indexing a specific tensor dimension.
@@ -30,33 +30,14 @@ pub struct TensorDimensionIndexSelection {
     pub index: u64,
 }
 
-impl ::re_types_core::SizeBytes for TensorDimensionIndexSelection {
-    #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.dimension.heap_size_bytes() + self.index.heap_size_bytes()
-    }
-
-    #[inline]
-    fn is_pod() -> bool {
-        <u32>::is_pod() && <u64>::is_pod()
-    }
-}
-
 ::re_types_core::macros::impl_into_cow!(TensorDimensionIndexSelection);
 
 impl ::re_types_core::Loggable for TensorDimensionIndexSelection {
-    type Name = ::re_types_core::DatatypeName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.datatypes.TensorDimensionIndexSelection".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
+    fn arrow_datatype() -> arrow::datatypes::DataType {
         #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
-        DataType::Struct(std::sync::Arc::new(vec![
+        use arrow::datatypes::*;
+        DataType::Struct(Fields::from(vec![
             Field::new("dimension", DataType::UInt32, false),
             Field::new("index", DataType::UInt64, false),
         ]))
@@ -64,14 +45,19 @@ impl ::re_types_core::Loggable for TensorDimensionIndexSelection {
 
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> SerializationResult<arrow::array::ArrayRef>
     where
         Self: Clone + 'a,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
+        #![allow(clippy::manual_is_variant_and)]
+        use ::re_types_core::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
+            let fields = Fields::from(vec![
+                Field::new("dimension", DataType::UInt32, false),
+                Field::new("index", DataType::UInt64, false),
+            ]);
             let (somes, data): (Vec<_>, Vec<_>) = data
                 .into_iter()
                 .map(|datum| {
@@ -79,12 +65,12 @@ impl ::re_types_core::Loggable for TensorDimensionIndexSelection {
                     (datum.is_some(), datum)
                 })
                 .unzip();
-            let bitmap: Option<arrow2::bitmap::Bitmap> = {
+            let validity: Option<arrow::buffer::NullBuffer> = {
                 let any_nones = somes.iter().any(|some| !*some);
                 any_nones.then(|| somes.into())
             };
-            StructArray::new(
-                Self::arrow_datatype(),
+            as_array_ref(StructArray::new(
+                fields,
                 vec![
                     {
                         let (somes, dimension): (Vec<_>, Vec<_>) = data
@@ -94,19 +80,19 @@ impl ::re_types_core::Loggable for TensorDimensionIndexSelection {
                                 (datum.is_some(), datum)
                             })
                             .unzip();
-                        let dimension_bitmap: Option<arrow2::bitmap::Bitmap> = {
+                        let dimension_validity: Option<arrow::buffer::NullBuffer> = {
                             let any_nones = somes.iter().any(|some| !*some);
                             any_nones.then(|| somes.into())
                         };
-                        PrimitiveArray::new(
-                            DataType::UInt32,
-                            dimension
-                                .into_iter()
-                                .map(|v| v.unwrap_or_default())
-                                .collect(),
-                            dimension_bitmap,
-                        )
-                        .boxed()
+                        as_array_ref(PrimitiveArray::<UInt32Type>::new(
+                            ScalarBuffer::from(
+                                dimension
+                                    .into_iter()
+                                    .map(|v| v.unwrap_or_default())
+                                    .collect::<Vec<_>>(),
+                            ),
+                            dimension_validity,
+                        ))
                     },
                     {
                         let (somes, index): (Vec<_>, Vec<_>) = data
@@ -116,37 +102,39 @@ impl ::re_types_core::Loggable for TensorDimensionIndexSelection {
                                 (datum.is_some(), datum)
                             })
                             .unzip();
-                        let index_bitmap: Option<arrow2::bitmap::Bitmap> = {
+                        let index_validity: Option<arrow::buffer::NullBuffer> = {
                             let any_nones = somes.iter().any(|some| !*some);
                             any_nones.then(|| somes.into())
                         };
-                        PrimitiveArray::new(
-                            DataType::UInt64,
-                            index.into_iter().map(|v| v.unwrap_or_default()).collect(),
-                            index_bitmap,
-                        )
-                        .boxed()
+                        as_array_ref(PrimitiveArray::<UInt64Type>::new(
+                            ScalarBuffer::from(
+                                index
+                                    .into_iter()
+                                    .map(|v| v.unwrap_or_default())
+                                    .collect::<Vec<_>>(),
+                            ),
+                            index_validity,
+                        ))
                     },
                 ],
-                bitmap,
-            )
-            .boxed()
+                validity,
+            ))
         })
     }
 
     fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
+        arrow_data: &dyn arrow::array::Array,
     ) -> DeserializationResult<Vec<Option<Self>>>
     where
         Self: Sized,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
+        use ::re_types_core::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
             let arrow_data = arrow_data
                 .as_any()
-                .downcast_ref::<arrow2::array::StructArray>()
+                .downcast_ref::<arrow::array::StructArray>()
                 .ok_or_else(|| {
                     let expected = Self::arrow_datatype();
                     let actual = arrow_data.data_type().clone();
@@ -157,10 +145,10 @@ impl ::re_types_core::Loggable for TensorDimensionIndexSelection {
                 Vec::new()
             } else {
                 let (arrow_data_fields, arrow_data_arrays) =
-                    (arrow_data.fields(), arrow_data.values());
+                    (arrow_data.fields(), arrow_data.columns());
                 let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data_fields
                     .iter()
-                    .map(|field| field.name.as_str())
+                    .map(|field| field.name().as_str())
                     .zip(arrow_data_arrays)
                     .collect();
                 let dimension = {
@@ -182,7 +170,6 @@ impl ::re_types_core::Loggable for TensorDimensionIndexSelection {
                         })
                         .with_context("rerun.datatypes.TensorDimensionIndexSelection#dimension")?
                         .into_iter()
-                        .map(|opt| opt.copied())
                 };
                 let index = {
                     if !arrays_by_name.contains_key("index") {
@@ -203,11 +190,10 @@ impl ::re_types_core::Loggable for TensorDimensionIndexSelection {
                         })
                         .with_context("rerun.datatypes.TensorDimensionIndexSelection#index")?
                         .into_iter()
-                        .map(|opt| opt.copied())
                 };
-                arrow2::bitmap::utils::ZipValidity::new_with_validity(
+                ZipValidity::new_with_validity(
                     ::itertools::izip!(dimension, index),
-                    arrow_data.validity(),
+                    arrow_data.nulls(),
                 )
                 .map(|opt| {
                     opt.map(|(dimension, index)| {
@@ -230,5 +216,17 @@ impl ::re_types_core::Loggable for TensorDimensionIndexSelection {
                 .with_context("rerun.datatypes.TensorDimensionIndexSelection")?
             }
         })
+    }
+}
+
+impl ::re_byte_size::SizeBytes for TensorDimensionIndexSelection {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.dimension.heap_size_bytes() + self.index.heap_size_bytes()
+    }
+
+    #[inline]
+    fn is_pod() -> bool {
+        <u32>::is_pod() && <u64>::is_pod()
     }
 }

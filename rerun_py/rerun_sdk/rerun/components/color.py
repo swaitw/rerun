@@ -8,13 +8,15 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
+from .color_ext import ColorExt
 
-__all__ = ["Color", "ColorBatch", "ColorType"]
+__all__ = ["Color", "ColorBatch"]
 
 
-class Color(datatypes.Rgba32, ComponentMixin):
+class Color(ColorExt, datatypes.Rgba32, ComponentMixin):
     """
     **Component**: An RGBA color with unmultiplied/separate alpha, in sRGB gamma space with linear alpha.
 
@@ -33,12 +35,8 @@ class Color(datatypes.Rgba32, ComponentMixin):
     pass
 
 
-class ColorType(datatypes.Rgba32Type):
-    _TYPE_NAME: str = "rerun.components.Color"
-
-
 class ColorBatch(datatypes.Rgba32Batch, ComponentBatchMixin):
-    _ARROW_TYPE = ColorType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.Color")
 
 
 # This is patched in late to avoid circular dependencies.

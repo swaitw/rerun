@@ -25,7 +25,7 @@ features = ["all"]
 default = ["ecolor"]
 
 ## All features except `testing`.
-all = ["ecolor", "egui_plot", "glam", "image", "mint", "serde"]
+all = ["ecolor", "egui_plot", "glam", "image", "mint", "serde", "video"]
 
 ## Enable color conversions.
 ecolor = ["dep:ecolor"]
@@ -33,11 +33,14 @@ ecolor = ["dep:ecolor"]
 ## Enable conversions to plot primitives
 egui_plot = ["dep:egui_plot"]
 
-## Add support for some math operations using [`glam`](https://crates.io/crates/glam/).
-glam = ["dep:glam"]
+## Add support for some math operations using [`glam`](https://crates.io/crates/glam/) and [`re_math`](https://crates.io/crates/re_math/).
+glam = ["dep:glam", "dep:re_math"]
 
 ## Integration with the [`image`](https://crates.io/crates/image/) crate, plus JPEG support.
 image = ["dep:ecolor", "dep:image"]
+
+## Inspecting video data.
+video = ["dep:re_video"]
 
 ## Enable (de)serialization using serde.
 serde = ["dep:serde"]
@@ -49,19 +52,19 @@ testing = []
 
 [dependencies]
 # Rerun
+re_byte_size.workspace = true
+re_error.workspace = true
 re_format.workspace = true
+re_log_types.workspace = true
 re_log.workspace = true
 re_tracing.workspace = true
 re_types_core.workspace = true
+re_video = { workspace = true, optional = true }
 
 # External
-anyhow.workspace = true # TODO(#1845): Use thiserror instead
+anyhow.workspace = true                                                      # TODO(#1845): Use thiserror instead
 array-init.workspace = true
-arrow2 = { workspace = true, features = [
-  "io_ipc",
-  "io_print",
-  "compute_concatenate",
-] }
+arrow.workspace = true
 bytemuck = { workspace = true, features = ["derive", "extern_crate_alloc"] }
 document-features.workspace = true
 emath.workspace = true
@@ -86,6 +89,7 @@ image = { workspace = true, optional = true, default-features = false, features 
   "jpeg",
 ] }
 mint = { workspace = true, optional = true }
+re_math = { workspace = true, optional = true }
 serde = { workspace = true, optional = true, features = ["derive", "rc"] }
 
 
@@ -112,9 +116,3 @@ rayon.workspace = true
 
 [package.metadata.cargo-machete]
 ignored = ["rayon", "re_build_tools", "re_types_builder"]
-
-
-[[test]]
-name = "fuzzy"
-path = "tests/fuzzy.rs"
-required-features = ["testing"]

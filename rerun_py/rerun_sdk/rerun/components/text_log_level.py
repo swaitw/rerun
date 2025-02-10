@@ -8,11 +8,12 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 from .text_log_level_ext import TextLogLevelExt
 
-__all__ = ["TextLogLevel", "TextLogLevelBatch", "TextLogLevelType"]
+__all__ = ["TextLogLevel", "TextLogLevelBatch"]
 
 
 class TextLogLevel(TextLogLevelExt, datatypes.Utf8, ComponentMixin):
@@ -35,12 +36,8 @@ class TextLogLevel(TextLogLevelExt, datatypes.Utf8, ComponentMixin):
     pass
 
 
-class TextLogLevelType(datatypes.Utf8Type):
-    _TYPE_NAME: str = "rerun.components.TextLogLevel"
-
-
 class TextLogLevelBatch(datatypes.Utf8Batch, ComponentBatchMixin):
-    _ARROW_TYPE = TextLogLevelType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.TextLogLevel")
 
 
 # This is patched in late to avoid circular dependencies.

@@ -1,12 +1,10 @@
 use re_chunk_store::LatestAtQuery;
 use re_entity_db::{external::re_query::LatestAtResults, EntityDb};
 use re_log_types::EntityPath;
-use re_types::{
-    external::arrow2, Archetype, ArchetypeName, ComponentBatch, ComponentName, DeserializationError,
-};
+use re_types::{Archetype, ArchetypeName, ComponentBatch, ComponentName, DeserializationError};
 use re_viewer_context::{
     external::re_entity_db::EntityTree, ComponentFallbackError, ComponentFallbackProvider,
-    QueryContext, SpaceViewId, SpaceViewSystemExecutionError, ViewerContext,
+    QueryContext, ViewId, ViewSystemExecutionError, ViewerContext,
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -18,7 +16,7 @@ pub enum ViewPropertyQueryError {
     ComponentFallbackError(#[from] ComponentFallbackError),
 }
 
-impl From<ViewPropertyQueryError> for SpaceViewSystemExecutionError {
+impl From<ViewPropertyQueryError> for ViewSystemExecutionError {
     fn from(val: ViewPropertyQueryError) -> Self {
         match val {
             ViewPropertyQueryError::SerializationError(err) => err.into(),
@@ -28,53 +26,65 @@ impl From<ViewPropertyQueryError> for SpaceViewSystemExecutionError {
 }
 
 /// Utility for querying view properties.
-pub struct ViewProperty<'a> {
+#[derive(Debug)]
+pub struct ViewProperty {
+    /// Entity path in the blueprint store where all components of this view property archetype are
+    /// stored.
     pub blueprint_store_path: EntityPath,
-    archetype_name: ArchetypeName,
-    component_names: Vec<ComponentName>,
-    query_results: LatestAtResults,
-    blueprint_db: &'a EntityDb,
-    blueprint_query: &'a LatestAtQuery,
+
+    /// Name of the property archetype.
+    pub archetype_name: ArchetypeName,
+
+    /// List of all components in this property.
+    pub component_names: Vec<ComponentName>,
+
+    /// Query results for all queries of this property.
+    pub query_results: LatestAtResults,
+
+    /// Blueprint query used for querying.
+    pub blueprint_query: LatestAtQuery,
 }
 
-impl<'a> ViewProperty<'a> {
+impl ViewProperty {
     /// Query a specific view property for a given view.
     pub fn from_archetype<A: Archetype>(
-        blueprint_db: &'a EntityDb,
-        blueprint_query: &'a LatestAtQuery,
-        view_id: SpaceViewId,
+        blueprint_db: &EntityDb,
+        blueprint_query: &LatestAtQuery,
+        view_id: ViewId,
     ) -> Self {
         Self::from_archetype_impl(
             blueprint_db,
-            blueprint_query,
+            blueprint_query.clone(),
             view_id,
             A::name(),
-            A::all_components().as_ref(),
+            A::all_components()
+                .iter()
+                .map(|descr| descr.component_name)
+                .collect(),
         )
     }
 
     fn from_archetype_impl(
-        blueprint_db: &'a EntityDb,
-        blueprint_query: &'a LatestAtQuery,
-        space_view_id: SpaceViewId,
+        blueprint_db: &EntityDb,
+        blueprint_query: LatestAtQuery,
+        view_id: ViewId,
         archetype_name: ArchetypeName,
-        component_names: &[ComponentName],
+        component_names: Vec<ComponentName>,
     ) -> Self {
         let blueprint_store_path =
-            entity_path_for_view_property(space_view_id, blueprint_db.tree(), archetype_name);
+            entity_path_for_view_property(view_id, blueprint_db.tree(), archetype_name);
 
         let query_results = blueprint_db.latest_at(
-            blueprint_query,
+            &blueprint_query,
             &blueprint_store_path,
             component_names.iter().copied(),
         );
 
-        ViewProperty {
+        Self {
             blueprint_store_path,
             archetype_name,
             query_results,
-            component_names: component_names.to_vec(),
-            blueprint_db,
+            component_names,
             blueprint_query,
         }
     }
@@ -82,11 +92,11 @@ impl<'a> ViewProperty<'a> {
     /// Get the value of a specific component or its fallback if the component is not present.
     // TODO(andreas): Unfortunately we can't use TypedComponentFallbackProvider here because it may not be implemented for all components of interest.
     // This sadly means that there's a bit of unnecessary back and forth between arrow array and untyped that could be avoided otherwise.
-    pub fn component_or_fallback<C: re_types::Component + Default>(
+    pub fn component_or_fallback<C: re_types::Component>(
         &self,
-        ctx: &'a ViewerContext<'a>,
+        ctx: &ViewerContext<'_>,
         fallback_provider: &dyn ComponentFallbackProvider,
-        view_state: &'a dyn re_viewer_context::SpaceViewState,
+        view_state: &dyn re_viewer_context::ViewState,
     ) -> Result<C, ViewPropertyQueryError> {
         self.component_array_or_fallback::<C>(ctx, fallback_provider, view_state)?
             .into_iter()
@@ -95,17 +105,18 @@ impl<'a> ViewProperty<'a> {
     }
 
     /// Get the component array for a given type or its fallback if the component is not present or empty.
-    pub fn component_array_or_fallback<C: re_types::Component + Default>(
+    pub fn component_array_or_fallback<C: re_types::Component>(
         &self,
-        ctx: &'a ViewerContext<'a>,
+        ctx: &ViewerContext<'_>,
         fallback_provider: &dyn ComponentFallbackProvider,
-        view_state: &'a dyn re_viewer_context::SpaceViewState,
+        view_state: &dyn re_viewer_context::ViewState,
     ) -> Result<Vec<C>, ViewPropertyQueryError> {
         let component_name = C::name();
-        Ok(C::from_arrow(
-            self.component_or_fallback_raw(ctx, component_name, fallback_provider, view_state)?
+        C::from_arrow(
+            self.component_or_fallback_raw(ctx, component_name, fallback_provider, view_state)
                 .as_ref(),
-        )?)
+        )
+        .map_err(|err| err.into())
     }
 
     /// Get a single component or None, not using any fallbacks.
@@ -135,25 +146,28 @@ impl<'a> ViewProperty<'a> {
             .map(|value| value.unwrap_or_default())
     }
 
-    fn component_raw(
-        &self,
-        component_name: ComponentName,
-    ) -> Option<Box<dyn arrow2::array::Array>> {
+    pub fn component_row_id(&self, component_name: ComponentName) -> Option<re_chunk::RowId> {
         self.query_results
-            .get(component_name)
-            .and_then(|result| result.raw(self.blueprint_db.resolver(), component_name))
+            .get(&component_name)
+            .and_then(|unit| unit.row_id())
+    }
+
+    pub fn component_raw(&self, component_name: ComponentName) -> Option<arrow::array::ArrayRef> {
+        self.query_results
+            .get(&component_name)
+            .and_then(|unit| unit.component_batch_raw(&component_name))
     }
 
     fn component_or_fallback_raw(
         &self,
-        ctx: &'a ViewerContext<'a>,
+        ctx: &ViewerContext<'_>,
         component_name: ComponentName,
         fallback_provider: &dyn ComponentFallbackProvider,
-        view_state: &'a dyn re_viewer_context::SpaceViewState,
-    ) -> Result<Box<dyn arrow2::array::Array>, ComponentFallbackError> {
+        view_state: &dyn re_viewer_context::ViewState,
+    ) -> arrow::array::ArrayRef {
         if let Some(value) = self.component_raw(component_name) {
             if value.len() > 0 {
-                return Ok(value);
+                return value;
             }
         }
         fallback_provider.fallback_for(&self.query_context(ctx, view_state), component_name)
@@ -162,19 +176,24 @@ impl<'a> ViewProperty<'a> {
     /// Save change to a blueprint component.
     pub fn save_blueprint_component(
         &self,
-        ctx: &'a ViewerContext<'a>,
+        ctx: &ViewerContext<'_>,
         components: &dyn ComponentBatch,
     ) {
         ctx.save_blueprint_component(&self.blueprint_store_path, components);
     }
 
+    /// Clears a blueprint component.
+    pub fn clear_blueprint_component<C: re_types::Component>(&self, ctx: &ViewerContext<'_>) {
+        ctx.clear_blueprint_component_by_name(&self.blueprint_store_path, C::name());
+    }
+
     /// Resets a blueprint component to the value it had in the default blueprint.
-    pub fn reset_blueprint_component<C: re_types::Component>(&self, ctx: &'a ViewerContext<'a>) {
+    pub fn reset_blueprint_component<C: re_types::Component>(&self, ctx: &ViewerContext<'_>) {
         ctx.reset_blueprint_component_by_name(&self.blueprint_store_path, C::name());
     }
 
     /// Resets all components to the values they had in the default blueprint.
-    pub fn reset_all_components(&self, ctx: &'a ViewerContext<'a>) {
+    pub fn reset_all_components(&self, ctx: &ViewerContext<'_>) {
         // Don't use `self.query_results.components.keys()` since it may already have some components missing since they didn't show up in the query.
         for &component_name in &self.component_names {
             ctx.reset_blueprint_component_by_name(&self.blueprint_store_path, component_name);
@@ -182,38 +201,41 @@ impl<'a> ViewProperty<'a> {
     }
 
     /// Resets all components to empty values, i.e. the fallback.
-    pub fn reset_all_components_to_empty(&self, ctx: &'a ViewerContext<'a>) {
+    pub fn reset_all_components_to_empty(&self, ctx: &ViewerContext<'_>) {
         for &component_name in self.query_results.components.keys() {
-            ctx.save_empty_blueprint_component_by_name(&self.blueprint_store_path, component_name);
+            ctx.clear_blueprint_component_by_name(&self.blueprint_store_path, component_name);
         }
     }
 
     /// Returns whether any property is non-empty.
     pub fn any_non_empty(&self) -> bool {
-        self.query_results.components.keys().any(|name| {
-            self.component_raw(*name)
-                .map_or(false, |raw| !raw.is_empty())
-        })
+        self.query_results
+            .components
+            .keys()
+            .any(|name| self.component_raw(*name).is_some_and(|raw| !raw.is_empty()))
     }
 
-    fn query_context(
-        &self,
-        viewer_ctx: &'a ViewerContext<'a>,
-        view_state: &'a dyn re_viewer_context::SpaceViewState,
-    ) -> QueryContext<'_> {
+    /// Create a query context for this view property.
+    pub fn query_context<'a>(
+        &'a self,
+        viewer_ctx: &'a ViewerContext<'_>,
+        view_state: &'a dyn re_viewer_context::ViewState,
+    ) -> QueryContext<'a> {
         QueryContext {
             viewer_ctx,
             target_entity_path: &self.blueprint_store_path,
             archetype_name: Some(self.archetype_name),
-            query: self.blueprint_query,
+            query: &self.blueprint_query,
             view_state,
             view_ctx: None,
         }
     }
 }
 
+/// Entity path in the blueprint store where all components of the given view property archetype are
+/// stored.
 pub fn entity_path_for_view_property(
-    space_view_id: SpaceViewId,
+    view_id: ViewId,
     _blueprint_entity_tree: &EntityTree,
     archetype_name: ArchetypeName,
 ) -> EntityPath {
@@ -222,8 +244,8 @@ pub fn entity_path_for_view_property(
     // Only if none is found we make up a new (standardized) path.
     // There's some nuances to figure out what happens when we find the archetype several times.
     // Also, we need to specify what it means to "find" the archetype (likely just matching the indicator?).
-    let space_view_blueprint_path = space_view_id.as_entity_path();
+    let view_blueprint_path = view_id.as_entity_path();
 
     // Use short_name instead of full_name since full_name has dots and looks too much like an indicator component.
-    space_view_blueprint_path.join(&EntityPath::from_single_string(archetype_name.short_name()))
+    view_blueprint_path.join(&EntityPath::from_single_string(archetype_name.short_name()))
 }

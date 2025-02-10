@@ -13,7 +13,7 @@ use smallvec::smallvec;
 ///
 /// Contains information that is constant for a single frame like camera.
 /// (does not contain information that is special to a particular renderer)
-#[repr(C, align(256))]
+#[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod)]
 pub struct FrameUniformBuffer {
     pub view_from_world: wgpu_buffer_types::Mat4x3,
@@ -35,18 +35,19 @@ pub struct FrameUniformBuffer {
     /// I.e. the UI zoom factor
     pub pixels_per_point: f32,
 
-    /// (tan(fov_y / 2) * aspect_ratio, tan(fov_y /2)), i.e. half ratio of screen dimension to screen distance in x & y.
+    /// `(tan(fov_y / 2) * aspect_ratio, tan(fov_y /2))`, i.e. half ratio of screen dimension to screen distance in x & y.
     /// Both values are set to f32max for orthographic projection
     pub tan_half_fov: wgpu_buffer_types::Vec2RowPadded,
 
-    /// re_renderer defined device tier.
+    /// `re_renderer` defined device tier.
     pub device_tier: wgpu_buffer_types::U32RowPadded,
 }
 
 pub(crate) struct GlobalBindings {
     pub(crate) layout: GpuBindGroupLayoutHandle,
-    nearest_neighbor_sampler: GpuSamplerHandle,
-    trilinear_sampler: GpuSamplerHandle,
+    nearest_neighbor_sampler_repeat: GpuSamplerHandle,
+    nearest_neighbor_sampler_clamped: GpuSamplerHandle,
+    trilinear_sampler_repeat: GpuSamplerHandle,
 }
 
 impl GlobalBindings {
@@ -73,16 +74,23 @@ impl GlobalBindings {
                             },
                             count: None,
                         },
-                        // Sampler without any filtering.
+                        // Sampler without any filtering, repeat.
                         wgpu::BindGroupLayoutEntry {
                             binding: 1,
                             visibility: wgpu::ShaderStages::FRAGMENT,
                             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                             count: None,
                         },
-                        // Trilinear sampler.
+                        // Sampler without any filtering, clamped.
                         wgpu::BindGroupLayoutEntry {
                             binding: 2,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                            count: None,
+                        },
+                        // Trilinear sampler, repeat.
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
                             visibility: wgpu::ShaderStages::FRAGMENT,
                             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                             count: None,
@@ -90,7 +98,7 @@ impl GlobalBindings {
                     ],
                 },
             ),
-            nearest_neighbor_sampler: pools.samplers.get_or_create(
+            nearest_neighbor_sampler_repeat: pools.samplers.get_or_create(
                 device,
                 &SamplerDesc {
                     label: "GlobalBindings::nearest_neighbor_sampler".into(),
@@ -100,7 +108,17 @@ impl GlobalBindings {
                     ..Default::default()
                 },
             ),
-            trilinear_sampler: pools.samplers.get_or_create(
+            nearest_neighbor_sampler_clamped: pools.samplers.get_or_create(
+                device,
+                &SamplerDesc {
+                    label: "GlobalBindings::nearest_neighbor_sampler_clamped".into(),
+                    address_mode_u: wgpu::AddressMode::ClampToEdge,
+                    address_mode_v: wgpu::AddressMode::ClampToEdge,
+                    address_mode_w: wgpu::AddressMode::ClampToEdge,
+                    ..Default::default()
+                },
+            ),
+            trilinear_sampler_repeat: pools.samplers.get_or_create(
                 device,
                 &SamplerDesc {
                     label: "GlobalBindings::trilinear_sampler".into(),
@@ -131,8 +149,9 @@ impl GlobalBindings {
                 label: "GlobalBindings::create_bind_group".into(),
                 entries: smallvec![
                     frame_uniform_buffer_binding,
-                    BindGroupEntry::Sampler(self.nearest_neighbor_sampler),
-                    BindGroupEntry::Sampler(self.trilinear_sampler),
+                    BindGroupEntry::Sampler(self.nearest_neighbor_sampler_repeat),
+                    BindGroupEntry::Sampler(self.nearest_neighbor_sampler_clamped),
+                    BindGroupEntry::Sampler(self.trilinear_sampler_repeat),
                 ],
                 layout: self.layout,
             },

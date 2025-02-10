@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **View**: A time series view for scalars over time, for use with [`archetypes::Scalar`][crate::archetypes::Scalar].
@@ -34,7 +34,14 @@ pub struct TimeSeriesView {
     pub time_ranges: crate::blueprint::archetypes::VisibleTimeRanges,
 }
 
-impl ::re_types_core::SizeBytes for TimeSeriesView {
+impl ::re_types_core::View for TimeSeriesView {
+    #[inline]
+    fn identifier() -> ::re_types_core::ViewClassIdentifier {
+        "TimeSeries".into()
+    }
+}
+
+impl ::re_byte_size::SizeBytes for TimeSeriesView {
     #[inline]
     fn heap_size_bytes(&self) -> u64 {
         self.axis_y.heap_size_bytes()
@@ -47,12 +54,5 @@ impl ::re_types_core::SizeBytes for TimeSeriesView {
         <crate::blueprint::archetypes::ScalarAxis>::is_pod()
             && <crate::blueprint::archetypes::PlotLegend>::is_pod()
             && <crate::blueprint::archetypes::VisibleTimeRanges>::is_pod()
-    }
-}
-
-impl ::re_types_core::View for TimeSeriesView {
-    #[inline]
-    fn identifier() -> ::re_types_core::SpaceViewClassIdentifier {
-        "TimeSeries".into()
     }
 }

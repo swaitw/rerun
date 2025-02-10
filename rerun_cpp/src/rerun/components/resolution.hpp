@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../datatypes/vec2d.hpp"
 #include "../rerun_sdk_export.hpp"
 #include "../result.hpp"
@@ -18,17 +19,15 @@ namespace rerun::components {
     struct Resolution {
         rerun::datatypes::Vec2D resolution;
 
-      public:
-        // Extensions to generated type defined in 'resolution_ext.cpp'
-
-        RERUN_SDK_EXPORT static const Resolution IDENTITY;
-
+      public: // START of extensions from resolution_ext.cpp:
         /// Construct resolution from width and height floats.
         Resolution(float width, float height) : resolution{width, height} {}
 
         /// Construct resolution from width and height integers.
         Resolution(int width, int height)
             : resolution{static_cast<float>(width), static_cast<float>(height)} {}
+
+        // END of extensions from resolution_ext.cpp, start of generated code:
 
       public:
         Resolution() = default;
@@ -60,7 +59,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::Resolution> {
-        static constexpr const char Name[] = "rerun.components.Resolution";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.Resolution";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -71,10 +70,19 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const components::Resolution* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::Vec2D>::to_arrow(
-                &instances->resolution,
-                num_instances
-            );
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::Vec2D>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::Vec2D>::to_arrow(
+                    &instances->resolution,
+                    num_instances
+                );
+            }
         }
     };
 } // namespace rerun

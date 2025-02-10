@@ -332,6 +332,7 @@
           url: Option<StringOrStringArray>,
           manifest_url: Option<String>,
           render_backend: Option<String>,
+          video_decoder: Option<String>,
           hide_welcome_screen: Option<bool>,
           panel_state_overrides: Option<PanelStateOverrides>,
           fullscreen: Option<FullscreenOptions>,
@@ -340,9 +341,10 @@
           persist: Option<bool>,
         */
         const options = {
-          url: query.get("url"),
+          url: query.getAll("url"),
           manifest_url: query.get("manifest_url"),
           render_backend: query.get("renderer"),
+          video_decoder: query.get("video_decoder"),
           hide_welcome_screen: query.has("hide_welcome_screen"),
           // panel_state_overrides: undefined,
           // fullscreen: undefined,
@@ -381,7 +383,10 @@
 
         check_for_panic();
 
-        handle.start("the_canvas_id").then(on_app_started).catch(on_wasm_error);
+        handle
+          .start(document.getElementById("the_canvas_id"))
+          .then(on_app_started)
+          .catch(on_wasm_error);
       }
 
       function get_query_bool(

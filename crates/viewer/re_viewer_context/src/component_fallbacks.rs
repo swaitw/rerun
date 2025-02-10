@@ -1,11 +1,13 @@
-use re_types::{external::arrow2, ComponentName};
+use arrow::array::ArrayRef;
+
+use re_types::ComponentName;
 
 use crate::QueryContext;
 
 /// Result for a fallback request to a provider.
 pub enum ComponentFallbackProviderResult {
     /// A fallback value was successfully provided.
-    Value(Box<dyn arrow2::array::Array>),
+    Value(ArrayRef),
 
     /// The fallback provider is not able to handle the given component.
     ///
@@ -30,20 +32,12 @@ impl<T: re_types::ComponentBatch> From<T> for ComponentFallbackProviderResult {
 /// Error type for a fallback request.
 #[derive(thiserror::Error, Debug)]
 pub enum ComponentFallbackError {
-    /// The fallback provider is not able to handle the given component _and_ there was no placeholder value.
-    ///
-    /// This should never happen, since all components should have a placeholder value
-    /// registered in [`crate::ViewerContext::reflection`].
-    /// Meaning, that this is an unknown component or something went wrong with the placeholder registration.
-    #[error("Missing placeholder for component. Was the component's default registered with the viewer?")]
-    MissingPlaceholderValue,
-
     /// Not directly returned by the fallback provider, but useful when serializing a fallback value.
     #[error("Fallback value turned up to be empty when we expected a value.")]
     UnexpectedEmptyFallback,
 }
 
-/// Provides fallback values for components, implemented typically by [`crate::SpaceViewClass`] and [`crate::VisualizerSystem`].
+/// Provides fallback values for components, implemented typically by [`crate::ViewClass`] and [`crate::VisualizerSystem`].
 ///
 /// Fallbacks can be based on arbitrarily complex & context sensitive heuristics.
 pub trait ComponentFallbackProvider {
@@ -61,14 +55,10 @@ pub trait ComponentFallbackProvider {
 
     /// Provides a fallback value for a given component, first trying the provider and
     /// then falling back to the placeholder value registered in the viewer context.
-    fn fallback_for(
-        &self,
-        ctx: &QueryContext<'_>,
-        component: ComponentName,
-    ) -> Result<Box<dyn arrow2::array::Array>, ComponentFallbackError> {
+    fn fallback_for(&self, ctx: &QueryContext<'_>, component: ComponentName) -> ArrayRef {
         match self.try_provide_fallback(ctx, component) {
             ComponentFallbackProviderResult::Value(value) => {
-                return Ok(value);
+                return value;
             }
             ComponentFallbackProviderResult::SerializationError(err) => {
                 // We still want to provide the base fallback value so we can move on,
@@ -80,12 +70,7 @@ pub trait ComponentFallbackProvider {
             ComponentFallbackProviderResult::ComponentNotHandled => {}
         }
 
-        ctx.viewer_ctx
-            .reflection
-            .components
-            .get(&component)
-            .and_then(|info| info.placeholder.clone())
-            .ok_or(ComponentFallbackError::MissingPlaceholderValue)
+        ctx.viewer_ctx.placeholder_for(component)
     }
 }
 
@@ -114,7 +99,7 @@ macro_rules! impl_component_fallback_provider {
                 _component_name: re_types::ComponentName,
             ) -> $crate::ComponentFallbackProviderResult {
                 $(
-                    if _component_name == <$component as re_types::Loggable>::name() {
+                    if _component_name == <$component as re_types::Component>::name() {
                         return  $crate::TypedComponentFallbackProvider::<$component>::fallback_for(self, _ctx).into();
                     }
                 )*

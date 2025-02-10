@@ -4,14 +4,12 @@ namespace rerun.blueprint.datatypes;
 //
 // NOTE: Apache Arrow uses UTF-8 encoding of its String type, as does Rust.
 table Utf8List (
-  "attr.docs.unreleased",
   "attr.arrow.transparent",
   "attr.python.aliases": "Sequence[str]",
   "attr.rerun.scope": "blueprint",
-  "attr.rust.derive": "PartialEq, Eq, PartialOrd, Ord, Default",
+  "attr.rust.derive": "PartialEq, Eq, PartialOrd, Ord, Default, Hash",
   "attr.rust.repr": "transparent",
-  "attr.rust.tuple_struct",
-  "attr.rust.override_crate": "re_types_blueprint"
+  "attr.rust.tuple_struct"
 ) {
   value: [string] (order: 100);
 }

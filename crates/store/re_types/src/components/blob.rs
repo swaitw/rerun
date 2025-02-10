@@ -12,26 +12,56 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Component**: A binary blob of data.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// Ref-counted internally and therefore cheap to clone.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Blob(pub crate::datatypes::Blob);
 
-impl ::re_types_core::SizeBytes for Blob {
+impl ::re_types_core::Component for Blob {
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.0.heap_size_bytes()
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("rerun.components.Blob")
+    }
+}
+
+::re_types_core::macros::impl_into_cow!(Blob);
+
+impl ::re_types_core::Loggable for Blob {
+    #[inline]
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        crate::datatypes::Blob::arrow_datatype()
     }
 
-    #[inline]
-    fn is_pod() -> bool {
-        <crate::datatypes::Blob>::is_pod()
+    fn to_arrow_opt<'a>(
+        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+    ) -> SerializationResult<arrow::array::ArrayRef>
+    where
+        Self: Clone + 'a,
+    {
+        crate::datatypes::Blob::to_arrow_opt(data.into_iter().map(|datum| {
+            datum.map(|datum| match datum.into() {
+                ::std::borrow::Cow::Borrowed(datum) => ::std::borrow::Cow::Borrowed(&datum.0),
+                ::std::borrow::Cow::Owned(datum) => ::std::borrow::Cow::Owned(datum.0),
+            })
+        }))
+    }
+
+    fn from_arrow_opt(
+        arrow_data: &dyn arrow::array::Array,
+    ) -> DeserializationResult<Vec<Option<Self>>>
+    where
+        Self: Sized,
+    {
+        crate::datatypes::Blob::from_arrow_opt(arrow_data)
+            .map(|v| v.into_iter().map(|v| v.map(Self)).collect())
     }
 }
 
@@ -64,42 +94,14 @@ impl std::ops::DerefMut for Blob {
     }
 }
 
-::re_types_core::macros::impl_into_cow!(Blob);
-
-impl ::re_types_core::Loggable for Blob {
-    type Name = ::re_types_core::ComponentName;
-
+impl ::re_byte_size::SizeBytes for Blob {
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.components.Blob".into()
+    fn heap_size_bytes(&self) -> u64 {
+        self.0.heap_size_bytes()
     }
 
     #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        crate::datatypes::Blob::arrow_datatype()
-    }
-
-    fn to_arrow_opt<'a>(
-        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
-    where
-        Self: Clone + 'a,
-    {
-        crate::datatypes::Blob::to_arrow_opt(data.into_iter().map(|datum| {
-            datum.map(|datum| match datum.into() {
-                ::std::borrow::Cow::Borrowed(datum) => ::std::borrow::Cow::Borrowed(&datum.0),
-                ::std::borrow::Cow::Owned(datum) => ::std::borrow::Cow::Owned(datum.0),
-            })
-        }))
-    }
-
-    fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
-    ) -> DeserializationResult<Vec<Option<Self>>>
-    where
-        Self: Sized,
-    {
-        crate::datatypes::Blob::from_arrow_opt(arrow_data)
-            .map(|v| v.into_iter().map(|v| v.map(Self)).collect())
+    fn is_pod() -> bool {
+        <crate::datatypes::Blob>::is_pod()
     }
 }

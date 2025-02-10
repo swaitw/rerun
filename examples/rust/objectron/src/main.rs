@@ -131,7 +131,7 @@ fn log_video_frame(rec: &rerun::RecordingStream, ar_frame: &ArFrame) -> anyhow::
     let image_path = ar_frame.dir.join(format!("video/{}.jpg", ar_frame.index));
 
     rec.set_timepoint(ar_frame.timepoint.clone());
-    rec.log("world/camera", &rerun::ImageEncoded::from_file(image_path)?)
+    rec.log("world/camera", &rerun::EncodedImage::from_file(image_path)?)
         .map_err(Into::into)
 }
 
@@ -330,7 +330,7 @@ fn run(rec: &rerun::RecordingStream, args: &Args) -> anyhow::Result<()> {
     let annotations = read_annotations(&store_info.path_annotations)?;
 
     // See https://github.com/google-research-datasets/Objectron/issues/39 for coordinate systems
-    rec.log_static("world", &rerun::ViewCoordinates::RUB)?;
+    rec.log_static("world", &rerun::ViewCoordinates::RUB())?;
 
     log_baseline_objects(rec, &annotations.objects)?;
 

@@ -3,7 +3,7 @@
 //! This crate contains both the IDL definitions for Rerun types (flatbuffers) as well as the code
 //! generated from those using `re_types_builder`.
 //!
-//! All builtin archetypes, components, datatypes and space view definitions can be found in their
+//! All builtin archetypes, components, datatypes and view definitions can be found in their
 //! respective top-level modules.
 //!
 //! ## Contributing
@@ -227,7 +227,7 @@ pub mod components {
 
 /// The low-level datatypes that [`components`] are built from.
 ///
-/// They all implement the [`Datatype`] trait.
+/// They all implement the [`Loggable`] trait.
 pub mod datatypes {
 
     // Some datatypes are so fundamental and used everywhere that we want them to be exposed
@@ -246,6 +246,22 @@ pub mod datatypes {
 /// The blueprint-specific components.
 pub mod blueprint;
 
+/// Run-time reflection for reading meta-data about components and archetypes.
+pub mod reflection {
+
+    // Some reflection types are so fundamental and used everywhere that we want them to be
+    // exposed by `re_types_core` directly; that way we don't force a dependency on the `re_types`
+    // behemoth just so one can use one of these fundamental reflection types.
+    //
+    // To do so, re-inject `re_types_core`'s datatypes into our own module.
+
+    #[path = "../reflection/mod.rs"]
+    mod _reflection;
+
+    pub use self::_reflection::*;
+    pub use re_types_core::reflection::*;
+}
+
 // ---
 
 // One almost never uses `re_types` without `re_types_core`, so we reexport these core types
@@ -261,7 +277,8 @@ pub mod external {
     pub use re_types_core;
 
     pub use anyhow;
-    pub use arrow2;
+    pub use arrow;
+    pub use ndarray;
     pub use uuid;
 
     #[cfg(feature = "ecolor")]
@@ -279,6 +296,9 @@ pub mod external {
 pub mod image;
 pub mod tensor_data;
 pub mod view_coordinates;
+
+mod rotation3d;
+pub use rotation3d::Rotation3D;
 
 #[cfg(feature = "testing")]
 pub mod testing;

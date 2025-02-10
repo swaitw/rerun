@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../result.hpp"
 
 #include <array>
@@ -20,9 +21,7 @@ namespace rerun::datatypes {
     struct UVec2D {
         std::array<uint32_t, 2> xy;
 
-      public:
-        // Extensions to generated type defined in 'uvec2d_ext.cpp'
-
+      public: // START of extensions from uvec2d_ext.cpp:
         /// Construct UVec2D from x/y values.
         UVec2D(uint32_t x, uint32_t y) : xy{x, y} {}
 
@@ -36,6 +35,8 @@ namespace rerun::datatypes {
         uint32_t y() const {
             return xy[1];
         }
+
+        // END of extensions from uvec2d_ext.cpp, start of generated code:
 
       public:
         UVec2D() = default;
@@ -56,7 +57,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::UVec2D> {
-        static constexpr const char Name[] = "rerun.datatypes.UVec2D";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.UVec2D";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

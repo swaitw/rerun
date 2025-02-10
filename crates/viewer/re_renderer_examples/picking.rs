@@ -1,12 +1,9 @@
 //! Demonstrates the dedicated picking layer support.
 
-// TODO(#3408): remove unwrap()
-#![allow(clippy::unwrap_used)]
-
 use itertools::Itertools as _;
 use rand::Rng;
 use re_renderer::{
-    renderer::MeshInstance,
+    renderer::GpuMeshInstance,
     view_builder::{Projection, TargetConfiguration, ViewBuilder},
     Color32, GpuReadbackIdentifier, PickingLayerId, PickingLayerInstanceId, PickingLayerProcessor,
     PointCloudBuilder, RectInt, Size,
@@ -24,7 +21,7 @@ struct PointSet {
 struct Picking {
     point_sets: Vec<PointSet>,
     picking_position: glam::UVec2,
-    model_mesh_instances: Vec<MeshInstance>,
+    model_mesh_instances: Vec<GpuMeshInstance>,
     mesh_is_hovered: bool,
 }
 
@@ -86,7 +83,8 @@ impl framework::Example for Picking {
             })
             .collect_vec();
 
-        let model_mesh_instances = crate::framework::load_rerun_mesh(re_ctx);
+        let model_mesh_instances =
+            crate::framework::load_rerun_mesh(re_ctx).expect("Failed to load rerun mesh");
 
         Self {
             point_sets,
@@ -102,7 +100,7 @@ impl framework::Example for Picking {
         resolution: [u32; 2],
         _time: &framework::Time,
         pixels_per_point: f32,
-    ) -> Vec<framework::ViewDrawResult> {
+    ) -> anyhow::Result<Vec<framework::ViewDrawResult>> {
         while let Some(picking_result) =
             PickingLayerProcessor::next_readback_result::<()>(re_ctx, READBACK_IDENTIFIER)
         {
@@ -133,7 +131,7 @@ impl framework::Example for Picking {
                     glam::Vec3::ZERO,
                     glam::Vec3::Y,
                 )
-                .unwrap(),
+                .ok_or(anyhow::format_err!("invalid camera"))?,
                 projection_from_view: Projection::Perspective {
                     vertical_fov: 70.0 * std::f32::consts::TAU / 360.0,
                     near_plane_distance: 0.01,
@@ -152,14 +150,10 @@ impl framework::Example for Picking {
             self.picking_position.as_ivec2(),
             glam::uvec2(picking_rect_size, picking_rect_size),
         );
-        view_builder
-            .schedule_picking_rect(re_ctx, picking_rect, READBACK_IDENTIFIER, (), false)
-            .unwrap();
+        view_builder.schedule_picking_rect(re_ctx, picking_rect, READBACK_IDENTIFIER, (), false)?;
 
         let mut point_builder = PointCloudBuilder::new(re_ctx);
-        point_builder
-            .reserve(self.point_sets.iter().map(|set| set.positions.len()).sum())
-            .unwrap();
+        point_builder.reserve(self.point_sets.iter().map(|set| set.positions.len()).sum())?;
         for (i, point_set) in self.point_sets.iter().enumerate() {
             point_builder
                 .batch(format!("Random Points {i}"))
@@ -171,14 +165,13 @@ impl framework::Example for Picking {
                     &point_set.picking_ids,
                 );
         }
-        view_builder.queue_draw(point_builder.into_draw_data().unwrap());
+        view_builder.queue_draw(point_builder.into_draw_data()?);
 
         let instances = self
             .model_mesh_instances
             .iter()
-            .map(|instance| MeshInstance {
+            .map(|instance| GpuMeshInstance {
                 gpu_mesh: instance.gpu_mesh.clone(),
-                mesh: None,
                 world_from_mesh: glam::Affine3A::from_translation(glam::vec3(0.0, 0.0, 0.0)),
                 picking_layer_id: MESH_ID,
                 additive_tint: if self.mesh_is_hovered {
@@ -186,7 +179,7 @@ impl framework::Example for Picking {
                 } else {
                     Color32::TRANSPARENT
                 },
-                ..Default::default()
+                outline_mask_ids: Default::default(),
             })
             .collect_vec();
 
@@ -194,18 +187,17 @@ impl framework::Example for Picking {
             re_ctx,
             Default::default(),
         ));
-        view_builder
-            .queue_draw(re_renderer::renderer::MeshDrawData::new(re_ctx, &instances).unwrap());
+        view_builder.queue_draw(re_renderer::renderer::MeshDrawData::new(
+            re_ctx, &instances,
+        )?);
 
-        let command_buffer = view_builder
-            .draw(re_ctx, re_renderer::Rgba::TRANSPARENT)
-            .unwrap();
+        let command_buffer = view_builder.draw(re_ctx, re_renderer::Rgba::TRANSPARENT)?;
 
-        vec![framework::ViewDrawResult {
+        Ok(vec![framework::ViewDrawResult {
             view_builder,
             command_buffer,
             target_location: glam::Vec2::ZERO,
-        }]
+        }])
     }
 
     fn on_key_event(&mut self, _input: winit::event::KeyEvent) {}

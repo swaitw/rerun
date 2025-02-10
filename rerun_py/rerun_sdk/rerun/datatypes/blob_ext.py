@@ -23,7 +23,7 @@ class BlobExt:
 
         # someone or something is building things manually, let them!
         if isinstance(data, BlobBatch):
-            return data.as_arrow_array().storage
+            return data.as_arrow_array()
 
         # pure-numpy fast path
         elif isinstance(data, np.ndarray):
@@ -45,12 +45,17 @@ class BlobExt:
         elif isinstance(data, bytes):
             inners = [pa.array(np.frombuffer(data, dtype=np.uint8))]
 
+        elif hasattr(data, "read"):
+            inners = [pa.array(np.frombuffer(data.read(), dtype=np.uint8))]
+
         # sequences
         elif isinstance(data, Sequence):
             if len(data) == 0:
                 inners = []
             elif isinstance(data[0], Blob):
                 inners = [pa.array(np.array(datum.data, dtype=np.uint8).flatten()) for datum in data]  # type: ignore[union-attr]
+            elif isinstance(data[0], bytes):
+                inners = [pa.array(np.frombuffer(datum, dtype=np.uint8)) for datum in data]  # type: ignore[arg-type]
             else:
                 inners = [pa.array(np.array(datum, dtype=np.uint8).flatten()) for datum in data]
 

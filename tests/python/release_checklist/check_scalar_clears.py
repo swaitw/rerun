@@ -6,10 +6,7 @@ from uuid import uuid4
 
 import rerun as rr
 
-# TODO(#6552): bring this back one we have read-time range clears working.
 README = """\
-**⚠⚠⚠⚠⚠⚠⚠⚠⚠ [THIS TEST IS TEMPORARILY BROKEN ON PURPOSE (CLICK HERE)](https://github.com/rerun-io/rerun/pull/6586) ⚠⚠⚠⚠⚠⚠⚠⚠⚠**
-
 # Scalar clears
 
 This checks whether scalar time series correctly behave with `Clear`s.
@@ -48,6 +45,8 @@ def run(args: Namespace) -> None:
 
     log_readme()
     log_plots()
+
+    rr.send_blueprint(rr.blueprint.Blueprint(auto_layout=True, auto_views=True), make_active=True, make_default=True)
 
 
 if __name__ == "__main__":

@@ -2,8 +2,13 @@
 
 #[cfg(feature = "decoder")]
 pub mod decoder;
+
 #[cfg(feature = "encoder")]
 pub mod encoder;
+
+pub mod codec;
+
+pub mod protobuf_conversions;
 
 #[cfg(feature = "encoder")]
 #[cfg(not(target_arch = "wasm32"))]
@@ -11,6 +16,20 @@ mod file_sink;
 
 #[cfg(feature = "stream_from_http")]
 pub mod stream_rrd_from_http;
+
+/// How to handle version mismatches during decoding.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum VersionPolicy {
+    /// Warn if the versions don't match, but continue loading.
+    ///
+    /// We usually use this for loading `.rrd` recordings.
+    Warn,
+
+    /// Return an error if the versions aren't compatible.
+    ///
+    /// We usually use this for tests, and for loading `.rbl` blueprint files.
+    Error,
+}
 
 // ---------------------------------------------------------------------
 
@@ -43,6 +62,7 @@ pub enum Compression {
 #[repr(u8)]
 pub enum Serializer {
     MsgPack = 1,
+    Protobuf = 2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,13 +72,17 @@ pub struct EncodingOptions {
 }
 
 impl EncodingOptions {
-    pub const UNCOMPRESSED: Self = Self {
+    pub const MSGPACK_UNCOMPRESSED: Self = Self {
         compression: Compression::Off,
         serializer: Serializer::MsgPack,
     };
-    pub const COMPRESSED: Self = Self {
+    pub const MSGPACK_COMPRESSED: Self = Self {
         compression: Compression::LZ4,
         serializer: Serializer::MsgPack,
+    };
+    pub const PROTOBUF_COMPRESSED: Self = Self {
+        compression: Compression::LZ4,
+        serializer: Serializer::Protobuf,
     };
 
     pub fn from_bytes(bytes: [u8; 4]) -> Result<Self, OptionsError> {
@@ -71,6 +95,7 @@ impl EncodingOptions {
                 };
                 let serializer = match serializer {
                     1 => Serializer::MsgPack,
+                    2 => Serializer::Protobuf,
                     _ => return Err(OptionsError::UnknownSerializer(serializer)),
                 };
                 Ok(Self {
@@ -107,7 +132,7 @@ pub enum OptionsError {
 }
 
 #[cfg(any(feature = "encoder", feature = "decoder"))]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct FileHeader {
     pub magic: [u8; 4],
     pub version: [u8; 4],
@@ -153,10 +178,13 @@ impl FileHeader {
 
 #[cfg(any(feature = "encoder", feature = "decoder"))]
 #[derive(Clone, Copy)]
-pub(crate) struct MessageHeader {
-    /// `compressed_len` is equal to `uncompressed_len` for uncompressed streams
-    pub compressed_len: u32,
-    pub uncompressed_len: u32,
+pub(crate) enum MessageHeader {
+    Data {
+        /// `compressed_len` is equal to `uncompressed_len` for uncompressed streams
+        compressed_len: u32,
+        uncompressed_len: u32,
+    },
+    EndOfStream,
 }
 
 #[cfg(any(feature = "encoder", feature = "decoder"))]
@@ -166,29 +194,61 @@ impl MessageHeader {
 
     #[cfg(feature = "encoder")]
     pub fn encode(&self, write: &mut impl std::io::Write) -> Result<(), encoder::EncodeError> {
-        write
-            .write_all(&self.compressed_len.to_le_bytes())
-            .map_err(encoder::EncodeError::Write)?;
-        write
-            .write_all(&self.uncompressed_len.to_le_bytes())
-            .map_err(encoder::EncodeError::Write)?;
+        match self {
+            Self::Data {
+                compressed_len,
+                uncompressed_len,
+            } => {
+                write
+                    .write_all(&compressed_len.to_le_bytes())
+                    .map_err(encoder::EncodeError::Write)?;
+                write
+                    .write_all(&uncompressed_len.to_le_bytes())
+                    .map_err(encoder::EncodeError::Write)?;
+            }
+            Self::EndOfStream => {
+                write
+                    .write_all(&0_u64.to_le_bytes())
+                    .map_err(encoder::EncodeError::Write)?;
+            }
+        }
         Ok(())
     }
 
     #[cfg(feature = "decoder")]
     pub fn decode(read: &mut impl std::io::Read) -> Result<Self, decoder::DecodeError> {
+        let mut buffer = [0_u8; Self::SIZE];
+        read.read_exact(&mut buffer)
+            .map_err(decoder::DecodeError::Read)?;
+
+        Self::from_bytes(&buffer)
+    }
+
+    /// Decode a message header from a byte buffer. Input buffer must be exactly 8 bytes long.
+    #[cfg(feature = "decoder")]
+    pub fn from_bytes(data: &[u8]) -> Result<Self, decoder::DecodeError> {
+        if data.len() != 8 {
+            return Err(decoder::DecodeError::Codec(
+                codec::CodecError::HeaderDecoding(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid header length",
+                )),
+            ));
+        }
+
         fn u32_from_le_slice(bytes: &[u8]) -> u32 {
             u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
         }
 
-        let mut buffer = [0_u8; Self::SIZE];
-        read.read_exact(&mut buffer)
-            .map_err(decoder::DecodeError::Read)?;
-        let compressed = u32_from_le_slice(&buffer[0..4]);
-        let uncompressed = u32_from_le_slice(&buffer[4..]);
-        Ok(Self {
-            compressed_len: compressed,
-            uncompressed_len: uncompressed,
-        })
+        if u32_from_le_slice(&data[0..4]) == 0 && u32_from_le_slice(&data[4..]) == 0 {
+            Ok(Self::EndOfStream)
+        } else {
+            let compressed = u32_from_le_slice(&data[0..4]);
+            let uncompressed = u32_from_le_slice(&data[4..]);
+            Ok(Self::Data {
+                compressed_len: compressed,
+                uncompressed_len: uncompressed,
+            })
+        }
     }
 }

@@ -4,12 +4,12 @@
 #pragma once
 
 #include "../collection.hpp"
-#include "../compiler_utils.hpp"
+#include "../component_batch.hpp"
+#include "../component_column.hpp"
 #include "../components/image_plane_distance.hpp"
 #include "../components/pinhole_projection.hpp"
 #include "../components/resolution.hpp"
 #include "../components/view_coordinates.hpp"
-#include "../data_cell.hpp"
 #include "../indicator_component.hpp"
 #include "../result.hpp"
 
@@ -46,12 +46,12 @@ namespace rerun::archetypes {
     ///         return static_cast<uint8_t>(std::rand());
     ///     });
     ///
-    ///     rec.log("world/image", rerun::Image({3, 3, 3}, random_data));
+    ///     rec.log("world/image", rerun::Image::from_rgb24(random_data, {3, 3}));
     /// }
     /// ```
     ///
     /// ### Perspective pinhole camera
-    /// ![image](https://static.rerun.io/pinhole_perspective/d0bd02a0cf354a5c8eafb79a84fe8674335cab98/full.png)
+    /// ![image](https://static.rerun.io/pinhole_perspective/317e2de6d212b238dcdad5b67037e9e2a2afafa0/full.png)
     ///
     /// ```cpp
     /// #include <rerun.hpp>
@@ -66,17 +66,19 @@ namespace rerun::archetypes {
     ///         "world/cam",
     ///         rerun::Pinhole::from_fov_and_aspect_ratio(fov_y, aspect_ratio)
     ///             .with_camera_xyz(rerun::components::ViewCoordinates::RUB)
+    ///             .with_image_plane_distance(0.1f)
     ///     );
     ///
     ///     rec.log(
     ///         "world/points",
-    ///         rerun::Points3D({{0.0f, 0.0f, -0.5f}, {0.1f, 0.1f, -0.5f}, {-0.1f, -0.1f, -0.5f}})
+    ///         rerun::Points3D({{0.0f, 0.0f, -0.5f}, {0.1f, 0.1f, -0.5f}, {-0.1f, -0.1f, -0.5f}}
+    ///         ).with_radii({0.025f})
     ///     );
     /// }
     /// ```
     struct Pinhole {
         /// Camera projection, from image coordinates to view coordinates.
-        rerun::components::PinholeProjection image_from_camera;
+        std::optional<ComponentBatch> image_from_camera;
 
         /// Pixel resolution (usually integers) of child image space. Width and height.
         ///
@@ -86,11 +88,11 @@ namespace rerun::archetypes {
         /// ```
         ///
         /// `image_from_camera` project onto the space spanned by `(0,0)` and `resolution - 1`.
-        std::optional<rerun::components::Resolution> resolution;
+        std::optional<ComponentBatch> resolution;
 
         /// Sets the view coordinates for the camera.
         ///
-        /// All common values are available as constants on the `components.ViewCoordinates` class.
+        /// All common values are available as constants on the `components::ViewCoordinates` class.
         ///
         /// The default is `ViewCoordinates::RDF`, i.e. X=Right, Y=Down, Z=Forward, and this is also the recommended setting.
         /// This means that the camera frustum will point along the positive Z axis of the parent space,
@@ -115,22 +117,43 @@ namespace rerun::archetypes {
         ///
         /// The pinhole matrix (the `image_from_camera` argument) always project along the third (Z) axis,
         /// but will be re-oriented to project along the forward axis of the `camera_xyz` argument.
-        std::optional<rerun::components::ViewCoordinates> camera_xyz;
+        std::optional<ComponentBatch> camera_xyz;
 
         /// The distance from the camera origin to the image plane when the projection is shown in a 3D viewer.
         ///
         /// This is only used for visualization purposes, and does not affect the projection itself.
-        std::optional<rerun::components::ImagePlaneDistance> image_plane_distance;
+        std::optional<ComponentBatch> image_plane_distance;
 
       public:
         static constexpr const char IndicatorComponentName[] = "rerun.components.PinholeIndicator";
 
         /// Indicator component, used to identify the archetype when converting to a list of components.
         using IndicatorComponent = rerun::components::IndicatorComponent<IndicatorComponentName>;
+        /// The name of the archetype as used in `ComponentDescriptor`s.
+        static constexpr const char ArchetypeName[] = "rerun.archetypes.Pinhole";
 
-      public:
-        // Extensions to generated type defined in 'pinhole_ext.cpp'
+        /// `ComponentDescriptor` for the `image_from_camera` field.
+        static constexpr auto Descriptor_image_from_camera = ComponentDescriptor(
+            ArchetypeName, "image_from_camera",
+            Loggable<rerun::components::PinholeProjection>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `resolution` field.
+        static constexpr auto Descriptor_resolution = ComponentDescriptor(
+            ArchetypeName, "resolution",
+            Loggable<rerun::components::Resolution>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `camera_xyz` field.
+        static constexpr auto Descriptor_camera_xyz = ComponentDescriptor(
+            ArchetypeName, "camera_xyz",
+            Loggable<rerun::components::ViewCoordinates>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `image_plane_distance` field.
+        static constexpr auto Descriptor_image_plane_distance = ComponentDescriptor(
+            ArchetypeName, "image_plane_distance",
+            Loggable<rerun::components::ImagePlaneDistance>::Descriptor.component_name
+        );
 
+      public: // START of extensions from pinhole_ext.cpp:
         /// Creates a pinhole from the camera focal length and resolution, both specified in pixels.
         ///
         /// The focal length is the diagonal of the projection matrix.
@@ -171,24 +194,61 @@ namespace rerun::archetypes {
         ///
         /// `image_from_camera` project onto the space spanned by `(0,0)` and `resolution - 1`.
         Pinhole with_resolution(float width, float height) && {
-            resolution = rerun::components::Resolution(width, height);
-            return std::move(*this);
+            return std::move(*this).with_resolution(rerun::components::Resolution(width, height));
         }
 
         /// Pixel resolution (usually integers) of child image space. Width and height.
         ///
         /// `image_from_camera` project onto the space spanned by `(0,0)` and `resolution - 1`.
         Pinhole with_resolution(int width, int height) && {
-            resolution = rerun::components::Resolution(width, height);
-            return std::move(*this);
+            return std::move(*this).with_resolution(rerun::components::Resolution(width, height));
         }
+
+        // END of extensions from pinhole_ext.cpp, start of generated code:
 
       public:
         Pinhole() = default;
         Pinhole(Pinhole&& other) = default;
+        Pinhole(const Pinhole& other) = default;
+        Pinhole& operator=(const Pinhole& other) = default;
+        Pinhole& operator=(Pinhole&& other) = default;
 
         explicit Pinhole(rerun::components::PinholeProjection _image_from_camera)
-            : image_from_camera(std::move(_image_from_camera)) {}
+            : image_from_camera(ComponentBatch::from_loggable(
+                                    std::move(_image_from_camera), Descriptor_image_from_camera
+              )
+                                    .value_or_throw()) {}
+
+        /// Update only some specific fields of a `Pinhole`.
+        static Pinhole update_fields() {
+            return Pinhole();
+        }
+
+        /// Clear all the fields of a `Pinhole`.
+        static Pinhole clear_fields();
+
+        /// Camera projection, from image coordinates to view coordinates.
+        Pinhole with_image_from_camera(
+            const rerun::components::PinholeProjection& _image_from_camera
+        ) && {
+            image_from_camera =
+                ComponentBatch::from_loggable(_image_from_camera, Descriptor_image_from_camera)
+                    .value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `image_from_camera` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_image_from_camera` should
+        /// be used when logging a single row's worth of data.
+        Pinhole with_many_image_from_camera(
+            const Collection<rerun::components::PinholeProjection>& _image_from_camera
+        ) && {
+            image_from_camera =
+                ComponentBatch::from_loggable(_image_from_camera, Descriptor_image_from_camera)
+                    .value_or_throw();
+            return std::move(*this);
+        }
 
         /// Pixel resolution (usually integers) of child image space. Width and height.
         ///
@@ -198,15 +258,26 @@ namespace rerun::archetypes {
         /// ```
         ///
         /// `image_from_camera` project onto the space spanned by `(0,0)` and `resolution - 1`.
-        Pinhole with_resolution(rerun::components::Resolution _resolution) && {
-            resolution = std::move(_resolution);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        Pinhole with_resolution(const rerun::components::Resolution& _resolution) && {
+            resolution =
+                ComponentBatch::from_loggable(_resolution, Descriptor_resolution).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `resolution` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_resolution` should
+        /// be used when logging a single row's worth of data.
+        Pinhole with_many_resolution(const Collection<rerun::components::Resolution>& _resolution
+        ) && {
+            resolution =
+                ComponentBatch::from_loggable(_resolution, Descriptor_resolution).value_or_throw();
+            return std::move(*this);
         }
 
         /// Sets the view coordinates for the camera.
         ///
-        /// All common values are available as constants on the `components.ViewCoordinates` class.
+        /// All common values are available as constants on the `components::ViewCoordinates` class.
         ///
         /// The default is `ViewCoordinates::RDF`, i.e. X=Right, Y=Down, Z=Forward, and this is also the recommended setting.
         /// This means that the camera frustum will point along the positive Z axis of the parent space,
@@ -231,22 +302,68 @@ namespace rerun::archetypes {
         ///
         /// The pinhole matrix (the `image_from_camera` argument) always project along the third (Z) axis,
         /// but will be re-oriented to project along the forward axis of the `camera_xyz` argument.
-        Pinhole with_camera_xyz(rerun::components::ViewCoordinates _camera_xyz) && {
-            camera_xyz = std::move(_camera_xyz);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        Pinhole with_camera_xyz(const rerun::components::ViewCoordinates& _camera_xyz) && {
+            camera_xyz =
+                ComponentBatch::from_loggable(_camera_xyz, Descriptor_camera_xyz).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `camera_xyz` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_camera_xyz` should
+        /// be used when logging a single row's worth of data.
+        Pinhole with_many_camera_xyz(
+            const Collection<rerun::components::ViewCoordinates>& _camera_xyz
+        ) && {
+            camera_xyz =
+                ComponentBatch::from_loggable(_camera_xyz, Descriptor_camera_xyz).value_or_throw();
+            return std::move(*this);
         }
 
         /// The distance from the camera origin to the image plane when the projection is shown in a 3D viewer.
         ///
         /// This is only used for visualization purposes, and does not affect the projection itself.
         Pinhole with_image_plane_distance(
-            rerun::components::ImagePlaneDistance _image_plane_distance
+            const rerun::components::ImagePlaneDistance& _image_plane_distance
         ) && {
-            image_plane_distance = std::move(_image_plane_distance);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+            image_plane_distance = ComponentBatch::from_loggable(
+                                       _image_plane_distance,
+                                       Descriptor_image_plane_distance
+            )
+                                       .value_or_throw();
+            return std::move(*this);
         }
+
+        /// This method makes it possible to pack multiple `image_plane_distance` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_image_plane_distance` should
+        /// be used when logging a single row's worth of data.
+        Pinhole with_many_image_plane_distance(
+            const Collection<rerun::components::ImagePlaneDistance>& _image_plane_distance
+        ) && {
+            image_plane_distance = ComponentBatch::from_loggable(
+                                       _image_plane_distance,
+                                       Descriptor_image_plane_distance
+            )
+                                       .value_or_throw();
+            return std::move(*this);
+        }
+
+        /// Partitions the component data into multiple sub-batches.
+        ///
+        /// Specifically, this transforms the existing `ComponentBatch` data into `ComponentColumn`s
+        /// instead, via `ComponentBatch::partitioned`.
+        ///
+        /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+        ///
+        /// The specified `lengths` must sum to the total length of the component batch.
+        Collection<ComponentColumn> columns(const Collection<uint32_t>& lengths_);
+
+        /// Partitions the component data into unit-length sub-batches.
+        ///
+        /// This is semantically similar to calling `columns` with `std::vector<uint32_t>(n, 1)`,
+        /// where `n` is automatically guessed.
+        Collection<ComponentColumn> columns();
     };
 
 } // namespace rerun::archetypes
@@ -260,6 +377,6 @@ namespace rerun {
     template <>
     struct AsComponents<archetypes::Pinhole> {
         /// Serialize all set component batches.
-        static Result<std::vector<DataCell>> serialize(const archetypes::Pinhole& archetype);
+        static Result<Collection<ComponentBatch>> as_batches(const archetypes::Pinhole& archetype);
     };
 } // namespace rerun

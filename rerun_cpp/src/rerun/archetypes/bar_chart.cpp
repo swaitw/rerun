@@ -5,34 +5,64 @@
 
 #include "../collection_adapter_builtins.hpp"
 
-namespace rerun::archetypes {}
+namespace rerun::archetypes {
+    BarChart BarChart::clear_fields() {
+        auto archetype = BarChart();
+        archetype.values = ComponentBatch::empty<rerun::components::TensorData>(Descriptor_values)
+                               .value_or_throw();
+        archetype.color =
+            ComponentBatch::empty<rerun::components::Color>(Descriptor_color).value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> BarChart::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(3);
+        if (values.has_value()) {
+            columns.push_back(values.value().partitioned(lengths_).value_or_throw());
+        }
+        if (color.has_value()) {
+            columns.push_back(color.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(
+            ComponentColumn::from_indicators<BarChart>(static_cast<uint32_t>(lengths_.size()))
+                .value_or_throw()
+        );
+        return columns;
+    }
+
+    Collection<ComponentColumn> BarChart::columns() {
+        if (values.has_value()) {
+            return columns(std::vector<uint32_t>(values.value().length(), 1));
+        }
+        if (color.has_value()) {
+            return columns(std::vector<uint32_t>(color.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<archetypes::BarChart>::serialize(
+    Result<Collection<ComponentBatch>> AsComponents<archetypes::BarChart>::as_batches(
         const archetypes::BarChart& archetype
     ) {
         using namespace archetypes;
-        std::vector<DataCell> cells;
+        std::vector<ComponentBatch> cells;
         cells.reserve(3);
 
-        {
-            auto result = DataCell::from_loggable(archetype.values);
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.values.has_value()) {
+            cells.push_back(archetype.values.value());
         }
         if (archetype.color.has_value()) {
-            auto result = DataCell::from_loggable(archetype.color.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.color.value());
         }
         {
-            auto indicator = BarChart::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<BarChart>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

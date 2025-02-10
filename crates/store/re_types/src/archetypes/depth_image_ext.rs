@@ -1,7 +1,7 @@
 use crate::{
-    components::{ChannelDataType, Resolution2D},
-    datatypes::{Blob, TensorBuffer, TensorData},
-    image::{find_non_empty_dim_indices, ImageConstructionError},
+    components::{ImageBuffer, ImageFormat},
+    datatypes::{ChannelDatatype, ColorModel, TensorData},
+    image::{blob_and_datatype_from_tensor, find_non_empty_dim_indices, ImageConstructionError},
 };
 
 use super::DepthImage;
@@ -12,7 +12,7 @@ impl DepthImage {
     /// Will return an [`ImageConstructionError`] if the shape of the tensor data is invalid
     /// for treating as an image.
     ///
-    /// This is useful for constructing an [`DepthImage`] from an ndarray.
+    /// This is useful for constructing a [`DepthImage`] from an ndarray.
     pub fn try_from<T: TryInto<TensorData>>(data: T) -> Result<Self, ImageConstructionError<T>>
     where
         <T as TryInto<TensorData>>::Error: std::error::Error,
@@ -20,46 +20,45 @@ impl DepthImage {
         let tensor_data: TensorData = data
             .try_into()
             .map_err(ImageConstructionError::TensorDataConversion)?;
+        let TensorData { shape, buffer, .. } = tensor_data;
 
-        let non_empty_dim_inds = find_non_empty_dim_indices(&tensor_data.shape);
+        let non_empty_dim_inds = find_non_empty_dim_indices(&shape);
 
         if non_empty_dim_inds.len() != 2 {
-            return Err(ImageConstructionError::BadImageShape(tensor_data.shape));
+            return Err(ImageConstructionError::BadImageShape(shape));
         }
 
-        let (blob, data_type) = match tensor_data.buffer {
-            TensorBuffer::U8(buffer) => (Blob(buffer), ChannelDataType::U8),
-            TensorBuffer::U16(buffer) => (Blob(buffer.cast_to_u8()), ChannelDataType::U16),
-            TensorBuffer::U32(buffer) => (Blob(buffer.cast_to_u8()), ChannelDataType::U32),
-            TensorBuffer::U64(buffer) => (Blob(buffer.cast_to_u8()), ChannelDataType::U64),
-            TensorBuffer::I8(buffer) => (Blob(buffer.cast_to_u8()), ChannelDataType::I8),
-            TensorBuffer::I16(buffer) => (Blob(buffer.cast_to_u8()), ChannelDataType::I16),
-            TensorBuffer::I32(buffer) => (Blob(buffer.cast_to_u8()), ChannelDataType::I32),
-            TensorBuffer::I64(buffer) => (Blob(buffer.cast_to_u8()), ChannelDataType::I64),
-            TensorBuffer::F16(buffer) => (Blob(buffer.cast_to_u8()), ChannelDataType::F16),
-            TensorBuffer::F32(buffer) => (Blob(buffer.cast_to_u8()), ChannelDataType::F32),
-            TensorBuffer::F64(buffer) => (Blob(buffer.cast_to_u8()), ChannelDataType::F64),
-            TensorBuffer::Nv12(_) | TensorBuffer::Yuy2(_) => {
-                return Err(ImageConstructionError::ChromaDownsamplingNotSupported);
-            }
-        };
+        let (blob, datatype) = blob_and_datatype_from_tensor(buffer);
 
-        let (height, width) = (
-            &tensor_data.shape[non_empty_dim_inds[0]],
-            &tensor_data.shape[non_empty_dim_inds[1]],
-        );
-        let height = height.size as u32;
-        let width = width.size as u32;
-        let resolution = Resolution2D::from([width, height]);
+        let (height, width) = (shape[non_empty_dim_inds[0]], shape[non_empty_dim_inds[1]]);
 
-        Ok(Self {
-            data: blob.into(),
-            resolution,
-            data_type,
-            draw_order: None,
-            meter: None,
-            colormap: None,
-            point_fill_ratio: None,
-        })
+        let image_format = ImageFormat::depth([width as u32, height as u32], datatype);
+
+        Ok(Self::new(blob, image_format))
+    }
+
+    /// Construct a depth image from a byte buffer given its resolution, and data type.
+    pub fn from_data_type_and_bytes(
+        bytes: impl Into<ImageBuffer>,
+        [width, height]: [u32; 2],
+        datatype: ChannelDatatype,
+    ) -> Self {
+        let buffer = bytes.into();
+
+        let image_format = ImageFormat::depth([width, height], datatype);
+
+        let num_expected_bytes = image_format.num_bytes();
+        if buffer.len() != num_expected_bytes {
+            re_log::warn_once!(
+                "Expected {width}x{height} {} {datatype:?} image to be {num_expected_bytes} B, but got {} B", ColorModel::L, buffer.len()
+            );
+        }
+
+        Self::new(buffer, image_format)
+    }
+
+    /// From an 16-bit grayscale image.
+    pub fn from_gray16(bytes: impl Into<ImageBuffer>, resolution: [u32; 2]) -> Self {
+        Self::from_data_type_and_bytes(bytes, resolution, ChannelDatatype::U16)
     }
 }

@@ -20,7 +20,7 @@ use crate::{
 ///
 /// There is a 1:1 relationship between `quote_arrow_deserializer` and `Loggable::from_arrow_opt`:
 /// ```ignore
-/// fn from_arrow_opt(data: &dyn ::arrow2::array::Array) -> DeserializationResult<Vec<Option<Self>>> {
+/// fn from_arrow_opt(data: &dyn ::arrow::array::Array) -> DeserializationResult<Vec<Option<Self>>> {
 ///     Ok(#quoted_deserializer)
 /// }
 /// ```
@@ -56,17 +56,73 @@ pub fn quote_arrow_deserializer(
     objects: &Objects,
     obj: &Object,
 ) -> TokenStream {
-    // Runtime identifier of the variable holding the Arrow payload (`&dyn ::arrow2::array::Array`).
+    // Runtime identifier of the variable holding the Arrow payload (`&dyn ::arrow::array::Array`).
     let data_src = format_ident!("arrow_data");
 
     let datatype = &arrow_registry.get(&obj.fqname);
     let quoted_self_datatype = quote! { Self::arrow_datatype() };
 
     let obj_fqname = obj.fqname.as_str();
+    let is_enum = obj.is_enum();
     let is_arrow_transparent = obj.datatype.is_none();
     let is_tuple_struct = is_tuple_struct_from_obj(obj);
 
-    if is_arrow_transparent {
+    if is_enum {
+        // An enum is very similar to a transparent type.
+
+        // As a transparent type, it's not clear what this does or
+        // where it should come from. Also, it's not used in the internal
+        // implementation of `quote_arrow_field_deserializer` anyways.
+        // TODO(#6819): If we get rid of nullable components this will likely need to change.
+        let is_nullable = true; // Will be ignored
+
+        let obj_field_fqname = format!("{obj_fqname}#enum");
+
+        let quoted_deserializer = quote_arrow_field_deserializer(
+            objects,
+            datatype.to_logical_type(),
+            &quoted_self_datatype, // we are transparent, so the datatype of `Self` is the datatype of our contents
+            is_nullable,
+            &obj_field_fqname,
+            &data_src,
+            InnerRepr::NativeIterable,
+        );
+
+        let quoted_branches = obj.fields.iter().map(|obj_field| {
+            let quoted_obj_field_type = format_ident!("{}", obj_field.name);
+
+            // We should never hit this unwrap or it means the enum-processing at
+            // the fbs layer is totally broken.
+            let enum_value = obj_field.enum_value.unwrap();
+            let quoted_enum_value = proc_macro2::Literal::u8_unsuffixed(enum_value);
+
+            quote! {
+                Some(#quoted_enum_value) => Ok(Some(Self::#quoted_obj_field_type))
+            }
+        });
+
+        // TODO(jleibs): We should be able to do this with try_from instead.
+        let quoted_remapping = quote! {
+            .map(|typ| {
+                match typ {
+                    // The actual enum variants
+                    #(#quoted_branches,)*
+                    None => Ok(None),
+                    Some(invalid) => Err(DeserializationError::missing_union_arm(
+                        #quoted_self_datatype, "<invalid>", invalid as _,
+                    )),
+                }
+            })
+        };
+
+        quote! {
+            #quoted_deserializer
+            #quoted_remapping
+            // NOTE: implicit Vec<Result> to Result<Vec>
+            .collect::<DeserializationResult<Vec<Option<_>>>>()
+            .with_context(#obj_fqname)?
+        }
+    } else if is_arrow_transparent {
         // NOTE: Arrow transparent objects must have a single field, no more no less.
         // The semantic pass would have failed already if this wasn't the case.
         let obj_field = &obj.fields[0];
@@ -180,7 +236,7 @@ pub fn quote_arrow_deserializer(
                 });
 
                 let quoted_downcast = {
-                    let cast_as = quote!(arrow2::array::StructArray);
+                    let cast_as = quote!(arrow::array::StructArray);
                     quote_array_downcast(obj_fqname, &data_src, cast_as, &quoted_self_datatype)
                 };
                 quote! {{
@@ -192,19 +248,19 @@ pub fn quote_arrow_deserializer(
                         // datastructures for all of our children.
                         Vec::new()
                     } else {
-                        let (#data_src_fields, #data_src_arrays) = (#data_src.fields(), #data_src.values());
+                        let (#data_src_fields, #data_src_arrays) = (#data_src.fields(), #data_src.columns());
 
                         let arrays_by_name: ::std::collections::HashMap<_, _> = #data_src_fields
                             .iter()
-                            .map(|field| field.name.as_str())
+                            .map(|field| field.name().as_str())
                             .zip(#data_src_arrays)
                             .collect();
 
                         #(#quoted_field_deserializers;)*
 
-                        arrow2::bitmap::utils::ZipValidity::new_with_validity(
+                        ZipValidity::new_with_validity(
                             ::itertools::izip!(#(#quoted_field_names),*),
-                            #data_src.validity(),
+                            #data_src.nulls(),
                         )
                         .map(|opt| opt.map(|(#(#quoted_field_names),*)| Ok(Self { #(#quoted_unwrappings,)* })).transpose())
                         // NOTE: implicit Vec<Result> to Result<Vec>
@@ -218,26 +274,26 @@ pub fn quote_arrow_deserializer(
                 // We use sparse arrow unions for c-style enums, which means only 8 bits is required for each field,
                 // and nulls are encoded with a special 0-index `_null_markers` variant.
 
-                let data_src_types = format_ident!("{data_src}_types");
+                let data_src_types = format_ident!("{data_src}_type_ids");
 
                 let obj_fqname = obj.fqname.as_str();
                 let quoted_branches = obj.fields.iter().enumerate().map(|(typ, obj_field)| {
                     let arrow_type_index = Literal::i8_unsuffixed(typ as i8 + 1); // 0 is reserved for `_null_markers`
 
-                    let quoted_obj_field_type = format_ident!("{}", obj_field.pascal_case_name());
+                    let quoted_obj_field_type = format_ident!("{}", obj_field.name);
                     quote! {
                         #arrow_type_index => Ok(Some(Self::#quoted_obj_field_type))
                     }
                 });
 
                 let quoted_downcast = {
-                    let cast_as = quote!(arrow2::array::UnionArray);
+                    let cast_as = quote!(arrow::array::UnionArray);
                     quote_array_downcast(obj_fqname, &data_src, &cast_as, &quoted_self_datatype)
                 };
 
                 quote! {{
                     let #data_src = #quoted_downcast?;
-                    let #data_src_types = #data_src.types();
+                    let #data_src_types = #data_src.type_ids();
 
                     #data_src_types
                         .iter()
@@ -263,18 +319,18 @@ pub fn quote_arrow_deserializer(
                 // We use dense arrow unions for proper sum-type unions.
                 // Nulls are encoded with a special 0-index `_null_markers` variant.
 
-                let data_src_types = format_ident!("{data_src}_types");
-                let data_src_arrays = format_ident!("{data_src}_arrays");
+                let data_src_type_ids = format_ident!("{data_src}_type_ids");
                 let data_src_offsets = format_ident!("{data_src}_offsets");
 
                 let quoted_field_deserializers = obj
                     .fields
                     .iter()
-                    .filter(|obj_field|
-                        // For unit fields we don't have to collect any data.
-                        obj_field.typ != crate::Type::Unit)
                     .enumerate()
-                    .map(|(i, obj_field)| {
+                    .filter(|(_, obj_field)| {
+                        // For unit fields we don't have to collect any data.
+                        obj_field.typ != crate::Type::Unit
+                    })
+                    .map(|(type_id, obj_field)| {
                         let data_dst = format_ident!("{}", obj_field.snake_case_name());
 
                         let field_datatype = &arrow_registry.get(&obj_field.fqname);
@@ -288,29 +344,21 @@ pub fn quote_arrow_deserializer(
                             InnerRepr::NativeIterable,
                         );
 
-                        let i = i + 1; // NOTE: +1 to account for `_null_markers` virtual arm
+                        let type_id = Literal::usize_unsuffixed(type_id + 1); // NOTE: +1 to account for `_null_markers` virtual arm
 
                         quote! {
                             let #data_dst = {
-                                // NOTE: `data_src_arrays` is a runtime collection of all of the
-                                // input's payload's union arms, while `#i` is our comptime union
-                                // arm counter… there's no guarantee it's actually there at
-                                // runtime!
-                                if #i >= #data_src_arrays.len() {
-                                    // By not returning an error but rather defaulting to an empty
-                                    // vector, we introduce some kind of light forwards compatibility:
-                                    // old clients that don't yet know about the new arms can still
-                                    // send data in.
-                                    return Ok(Vec::new());
-
-                                    // return Err(DeserializationError::missing_union_arm(
-                                    //     #quoted_datatype, #obj_field_fqname, #i,
-                                    // )).with_context(#obj_fqname);
-                                }
-
-                                // NOTE: The array indexing is safe: checked above.
-                                let #data_src = &*#data_src_arrays[#i];
-                                 #quoted_deserializer.collect::<Vec<_>>()
+                                // `.child()` will panic if the given `type_id` doesn't exist,
+                                // which could happen if the number of union arms has changed
+                                // between serialization and deserialization.
+                                // There is no simple way to check for this using `arrow-rs`
+                                // (no access to `UnionArray::fields` as of arrow 54:
+                                // https://docs.rs/arrow/latest/arrow/array/struct.UnionArray.html)
+                                //
+                                // Still, we're planning on removing arrow unions entirely, so this is… fine.
+                                // TODO(#6388): stop using arrow unions, and remove this peril
+                                let #data_src = #data_src.child(#type_id).as_ref();
+                                #quoted_deserializer.collect::<Vec<_>>()
                             }
                         }
                     });
@@ -360,7 +408,7 @@ pub fn quote_arrow_deserializer(
                 });
 
                 let quoted_downcast = {
-                    let cast_as = quote!(arrow2::array::UnionArray);
+                    let cast_as = quote!(arrow::array::UnionArray);
                     quote_array_downcast(obj_fqname, &data_src, &cast_as, &quoted_self_datatype)
                 };
 
@@ -373,7 +421,7 @@ pub fn quote_arrow_deserializer(
                         // datastructures for all of our children.
                         Vec::new()
                     } else {
-                        let (#data_src_types, #data_src_arrays) = (#data_src.types(), #data_src.fields());
+                        let #data_src_type_ids = #data_src.type_ids();
 
                         let #data_src_offsets = #data_src.offsets()
                             // NOTE: expected dense union, got a sparse one instead
@@ -383,16 +431,16 @@ pub fn quote_arrow_deserializer(
                                 DeserializationError::datatype_mismatch(expected, actual)
                             }).with_context(#obj_fqname)?;
 
-                        if #data_src_types.len() != #data_src_offsets.len() {
+                        if #data_src_type_ids.len() != #data_src_offsets.len() {
                             // NOTE: need one offset array per union arm!
                             return Err(DeserializationError::offset_slice_oob(
-                                (0, #data_src_types.len()), #data_src_offsets.len(),
+                                (0, #data_src_type_ids.len()), #data_src_offsets.len(),
                             )).with_context(#obj_fqname);
                         }
 
                         #(#quoted_field_deserializers;)*
 
-                        #data_src_types
+                        #data_src_type_ids
                             .iter()
                             .enumerate()
                             .map(|(i, typ)| {
@@ -440,7 +488,7 @@ enum InnerRepr {
 /// If the datatype happens to be a struct or union, this will merely inject a runtime call to
 /// `Loggable::from_arrow_opt` and call it a day, preventing code bloat.
 ///
-/// `data_src` is the runtime identifier of the variable holding the Arrow payload (`&dyn ::arrow2::array::Array`).
+/// `data_src` is the runtime identifier of the variable holding the Arrow payload (`&dyn ::arrow::array::Array`).
 /// The returned `TokenStream` always instantiates a `Vec<Option<T>>`.
 ///
 /// This short-circuits on error using the `try` (`?`) operator: the outer scope must be one that
@@ -452,10 +500,18 @@ fn quote_arrow_field_deserializer(
     quoted_datatype: &TokenStream,
     is_nullable: bool,
     obj_field_fqname: &str,
-    data_src: &proc_macro2::Ident, // &dyn ::arrow2::array::Array
+    data_src: &proc_macro2::Ident, // &dyn ::arrow::array::Array
     inner_repr: InnerRepr,
 ) -> TokenStream {
     _ = is_nullable; // not yet used, will be needed very soon
+
+    // If the inner object is an enum, then dispatch to its deserializer.
+    if let DataType::Extension(fqname, _, _) = datatype {
+        if objects.get(fqname).is_some_and(|obj| obj.is_enum()) {
+            let fqname_use = quote_fqname_as_type_path(fqname);
+            return quote!(#fqname_use::from_arrow_opt(#data_src).with_context(#obj_field_fqname)?.into_iter());
+        }
+    }
 
     match datatype.to_logical_type() {
         DataType::Int8
@@ -473,11 +529,6 @@ fn quote_arrow_field_deserializer(
         | DataType::Null => {
             let quoted_iter_transparency =
                 quote_iterator_transparency(objects, datatype, IteratorKind::OptionValue, None);
-            let quoted_iter_transparency = if *datatype.to_logical_type() == DataType::Boolean {
-                quoted_iter_transparency
-            } else {
-                quote!(.map(|opt| opt.copied()) #quoted_iter_transparency)
-            };
 
             let quoted_downcast = {
                 let cast_as = format!("{:?}", datatype.to_logical_type()).replace("DataType::", "");
@@ -500,7 +551,7 @@ fn quote_arrow_field_deserializer(
 
         DataType::Utf8 => {
             let quoted_downcast = {
-                let cast_as = quote!(arrow2::array::Utf8Array<i32>);
+                let cast_as = quote!(StringArray);
                 quote_array_downcast(obj_field_fqname, data_src, cast_as, quoted_datatype)
             };
 
@@ -508,7 +559,7 @@ fn quote_arrow_field_deserializer(
                 objects,
                 datatype,
                 IteratorKind::ResultOptionValue,
-                quote!(::re_types_core::ArrowString).into(),
+                quote!(::re_types_core::ArrowString::from).into(),
             );
 
             let data_src_buf = format_ident!("{data_src}_buf");
@@ -518,29 +569,28 @@ fn quote_arrow_field_deserializer(
                 let #data_src_buf = #data_src.values();
 
                 let offsets = #data_src.offsets();
-                arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                    offsets.iter().zip(offsets.lengths()),
-                    #data_src.validity(),
+                ZipValidity::new_with_validity(
+                    offsets.windows(2),
+                    #data_src.nulls(),
                 )
-                .map(|elem| elem.map(|(start, len)| {
+                .map(|elem| elem.map(|window| {
                         // NOTE: Do _not_ use `Buffer::sliced`, it panics on malformed inputs.
 
-                        let start = *start as usize;
-                        let end = start + len;
+                        let start = window[0] as usize;
+                        let end = window[1] as usize;
+                        let len = end - start;
 
                         // NOTE: It is absolutely crucial we explicitly handle the
                         // boundchecks manually first, otherwise rustc completely chokes
                         // when slicing the data (as in: a 100x perf drop)!
-                        if end > #data_src_buf.len() {
+                        if #data_src_buf.len() < end {
                             // error context is appended below during final collection
                             return Err(DeserializationError::offset_slice_oob(
                                 (start, end), #data_src_buf.len(),
                             ));
                         }
-                        // Safety: all checked above.
-                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                        // NOTE: The `clone` is a `Buffer::clone`, which is just a refcount bump.
-                        let data = unsafe { #data_src_buf.clone().sliced_unchecked(start, len) };
+                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)] // TODO(apache/arrow-rs#6900): slice_with_length_unchecked unsafe when https://github.com/apache/arrow-rs/pull/6901 is merged and released
+                        let data = #data_src_buf.slice_with_length(start, len);
 
                         Ok(data)
                     }).transpose()
@@ -566,7 +616,7 @@ fn quote_arrow_field_deserializer(
             );
 
             let quoted_downcast = {
-                let cast_as = quote!(arrow2::array::FixedSizeListArray);
+                let cast_as = quote!(arrow::array::FixedSizeListArray);
                 quote_array_downcast(obj_field_fqname, data_src, cast_as, quoted_datatype)
             };
 
@@ -596,7 +646,7 @@ fn quote_arrow_field_deserializer(
                         #quoted_inner.collect::<Vec<_>>()
                     };
 
-                    arrow2::bitmap::utils::ZipValidity::new_with_validity(offsets, #data_src.validity())
+                    ZipValidity::new_with_validity(offsets, #data_src.nulls())
                         .map(|elem| elem.map(|(start, end): (usize, usize)| {
                                 // NOTE: Do _not_ use `Buffer::sliced`, it panics on malformed inputs.
 
@@ -607,7 +657,7 @@ fn quote_arrow_field_deserializer(
                                 // NOTE: It is absolutely crucial we explicitly handle the
                                 // boundchecks manually first, otherwise rustc completely chokes
                                 // when slicing the data (as in: a 100x perf drop)!
-                                if end > #data_src_inner.len() {
+                                if #data_src_inner.len() < end {
                                     // error context is appended below during final collection
                                     return Err(DeserializationError::offset_slice_oob(
                                         (start, end), #data_src_inner.len(),
@@ -680,7 +730,7 @@ fn quote_arrow_field_deserializer(
             );
 
             let quoted_downcast = {
-                let cast_as = quote!(arrow2::array::ListArray<i32>);
+                let cast_as = quote!(arrow::array::ListArray);
                 quote_array_downcast(obj_field_fqname, data_src, cast_as, quoted_datatype)
             };
             let quoted_collect_inner = match inner_repr {
@@ -691,8 +741,8 @@ fn quote_arrow_field_deserializer(
             let quoted_inner_data_range = match inner_repr {
                 InnerRepr::BufferT => {
                     quote! {
-                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                        let data = unsafe { #data_src_inner.clone().sliced_unchecked(start,  end - start) };
+                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)] // TODO(apache/arrow-rs#6900): unsafe slice_unchecked when https://github.com/apache/arrow-rs/pull/6901 is merged and released
+                        let data = #data_src_inner.clone().slice(start,  end - start);
                         let data = ::re_types_core::ArrowBuffer::from(data);
                     }
                 }
@@ -747,20 +797,20 @@ fn quote_arrow_field_deserializer(
                     };
 
                     let offsets = #data_src.offsets();
-                    arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                        offsets.iter().zip(offsets.lengths()),
-                        #data_src.validity(),
+                    ZipValidity::new_with_validity(
+                        offsets.windows(2),
+                        #data_src.nulls(),
                     )
-                    .map(|elem| elem.map(|(start, len)| {
+                    .map(|elem| elem.map(|window| {
                             // NOTE: Do _not_ use `Buffer::sliced`, it panics on malformed inputs.
 
-                            let start = *start as usize;
-                            let end = start + len;
+                            let start = window[0] as usize;
+                            let end = window[1] as usize;
 
                             // NOTE: It is absolutely crucial we explicitly handle the
                             // boundchecks manually first, otherwise rustc completely chokes
                             // when slicing the data (as in: a 100x perf drop)!
-                            if end  > #data_src_inner.len() {
+                            if #data_src_inner.len() < end {
                                 // error context is appended below during final collection
                                 return Err(DeserializationError::offset_slice_oob(
                                     (start, end), #data_src_inner.len(),
@@ -862,7 +912,7 @@ fn quote_iterator_transparency(
     } else {
         None
     };
-    let inner_is_arrow_transparent = inner_obj.map_or(false, |obj| obj.datatype.is_none());
+    let inner_is_arrow_transparent = inner_obj.is_some_and(|obj| obj.datatype.is_none());
 
     if inner_is_arrow_transparent {
         let inner_obj = inner_obj.as_ref().unwrap();
@@ -928,7 +978,7 @@ fn quote_iterator_transparency(
 ///
 /// There is a 1:1 relationship between `quote_arrow_deserializer_buffer_slice` and `Loggable::from_arrow`:
 /// ```ignore
-/// fn from_arrow(data: &dyn ::arrow2::array::Array) -> DeserializationResult<Vec<Self>> {
+/// fn from_arrow(data: &dyn ::arrow::array::Array) -> DeserializationResult<Vec<Self>> {
 ///     Ok(#quoted_deserializer_)
 /// }
 /// ```
@@ -939,7 +989,7 @@ pub fn quote_arrow_deserializer_buffer_slice(
     objects: &Objects,
     obj: &Object,
 ) -> TokenStream {
-    // Runtime identifier of the variable holding the Arrow payload (`&dyn ::arrow2::array::Array`).
+    // Runtime identifier of the variable holding the Arrow payload (`&dyn ::arrow::array::Array`).
     let data_src = format_ident!("arrow_data");
 
     let datatype = &arrow_registry.get(&obj.fqname);
@@ -1011,7 +1061,7 @@ fn quote_arrow_field_deserializer_buffer_slice(
     datatype: &DataType,
     is_nullable: bool,
     obj_field_fqname: &str,
-    data_src: &proc_macro2::Ident, // &dyn ::arrow2::array::Array
+    data_src: &proc_macro2::Ident, // &dyn ::arrow::array::Array
 ) -> TokenStream {
     _ = is_nullable; // not yet used, will be needed very soon
 
@@ -1041,7 +1091,7 @@ fn quote_arrow_field_deserializer_buffer_slice(
             quote! {
                 #quoted_downcast?
                 .values()
-                .as_slice()
+                .as_ref()
             }
         }
 
@@ -1055,7 +1105,7 @@ fn quote_arrow_field_deserializer_buffer_slice(
             );
 
             let quoted_downcast = {
-                let cast_as = quote!(arrow2::array::FixedSizeListArray);
+                let cast_as = quote!(arrow::array::FixedSizeListArray);
                 quote_array_downcast(
                     obj_field_fqname,
                     data_src,

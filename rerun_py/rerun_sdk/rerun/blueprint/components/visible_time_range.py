@@ -8,10 +8,11 @@ from __future__ import annotations
 from ... import datatypes
 from ..._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["VisibleTimeRange", "VisibleTimeRangeBatch", "VisibleTimeRangeType"]
+__all__ = ["VisibleTimeRange", "VisibleTimeRangeBatch"]
 
 
 class VisibleTimeRange(datatypes.VisibleTimeRange, ComponentMixin):
@@ -28,12 +29,8 @@ class VisibleTimeRange(datatypes.VisibleTimeRange, ComponentMixin):
     pass
 
 
-class VisibleTimeRangeType(datatypes.VisibleTimeRangeType):
-    _TYPE_NAME: str = "rerun.blueprint.components.VisibleTimeRange"
-
-
 class VisibleTimeRangeBatch(datatypes.VisibleTimeRangeBatch, ComponentBatchMixin):
-    _ARROW_TYPE = VisibleTimeRangeType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.blueprint.components.VisibleTimeRange")
 
 
 # This is patched in late to avoid circular dependencies.

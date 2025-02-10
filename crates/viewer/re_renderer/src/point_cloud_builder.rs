@@ -68,14 +68,18 @@ impl<'ctx> PointCloudBuilder<'ctx> {
     pub fn batch(&mut self, label: impl Into<DebugLabel>) -> PointCloudBatchBuilder<'_, 'ctx> {
         self.batches.push(PointCloudBatchInfo {
             label: label.into(),
-            world_from_obj: glam::Affine3A::IDENTITY,
-            flags: PointCloudBatchFlags::FLAG_ENABLE_SHADING,
-            point_count: 0,
-            overall_outline_mask_ids: OutlineMaskPreference::NONE,
-            additional_outline_mask_ids_vertex_ranges: Vec::new(),
-            picking_object_id: Default::default(),
-            depth_offset: 0,
+            ..PointCloudBatchInfo::default()
         });
+
+        PointCloudBatchBuilder(self)
+    }
+
+    #[inline]
+    pub fn batch_with_info(
+        &mut self,
+        info: PointCloudBatchInfo,
+    ) -> PointCloudBatchBuilder<'_, 'ctx> {
+        self.batches.push(info);
 
         PointCloudBatchBuilder(self)
     }
@@ -88,7 +92,7 @@ impl<'ctx> PointCloudBuilder<'ctx> {
 
 pub struct PointCloudBatchBuilder<'a, 'ctx>(&'a mut PointCloudBuilder<'ctx>);
 
-impl<'a, 'ctx> Drop for PointCloudBatchBuilder<'a, 'ctx> {
+impl Drop for PointCloudBatchBuilder<'_, '_> {
     fn drop(&mut self) {
         // Remove batch again if it wasn't actually used.
         if self.0.batches.last().unwrap().point_count == 0 {
@@ -97,7 +101,7 @@ impl<'a, 'ctx> Drop for PointCloudBatchBuilder<'a, 'ctx> {
     }
 }
 
-impl<'a, 'ctx> PointCloudBatchBuilder<'a, 'ctx> {
+impl PointCloudBatchBuilder<'_, '_> {
     #[inline]
     fn batch_mut(&mut self) -> &mut PointCloudBatchInfo {
         self.0

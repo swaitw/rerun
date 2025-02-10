@@ -24,6 +24,7 @@ default = []
 
 
 [dependencies]
+re_arrow_util.workspace = true
 re_build_info.workspace = true
 re_chunk.workspace = true
 re_log_encoding = { workspace = true, features = ["decoder"] }
@@ -31,16 +32,31 @@ re_log_types.workspace = true
 re_log.workspace = true
 re_smart_channel.workspace = true
 re_tracing.workspace = true
-re_types = { workspace = true, features = ["image"] }
+re_types = { workspace = true, features = ["image", "video"] }
 
 ahash.workspace = true
 anyhow.workspace = true
+arrow.workspace = true
+crossbeam.workspace = true
 image.workspace = true
+itertools.workspace = true
+notify.workspace = true
 once_cell.workspace = true
 parking_lot.workspace = true
 rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 walkdir.workspace = true
+
+[target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]
+parquet = { workspace = true, features = ["arrow", "snap"] }
+re_crash_handler.workspace = true
+
+[dev-dependencies]
+re_log_encoding = { workspace = true, features = ["decoder", "encoder"] }
+tempfile.workspace = true
 
 [build-dependencies]
 re_build_tools.workspace = true

@@ -12,132 +12,278 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct AffixFuzzer3 {
-    pub fuzz2001: Option<crate::testing::components::AffixFuzzer1>,
-    pub fuzz2002: Option<crate::testing::components::AffixFuzzer2>,
-    pub fuzz2003: Option<crate::testing::components::AffixFuzzer3>,
-    pub fuzz2004: Option<crate::testing::components::AffixFuzzer4>,
-    pub fuzz2005: Option<crate::testing::components::AffixFuzzer5>,
-    pub fuzz2006: Option<crate::testing::components::AffixFuzzer6>,
-    pub fuzz2007: Option<crate::testing::components::AffixFuzzer7>,
-    pub fuzz2008: Option<crate::testing::components::AffixFuzzer8>,
-    pub fuzz2009: Option<crate::testing::components::AffixFuzzer9>,
-    pub fuzz2010: Option<crate::testing::components::AffixFuzzer10>,
-    pub fuzz2011: Option<crate::testing::components::AffixFuzzer11>,
-    pub fuzz2012: Option<crate::testing::components::AffixFuzzer12>,
-    pub fuzz2013: Option<crate::testing::components::AffixFuzzer13>,
-    pub fuzz2014: Option<crate::testing::components::AffixFuzzer14>,
-    pub fuzz2015: Option<crate::testing::components::AffixFuzzer15>,
-    pub fuzz2016: Option<crate::testing::components::AffixFuzzer16>,
-    pub fuzz2017: Option<crate::testing::components::AffixFuzzer17>,
-    pub fuzz2018: Option<crate::testing::components::AffixFuzzer18>,
+    pub fuzz2001: Option<SerializedComponentBatch>,
+    pub fuzz2002: Option<SerializedComponentBatch>,
+    pub fuzz2003: Option<SerializedComponentBatch>,
+    pub fuzz2004: Option<SerializedComponentBatch>,
+    pub fuzz2005: Option<SerializedComponentBatch>,
+    pub fuzz2006: Option<SerializedComponentBatch>,
+    pub fuzz2007: Option<SerializedComponentBatch>,
+    pub fuzz2008: Option<SerializedComponentBatch>,
+    pub fuzz2009: Option<SerializedComponentBatch>,
+    pub fuzz2010: Option<SerializedComponentBatch>,
+    pub fuzz2011: Option<SerializedComponentBatch>,
+    pub fuzz2012: Option<SerializedComponentBatch>,
+    pub fuzz2013: Option<SerializedComponentBatch>,
+    pub fuzz2014: Option<SerializedComponentBatch>,
+    pub fuzz2015: Option<SerializedComponentBatch>,
+    pub fuzz2016: Option<SerializedComponentBatch>,
+    pub fuzz2017: Option<SerializedComponentBatch>,
+    pub fuzz2018: Option<SerializedComponentBatch>,
 }
 
-impl ::re_types_core::SizeBytes for AffixFuzzer3 {
+impl AffixFuzzer3 {
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2001`].
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.fuzz2001.heap_size_bytes()
-            + self.fuzz2002.heap_size_bytes()
-            + self.fuzz2003.heap_size_bytes()
-            + self.fuzz2004.heap_size_bytes()
-            + self.fuzz2005.heap_size_bytes()
-            + self.fuzz2006.heap_size_bytes()
-            + self.fuzz2007.heap_size_bytes()
-            + self.fuzz2008.heap_size_bytes()
-            + self.fuzz2009.heap_size_bytes()
-            + self.fuzz2010.heap_size_bytes()
-            + self.fuzz2011.heap_size_bytes()
-            + self.fuzz2012.heap_size_bytes()
-            + self.fuzz2013.heap_size_bytes()
-            + self.fuzz2014.heap_size_bytes()
-            + self.fuzz2015.heap_size_bytes()
-            + self.fuzz2016.heap_size_bytes()
-            + self.fuzz2017.heap_size_bytes()
-            + self.fuzz2018.heap_size_bytes()
+    pub fn descriptor_fuzz2001() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer1".into(),
+            archetype_field_name: Some("fuzz2001".into()),
+        }
     }
 
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2002`].
     #[inline]
-    fn is_pod() -> bool {
-        <Option<crate::testing::components::AffixFuzzer1>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer2>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer3>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer4>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer5>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer6>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer7>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer8>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer9>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer10>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer11>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer12>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer13>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer14>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer15>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer16>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer17>>::is_pod()
-            && <Option<crate::testing::components::AffixFuzzer18>>::is_pod()
+    pub fn descriptor_fuzz2002() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer2".into(),
+            archetype_field_name: Some("fuzz2002".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2003`].
+    #[inline]
+    pub fn descriptor_fuzz2003() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer3".into(),
+            archetype_field_name: Some("fuzz2003".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2004`].
+    #[inline]
+    pub fn descriptor_fuzz2004() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer4".into(),
+            archetype_field_name: Some("fuzz2004".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2005`].
+    #[inline]
+    pub fn descriptor_fuzz2005() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer5".into(),
+            archetype_field_name: Some("fuzz2005".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2006`].
+    #[inline]
+    pub fn descriptor_fuzz2006() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer6".into(),
+            archetype_field_name: Some("fuzz2006".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2007`].
+    #[inline]
+    pub fn descriptor_fuzz2007() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer7".into(),
+            archetype_field_name: Some("fuzz2007".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2008`].
+    #[inline]
+    pub fn descriptor_fuzz2008() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer8".into(),
+            archetype_field_name: Some("fuzz2008".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2009`].
+    #[inline]
+    pub fn descriptor_fuzz2009() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer9".into(),
+            archetype_field_name: Some("fuzz2009".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2010`].
+    #[inline]
+    pub fn descriptor_fuzz2010() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer10".into(),
+            archetype_field_name: Some("fuzz2010".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2011`].
+    #[inline]
+    pub fn descriptor_fuzz2011() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer11".into(),
+            archetype_field_name: Some("fuzz2011".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2012`].
+    #[inline]
+    pub fn descriptor_fuzz2012() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer12".into(),
+            archetype_field_name: Some("fuzz2012".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2013`].
+    #[inline]
+    pub fn descriptor_fuzz2013() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer13".into(),
+            archetype_field_name: Some("fuzz2013".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2014`].
+    #[inline]
+    pub fn descriptor_fuzz2014() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer14".into(),
+            archetype_field_name: Some("fuzz2014".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2015`].
+    #[inline]
+    pub fn descriptor_fuzz2015() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer15".into(),
+            archetype_field_name: Some("fuzz2015".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2016`].
+    #[inline]
+    pub fn descriptor_fuzz2016() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer16".into(),
+            archetype_field_name: Some("fuzz2016".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2017`].
+    #[inline]
+    pub fn descriptor_fuzz2017() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer17".into(),
+            archetype_field_name: Some("fuzz2017".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::fuzz2018`].
+    #[inline]
+    pub fn descriptor_fuzz2018() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer18".into(),
+            archetype_field_name: Some("fuzz2018".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for the associated indicator component.
+    #[inline]
+    pub fn descriptor_indicator() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.testing.archetypes.AffixFuzzer3".into()),
+            component_name: "rerun.testing.components.AffixFuzzer3Indicator".into(),
+            archetype_field_name: None,
+        }
     }
 }
 
-static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 0usize]> =
+static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 0usize]> =
     once_cell::sync::Lazy::new(|| []);
 
-static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.testing.components.AffixFuzzer3Indicator".into()]);
+static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [AffixFuzzer3::descriptor_indicator()]);
 
-static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 18usize]> =
+static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 18usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.testing.components.AffixFuzzer1".into(),
-            "rerun.testing.components.AffixFuzzer2".into(),
-            "rerun.testing.components.AffixFuzzer3".into(),
-            "rerun.testing.components.AffixFuzzer4".into(),
-            "rerun.testing.components.AffixFuzzer5".into(),
-            "rerun.testing.components.AffixFuzzer6".into(),
-            "rerun.testing.components.AffixFuzzer7".into(),
-            "rerun.testing.components.AffixFuzzer8".into(),
-            "rerun.testing.components.AffixFuzzer9".into(),
-            "rerun.testing.components.AffixFuzzer10".into(),
-            "rerun.testing.components.AffixFuzzer11".into(),
-            "rerun.testing.components.AffixFuzzer12".into(),
-            "rerun.testing.components.AffixFuzzer13".into(),
-            "rerun.testing.components.AffixFuzzer14".into(),
-            "rerun.testing.components.AffixFuzzer15".into(),
-            "rerun.testing.components.AffixFuzzer16".into(),
-            "rerun.testing.components.AffixFuzzer17".into(),
-            "rerun.testing.components.AffixFuzzer18".into(),
+            AffixFuzzer3::descriptor_fuzz2001(),
+            AffixFuzzer3::descriptor_fuzz2002(),
+            AffixFuzzer3::descriptor_fuzz2003(),
+            AffixFuzzer3::descriptor_fuzz2004(),
+            AffixFuzzer3::descriptor_fuzz2005(),
+            AffixFuzzer3::descriptor_fuzz2006(),
+            AffixFuzzer3::descriptor_fuzz2007(),
+            AffixFuzzer3::descriptor_fuzz2008(),
+            AffixFuzzer3::descriptor_fuzz2009(),
+            AffixFuzzer3::descriptor_fuzz2010(),
+            AffixFuzzer3::descriptor_fuzz2011(),
+            AffixFuzzer3::descriptor_fuzz2012(),
+            AffixFuzzer3::descriptor_fuzz2013(),
+            AffixFuzzer3::descriptor_fuzz2014(),
+            AffixFuzzer3::descriptor_fuzz2015(),
+            AffixFuzzer3::descriptor_fuzz2016(),
+            AffixFuzzer3::descriptor_fuzz2017(),
+            AffixFuzzer3::descriptor_fuzz2018(),
         ]
     });
 
-static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 19usize]> =
+static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 19usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.testing.components.AffixFuzzer3Indicator".into(),
-            "rerun.testing.components.AffixFuzzer1".into(),
-            "rerun.testing.components.AffixFuzzer2".into(),
-            "rerun.testing.components.AffixFuzzer3".into(),
-            "rerun.testing.components.AffixFuzzer4".into(),
-            "rerun.testing.components.AffixFuzzer5".into(),
-            "rerun.testing.components.AffixFuzzer6".into(),
-            "rerun.testing.components.AffixFuzzer7".into(),
-            "rerun.testing.components.AffixFuzzer8".into(),
-            "rerun.testing.components.AffixFuzzer9".into(),
-            "rerun.testing.components.AffixFuzzer10".into(),
-            "rerun.testing.components.AffixFuzzer11".into(),
-            "rerun.testing.components.AffixFuzzer12".into(),
-            "rerun.testing.components.AffixFuzzer13".into(),
-            "rerun.testing.components.AffixFuzzer14".into(),
-            "rerun.testing.components.AffixFuzzer15".into(),
-            "rerun.testing.components.AffixFuzzer16".into(),
-            "rerun.testing.components.AffixFuzzer17".into(),
-            "rerun.testing.components.AffixFuzzer18".into(),
+            AffixFuzzer3::descriptor_indicator(),
+            AffixFuzzer3::descriptor_fuzz2001(),
+            AffixFuzzer3::descriptor_fuzz2002(),
+            AffixFuzzer3::descriptor_fuzz2003(),
+            AffixFuzzer3::descriptor_fuzz2004(),
+            AffixFuzzer3::descriptor_fuzz2005(),
+            AffixFuzzer3::descriptor_fuzz2006(),
+            AffixFuzzer3::descriptor_fuzz2007(),
+            AffixFuzzer3::descriptor_fuzz2008(),
+            AffixFuzzer3::descriptor_fuzz2009(),
+            AffixFuzzer3::descriptor_fuzz2010(),
+            AffixFuzzer3::descriptor_fuzz2011(),
+            AffixFuzzer3::descriptor_fuzz2012(),
+            AffixFuzzer3::descriptor_fuzz2013(),
+            AffixFuzzer3::descriptor_fuzz2014(),
+            AffixFuzzer3::descriptor_fuzz2015(),
+            AffixFuzzer3::descriptor_fuzz2016(),
+            AffixFuzzer3::descriptor_fuzz2017(),
+            AffixFuzzer3::descriptor_fuzz2018(),
         ]
     });
 
@@ -163,221 +309,92 @@ impl ::re_types_core::Archetype for AffixFuzzer3 {
     }
 
     #[inline]
-    fn indicator() -> MaybeOwnedComponentBatch<'static> {
-        static INDICATOR: AffixFuzzer3Indicator = AffixFuzzer3Indicator::DEFAULT;
-        MaybeOwnedComponentBatch::Ref(&INDICATOR)
+    fn indicator() -> SerializedComponentBatch {
+        #[allow(clippy::unwrap_used)]
+        AffixFuzzer3Indicator::DEFAULT.serialized().unwrap()
     }
 
     #[inline]
-    fn required_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn required_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         REQUIRED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         RECOMMENDED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         OPTIONAL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn all_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn all_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         ALL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
     fn from_arrow_components(
-        arrow_data: impl IntoIterator<Item = (ComponentName, Box<dyn arrow2::array::Array>)>,
+        arrow_data: impl IntoIterator<Item = (ComponentDescriptor, arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self> {
         re_tracing::profile_function!();
         use ::re_types_core::{Loggable as _, ResultExt as _};
-        let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data
-            .into_iter()
-            .map(|(name, array)| (name.full_name(), array))
-            .collect();
-        let fuzz2001 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer1") {
-                <crate::testing::components::AffixFuzzer1>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2001")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2002 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer2") {
-                <crate::testing::components::AffixFuzzer2>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2002")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2003 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer3") {
-                <crate::testing::components::AffixFuzzer3>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2003")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2004 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer4") {
-                <crate::testing::components::AffixFuzzer4>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2004")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2005 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer5") {
-                <crate::testing::components::AffixFuzzer5>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2005")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2006 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer6") {
-                <crate::testing::components::AffixFuzzer6>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2006")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2007 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer7") {
-                <crate::testing::components::AffixFuzzer7>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2007")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2008 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer8") {
-                <crate::testing::components::AffixFuzzer8>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2008")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2009 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer9") {
-                <crate::testing::components::AffixFuzzer9>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2009")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2010 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer10") {
-                <crate::testing::components::AffixFuzzer10>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2010")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2011 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer11") {
-                <crate::testing::components::AffixFuzzer11>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2011")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2012 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer12") {
-                <crate::testing::components::AffixFuzzer12>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2012")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2013 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer13") {
-                <crate::testing::components::AffixFuzzer13>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2013")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2014 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer14") {
-                <crate::testing::components::AffixFuzzer14>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2014")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2015 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer15") {
-                <crate::testing::components::AffixFuzzer15>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2015")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2016 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer16") {
-                <crate::testing::components::AffixFuzzer16>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2016")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2017 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer17") {
-                <crate::testing::components::AffixFuzzer17>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2017")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let fuzz2018 =
-            if let Some(array) = arrays_by_name.get("rerun.testing.components.AffixFuzzer18") {
-                <crate::testing::components::AffixFuzzer18>::from_arrow_opt(&**array)
-                    .with_context("rerun.testing.archetypes.AffixFuzzer3#fuzz2018")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
+        let arrays_by_descr: ::nohash_hasher::IntMap<_, _> = arrow_data.into_iter().collect();
+        let fuzz2001 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2001())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2001()));
+        let fuzz2002 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2002())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2002()));
+        let fuzz2003 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2003())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2003()));
+        let fuzz2004 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2004())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2004()));
+        let fuzz2005 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2005())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2005()));
+        let fuzz2006 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2006())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2006()));
+        let fuzz2007 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2007())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2007()));
+        let fuzz2008 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2008())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2008()));
+        let fuzz2009 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2009())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2009()));
+        let fuzz2010 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2010())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2010()));
+        let fuzz2011 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2011())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2011()));
+        let fuzz2012 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2012())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2012()));
+        let fuzz2013 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2013())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2013()));
+        let fuzz2014 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2014())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2014()));
+        let fuzz2015 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2015())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2015()));
+        let fuzz2016 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2016())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2016()));
+        let fuzz2017 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2017())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2017()));
+        let fuzz2018 = arrays_by_descr
+            .get(&Self::descriptor_fuzz2018())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_fuzz2018()));
         Ok(Self {
             fuzz2001,
             fuzz2002,
@@ -402,71 +419,37 @@ impl ::re_types_core::Archetype for AffixFuzzer3 {
 }
 
 impl ::re_types_core::AsComponents for AffixFuzzer3 {
-    fn as_component_batches(&self) -> Vec<MaybeOwnedComponentBatch<'_>> {
-        re_tracing::profile_function!();
+    #[inline]
+    fn as_serialized_batches(&self) -> Vec<SerializedComponentBatch> {
         use ::re_types_core::Archetype as _;
         [
             Some(Self::indicator()),
-            self.fuzz2001
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2002
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2003
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2004
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2005
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2006
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2007
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2008
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2009
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2010
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2011
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2012
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2013
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2014
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2015
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2016
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2017
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.fuzz2018
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
+            self.fuzz2001.clone(),
+            self.fuzz2002.clone(),
+            self.fuzz2003.clone(),
+            self.fuzz2004.clone(),
+            self.fuzz2005.clone(),
+            self.fuzz2006.clone(),
+            self.fuzz2007.clone(),
+            self.fuzz2008.clone(),
+            self.fuzz2009.clone(),
+            self.fuzz2010.clone(),
+            self.fuzz2011.clone(),
+            self.fuzz2012.clone(),
+            self.fuzz2013.clone(),
+            self.fuzz2014.clone(),
+            self.fuzz2015.clone(),
+            self.fuzz2016.clone(),
+            self.fuzz2017.clone(),
+            self.fuzz2018.clone(),
         ]
         .into_iter()
         .flatten()
         .collect()
     }
 }
+
+impl ::re_types_core::ArchetypeReflectionMarker for AffixFuzzer3 {}
 
 impl AffixFuzzer3 {
     /// Create a new `AffixFuzzer3`.
@@ -494,12 +477,242 @@ impl AffixFuzzer3 {
         }
     }
 
+    /// Update only some specific fields of a `AffixFuzzer3`.
+    #[inline]
+    pub fn update_fields() -> Self {
+        Self::default()
+    }
+
+    /// Clear all the fields of a `AffixFuzzer3`.
+    #[inline]
+    pub fn clear_fields() -> Self {
+        use ::re_types_core::Loggable as _;
+        Self {
+            fuzz2001: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer1::arrow_empty(),
+                Self::descriptor_fuzz2001(),
+            )),
+            fuzz2002: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer2::arrow_empty(),
+                Self::descriptor_fuzz2002(),
+            )),
+            fuzz2003: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer3::arrow_empty(),
+                Self::descriptor_fuzz2003(),
+            )),
+            fuzz2004: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer4::arrow_empty(),
+                Self::descriptor_fuzz2004(),
+            )),
+            fuzz2005: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer5::arrow_empty(),
+                Self::descriptor_fuzz2005(),
+            )),
+            fuzz2006: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer6::arrow_empty(),
+                Self::descriptor_fuzz2006(),
+            )),
+            fuzz2007: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer7::arrow_empty(),
+                Self::descriptor_fuzz2007(),
+            )),
+            fuzz2008: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer8::arrow_empty(),
+                Self::descriptor_fuzz2008(),
+            )),
+            fuzz2009: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer9::arrow_empty(),
+                Self::descriptor_fuzz2009(),
+            )),
+            fuzz2010: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer10::arrow_empty(),
+                Self::descriptor_fuzz2010(),
+            )),
+            fuzz2011: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer11::arrow_empty(),
+                Self::descriptor_fuzz2011(),
+            )),
+            fuzz2012: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer12::arrow_empty(),
+                Self::descriptor_fuzz2012(),
+            )),
+            fuzz2013: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer13::arrow_empty(),
+                Self::descriptor_fuzz2013(),
+            )),
+            fuzz2014: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer14::arrow_empty(),
+                Self::descriptor_fuzz2014(),
+            )),
+            fuzz2015: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer15::arrow_empty(),
+                Self::descriptor_fuzz2015(),
+            )),
+            fuzz2016: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer16::arrow_empty(),
+                Self::descriptor_fuzz2016(),
+            )),
+            fuzz2017: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer17::arrow_empty(),
+                Self::descriptor_fuzz2017(),
+            )),
+            fuzz2018: Some(SerializedComponentBatch::new(
+                crate::testing::components::AffixFuzzer18::arrow_empty(),
+                Self::descriptor_fuzz2018(),
+            )),
+        }
+    }
+
+    /// Partitions the component data into multiple sub-batches.
+    ///
+    /// Specifically, this transforms the existing [`SerializedComponentBatch`]es data into [`SerializedComponentColumn`]s
+    /// instead, via [`SerializedComponentBatch::partitioned`].
+    ///
+    /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+    ///
+    /// The specified `lengths` must sum to the total length of the component batch.
+    ///
+    /// [`SerializedComponentColumn`]: [::re_types_core::SerializedComponentColumn]
+    #[inline]
+    pub fn columns<I>(
+        self,
+        _lengths: I,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>>
+    where
+        I: IntoIterator<Item = usize> + Clone,
+    {
+        let columns = [
+            self.fuzz2001
+                .map(|fuzz2001| fuzz2001.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2002
+                .map(|fuzz2002| fuzz2002.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2003
+                .map(|fuzz2003| fuzz2003.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2004
+                .map(|fuzz2004| fuzz2004.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2005
+                .map(|fuzz2005| fuzz2005.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2006
+                .map(|fuzz2006| fuzz2006.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2007
+                .map(|fuzz2007| fuzz2007.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2008
+                .map(|fuzz2008| fuzz2008.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2009
+                .map(|fuzz2009| fuzz2009.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2010
+                .map(|fuzz2010| fuzz2010.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2011
+                .map(|fuzz2011| fuzz2011.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2012
+                .map(|fuzz2012| fuzz2012.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2013
+                .map(|fuzz2013| fuzz2013.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2014
+                .map(|fuzz2014| fuzz2014.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2015
+                .map(|fuzz2015| fuzz2015.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2016
+                .map(|fuzz2016| fuzz2016.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2017
+                .map(|fuzz2017| fuzz2017.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.fuzz2018
+                .map(|fuzz2018| fuzz2018.partitioned(_lengths.clone()))
+                .transpose()?,
+        ];
+        Ok(columns
+            .into_iter()
+            .flatten()
+            .chain([::re_types_core::indicator_column::<Self>(
+                _lengths.into_iter().count(),
+            )?]))
+    }
+
+    /// Helper to partition the component data into unit-length sub-batches.
+    ///
+    /// This is semantically similar to calling [`Self::columns`] with `std::iter::take(1).repeat(n)`,
+    /// where `n` is automatically guessed.
+    #[inline]
+    pub fn columns_of_unit_batches(
+        self,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>> {
+        let len_fuzz2001 = self.fuzz2001.as_ref().map(|b| b.array.len());
+        let len_fuzz2002 = self.fuzz2002.as_ref().map(|b| b.array.len());
+        let len_fuzz2003 = self.fuzz2003.as_ref().map(|b| b.array.len());
+        let len_fuzz2004 = self.fuzz2004.as_ref().map(|b| b.array.len());
+        let len_fuzz2005 = self.fuzz2005.as_ref().map(|b| b.array.len());
+        let len_fuzz2006 = self.fuzz2006.as_ref().map(|b| b.array.len());
+        let len_fuzz2007 = self.fuzz2007.as_ref().map(|b| b.array.len());
+        let len_fuzz2008 = self.fuzz2008.as_ref().map(|b| b.array.len());
+        let len_fuzz2009 = self.fuzz2009.as_ref().map(|b| b.array.len());
+        let len_fuzz2010 = self.fuzz2010.as_ref().map(|b| b.array.len());
+        let len_fuzz2011 = self.fuzz2011.as_ref().map(|b| b.array.len());
+        let len_fuzz2012 = self.fuzz2012.as_ref().map(|b| b.array.len());
+        let len_fuzz2013 = self.fuzz2013.as_ref().map(|b| b.array.len());
+        let len_fuzz2014 = self.fuzz2014.as_ref().map(|b| b.array.len());
+        let len_fuzz2015 = self.fuzz2015.as_ref().map(|b| b.array.len());
+        let len_fuzz2016 = self.fuzz2016.as_ref().map(|b| b.array.len());
+        let len_fuzz2017 = self.fuzz2017.as_ref().map(|b| b.array.len());
+        let len_fuzz2018 = self.fuzz2018.as_ref().map(|b| b.array.len());
+        let len = None
+            .or(len_fuzz2001)
+            .or(len_fuzz2002)
+            .or(len_fuzz2003)
+            .or(len_fuzz2004)
+            .or(len_fuzz2005)
+            .or(len_fuzz2006)
+            .or(len_fuzz2007)
+            .or(len_fuzz2008)
+            .or(len_fuzz2009)
+            .or(len_fuzz2010)
+            .or(len_fuzz2011)
+            .or(len_fuzz2012)
+            .or(len_fuzz2013)
+            .or(len_fuzz2014)
+            .or(len_fuzz2015)
+            .or(len_fuzz2016)
+            .or(len_fuzz2017)
+            .or(len_fuzz2018)
+            .unwrap_or(0);
+        self.columns(std::iter::repeat(1).take(len))
+    }
+
     #[inline]
     pub fn with_fuzz2001(
         mut self,
         fuzz2001: impl Into<crate::testing::components::AffixFuzzer1>,
     ) -> Self {
-        self.fuzz2001 = Some(fuzz2001.into());
+        self.fuzz2001 = try_serialize_field(Self::descriptor_fuzz2001(), [fuzz2001]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer1`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2001`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2001(
+        mut self,
+        fuzz2001: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer1>>,
+    ) -> Self {
+        self.fuzz2001 = try_serialize_field(Self::descriptor_fuzz2001(), fuzz2001);
         self
     }
 
@@ -508,7 +721,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2002: impl Into<crate::testing::components::AffixFuzzer2>,
     ) -> Self {
-        self.fuzz2002 = Some(fuzz2002.into());
+        self.fuzz2002 = try_serialize_field(Self::descriptor_fuzz2002(), [fuzz2002]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer2`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2002`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2002(
+        mut self,
+        fuzz2002: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer2>>,
+    ) -> Self {
+        self.fuzz2002 = try_serialize_field(Self::descriptor_fuzz2002(), fuzz2002);
         self
     }
 
@@ -517,7 +743,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2003: impl Into<crate::testing::components::AffixFuzzer3>,
     ) -> Self {
-        self.fuzz2003 = Some(fuzz2003.into());
+        self.fuzz2003 = try_serialize_field(Self::descriptor_fuzz2003(), [fuzz2003]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer3`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2003`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2003(
+        mut self,
+        fuzz2003: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer3>>,
+    ) -> Self {
+        self.fuzz2003 = try_serialize_field(Self::descriptor_fuzz2003(), fuzz2003);
         self
     }
 
@@ -526,7 +765,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2004: impl Into<crate::testing::components::AffixFuzzer4>,
     ) -> Self {
-        self.fuzz2004 = Some(fuzz2004.into());
+        self.fuzz2004 = try_serialize_field(Self::descriptor_fuzz2004(), [fuzz2004]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer4`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2004`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2004(
+        mut self,
+        fuzz2004: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer4>>,
+    ) -> Self {
+        self.fuzz2004 = try_serialize_field(Self::descriptor_fuzz2004(), fuzz2004);
         self
     }
 
@@ -535,7 +787,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2005: impl Into<crate::testing::components::AffixFuzzer5>,
     ) -> Self {
-        self.fuzz2005 = Some(fuzz2005.into());
+        self.fuzz2005 = try_serialize_field(Self::descriptor_fuzz2005(), [fuzz2005]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer5`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2005`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2005(
+        mut self,
+        fuzz2005: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer5>>,
+    ) -> Self {
+        self.fuzz2005 = try_serialize_field(Self::descriptor_fuzz2005(), fuzz2005);
         self
     }
 
@@ -544,7 +809,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2006: impl Into<crate::testing::components::AffixFuzzer6>,
     ) -> Self {
-        self.fuzz2006 = Some(fuzz2006.into());
+        self.fuzz2006 = try_serialize_field(Self::descriptor_fuzz2006(), [fuzz2006]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer6`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2006`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2006(
+        mut self,
+        fuzz2006: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer6>>,
+    ) -> Self {
+        self.fuzz2006 = try_serialize_field(Self::descriptor_fuzz2006(), fuzz2006);
         self
     }
 
@@ -553,7 +831,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2007: impl Into<crate::testing::components::AffixFuzzer7>,
     ) -> Self {
-        self.fuzz2007 = Some(fuzz2007.into());
+        self.fuzz2007 = try_serialize_field(Self::descriptor_fuzz2007(), [fuzz2007]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer7`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2007`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2007(
+        mut self,
+        fuzz2007: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer7>>,
+    ) -> Self {
+        self.fuzz2007 = try_serialize_field(Self::descriptor_fuzz2007(), fuzz2007);
         self
     }
 
@@ -562,7 +853,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2008: impl Into<crate::testing::components::AffixFuzzer8>,
     ) -> Self {
-        self.fuzz2008 = Some(fuzz2008.into());
+        self.fuzz2008 = try_serialize_field(Self::descriptor_fuzz2008(), [fuzz2008]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer8`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2008`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2008(
+        mut self,
+        fuzz2008: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer8>>,
+    ) -> Self {
+        self.fuzz2008 = try_serialize_field(Self::descriptor_fuzz2008(), fuzz2008);
         self
     }
 
@@ -571,7 +875,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2009: impl Into<crate::testing::components::AffixFuzzer9>,
     ) -> Self {
-        self.fuzz2009 = Some(fuzz2009.into());
+        self.fuzz2009 = try_serialize_field(Self::descriptor_fuzz2009(), [fuzz2009]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer9`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2009`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2009(
+        mut self,
+        fuzz2009: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer9>>,
+    ) -> Self {
+        self.fuzz2009 = try_serialize_field(Self::descriptor_fuzz2009(), fuzz2009);
         self
     }
 
@@ -580,7 +897,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2010: impl Into<crate::testing::components::AffixFuzzer10>,
     ) -> Self {
-        self.fuzz2010 = Some(fuzz2010.into());
+        self.fuzz2010 = try_serialize_field(Self::descriptor_fuzz2010(), [fuzz2010]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer10`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2010`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2010(
+        mut self,
+        fuzz2010: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer10>>,
+    ) -> Self {
+        self.fuzz2010 = try_serialize_field(Self::descriptor_fuzz2010(), fuzz2010);
         self
     }
 
@@ -589,7 +919,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2011: impl Into<crate::testing::components::AffixFuzzer11>,
     ) -> Self {
-        self.fuzz2011 = Some(fuzz2011.into());
+        self.fuzz2011 = try_serialize_field(Self::descriptor_fuzz2011(), [fuzz2011]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer11`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2011`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2011(
+        mut self,
+        fuzz2011: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer11>>,
+    ) -> Self {
+        self.fuzz2011 = try_serialize_field(Self::descriptor_fuzz2011(), fuzz2011);
         self
     }
 
@@ -598,7 +941,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2012: impl Into<crate::testing::components::AffixFuzzer12>,
     ) -> Self {
-        self.fuzz2012 = Some(fuzz2012.into());
+        self.fuzz2012 = try_serialize_field(Self::descriptor_fuzz2012(), [fuzz2012]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer12`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2012`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2012(
+        mut self,
+        fuzz2012: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer12>>,
+    ) -> Self {
+        self.fuzz2012 = try_serialize_field(Self::descriptor_fuzz2012(), fuzz2012);
         self
     }
 
@@ -607,7 +963,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2013: impl Into<crate::testing::components::AffixFuzzer13>,
     ) -> Self {
-        self.fuzz2013 = Some(fuzz2013.into());
+        self.fuzz2013 = try_serialize_field(Self::descriptor_fuzz2013(), [fuzz2013]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer13`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2013`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2013(
+        mut self,
+        fuzz2013: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer13>>,
+    ) -> Self {
+        self.fuzz2013 = try_serialize_field(Self::descriptor_fuzz2013(), fuzz2013);
         self
     }
 
@@ -616,7 +985,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2014: impl Into<crate::testing::components::AffixFuzzer14>,
     ) -> Self {
-        self.fuzz2014 = Some(fuzz2014.into());
+        self.fuzz2014 = try_serialize_field(Self::descriptor_fuzz2014(), [fuzz2014]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer14`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2014`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2014(
+        mut self,
+        fuzz2014: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer14>>,
+    ) -> Self {
+        self.fuzz2014 = try_serialize_field(Self::descriptor_fuzz2014(), fuzz2014);
         self
     }
 
@@ -625,7 +1007,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2015: impl Into<crate::testing::components::AffixFuzzer15>,
     ) -> Self {
-        self.fuzz2015 = Some(fuzz2015.into());
+        self.fuzz2015 = try_serialize_field(Self::descriptor_fuzz2015(), [fuzz2015]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer15`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2015`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2015(
+        mut self,
+        fuzz2015: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer15>>,
+    ) -> Self {
+        self.fuzz2015 = try_serialize_field(Self::descriptor_fuzz2015(), fuzz2015);
         self
     }
 
@@ -634,7 +1029,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2016: impl Into<crate::testing::components::AffixFuzzer16>,
     ) -> Self {
-        self.fuzz2016 = Some(fuzz2016.into());
+        self.fuzz2016 = try_serialize_field(Self::descriptor_fuzz2016(), [fuzz2016]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer16`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2016`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2016(
+        mut self,
+        fuzz2016: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer16>>,
+    ) -> Self {
+        self.fuzz2016 = try_serialize_field(Self::descriptor_fuzz2016(), fuzz2016);
         self
     }
 
@@ -643,7 +1051,20 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2017: impl Into<crate::testing::components::AffixFuzzer17>,
     ) -> Self {
-        self.fuzz2017 = Some(fuzz2017.into());
+        self.fuzz2017 = try_serialize_field(Self::descriptor_fuzz2017(), [fuzz2017]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer17`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2017`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2017(
+        mut self,
+        fuzz2017: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer17>>,
+    ) -> Self {
+        self.fuzz2017 = try_serialize_field(Self::descriptor_fuzz2017(), fuzz2017);
         self
     }
 
@@ -652,7 +1073,44 @@ impl AffixFuzzer3 {
         mut self,
         fuzz2018: impl Into<crate::testing::components::AffixFuzzer18>,
     ) -> Self {
-        self.fuzz2018 = Some(fuzz2018.into());
+        self.fuzz2018 = try_serialize_field(Self::descriptor_fuzz2018(), [fuzz2018]);
         self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::testing::components::AffixFuzzer18`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_fuzz2018`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_fuzz2018(
+        mut self,
+        fuzz2018: impl IntoIterator<Item = impl Into<crate::testing::components::AffixFuzzer18>>,
+    ) -> Self {
+        self.fuzz2018 = try_serialize_field(Self::descriptor_fuzz2018(), fuzz2018);
+        self
+    }
+}
+
+impl ::re_byte_size::SizeBytes for AffixFuzzer3 {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.fuzz2001.heap_size_bytes()
+            + self.fuzz2002.heap_size_bytes()
+            + self.fuzz2003.heap_size_bytes()
+            + self.fuzz2004.heap_size_bytes()
+            + self.fuzz2005.heap_size_bytes()
+            + self.fuzz2006.heap_size_bytes()
+            + self.fuzz2007.heap_size_bytes()
+            + self.fuzz2008.heap_size_bytes()
+            + self.fuzz2009.heap_size_bytes()
+            + self.fuzz2010.heap_size_bytes()
+            + self.fuzz2011.heap_size_bytes()
+            + self.fuzz2012.heap_size_bytes()
+            + self.fuzz2013.heap_size_bytes()
+            + self.fuzz2014.heap_size_bytes()
+            + self.fuzz2015.heap_size_bytes()
+            + self.fuzz2016.heap_size_bytes()
+            + self.fuzz2017.heap_size_bytes()
+            + self.fuzz2018.heap_size_bytes()
     }
 }

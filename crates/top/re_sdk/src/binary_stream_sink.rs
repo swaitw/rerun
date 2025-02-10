@@ -129,11 +129,11 @@ impl BinaryStreamSink {
 
         // We always compress when writing to a stream
         // TODO(jleibs): Make this configurable
-        let encoding_options = re_log_encoding::EncodingOptions::COMPRESSED;
+        let encoding_options = re_log_encoding::EncodingOptions::MSGPACK_COMPRESSED;
 
         let (tx, rx) = std::sync::mpsc::channel();
 
-        let encoder = re_log_encoding::encoder::Encoder::new(
+        let encoder = re_log_encoding::encoder::DroppableEncoder::new(
             re_build_info::CrateVersion::LOCAL,
             encoding_options,
             storage.inner.clone(),
@@ -167,7 +167,7 @@ impl LogSink for BinaryStreamSink {
 
 /// Spawn the encoder thread that will write log messages to the binary stream.
 fn spawn_and_stream<W: std::io::Write + Send + 'static>(
-    mut encoder: re_log_encoding::encoder::Encoder<W>,
+    mut encoder: re_log_encoding::encoder::DroppableEncoder<W>,
     rx: Receiver<Option<Command>>,
 ) -> Result<std::thread::JoinHandle<()>, BinaryStreamSinkError> {
     std::thread::Builder::new()

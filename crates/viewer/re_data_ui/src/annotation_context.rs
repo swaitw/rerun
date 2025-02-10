@@ -17,6 +17,7 @@ impl crate::EntityDataUi for re_types::components::ClassId {
         ui: &mut egui::Ui,
         ui_layout: UiLayout,
         entity_path: &re_log_types::EntityPath,
+        _row_id: Option<re_chunk_store::RowId>,
         query: &re_chunk_store::LatestAtQuery,
         _db: &re_entity_db::EntityDb,
     ) {
@@ -37,22 +38,17 @@ impl crate::EntityDataUi for re_types::components::ClassId {
             });
 
             let id = self.0;
-            match ui_layout {
-                UiLayout::List => {
-                    if !class.keypoint_connections.is_empty()
-                        || !class.keypoint_annotations.is_empty()
-                    {
-                        response.response.on_hover_ui(|ui| {
-                            class_description_ui(ui, UiLayout::Tooltip, class, id);
-                        });
-                    }
+
+            if ui_layout.is_single_line() {
+                if !class.keypoint_connections.is_empty() || !class.keypoint_annotations.is_empty()
+                {
+                    response.response.on_hover_ui(|ui| {
+                        class_description_ui(ui, UiLayout::Tooltip, class, id);
+                    });
                 }
-                UiLayout::Tooltip
-                | UiLayout::SelectionPanelFull
-                | UiLayout::SelectionPanelLimitHeight => {
-                    ui.separator();
-                    class_description_ui(ui, ui_layout, class, id);
-                }
+            } else {
+                ui.separator();
+                class_description_ui(ui, ui_layout, class, id);
             }
         } else {
             ui_layout.label(ui, format!("{}", self.0));
@@ -67,6 +63,7 @@ impl crate::EntityDataUi for re_types::components::KeypointId {
         ui: &mut egui::Ui,
         ui_layout: UiLayout,
         entity_path: &re_log_types::EntityPath,
+        _row_id: Option<re_chunk_store::RowId>,
         query: &re_chunk_store::LatestAtQuery,
         _db: &re_entity_db::EntityDb,
     ) {
@@ -94,16 +91,14 @@ fn annotation_info(
     query: &re_chunk_store::LatestAtQuery,
     keypoint_id: KeypointId,
 ) -> Option<AnnotationInfo> {
-    // TODO(#5607): what should happen if the promise is still pending?
-
-    // TODO(#6358): this needs to use the index of the keypoint to look up the correct
+    // TODO(#3168): this needs to use the index of the keypoint to look up the correct
     // class_id. For now we use `latest_at_component_quiet` to avoid the warning spam.
-    let class_id = ctx
+    let (_, class_id) = ctx
         .recording()
         .latest_at_component_quiet::<re_types::components::ClassId>(entity_path, query)?;
 
     let annotations = crate::annotations(ctx, query, entity_path);
-    let class = annotations.resolved_class_description(Some(class_id.value));
+    let class = annotations.resolved_class_description(Some(class_id));
     class.keypoint_map?.get(&keypoint_id).cloned()
 }
 
@@ -131,7 +126,7 @@ impl DataUi for AnnotationContext {
                 };
                 ui_layout.label(ui, text);
             }
-            UiLayout::SelectionPanelLimitHeight | UiLayout::SelectionPanelFull => {
+            UiLayout::SelectionPanel => {
                 ui.vertical(|ui| {
                     ui.maybe_collapsing_header(true, "Classes", true, |ui| {
                         let annotation_infos = self
@@ -158,7 +153,7 @@ impl DataUi for AnnotationContext {
 
 fn class_description_ui(
     ui: &mut egui::Ui,
-    mut ui_layout: UiLayout,
+    ui_layout: UiLayout,
     class: &ClassDescription,
     id: re_types::datatypes::ClassId,
 ) {
@@ -168,14 +163,7 @@ fn class_description_ui(
 
     re_tracing::profile_function!();
 
-    let use_collapsible = ui_layout == UiLayout::SelectionPanelLimitHeight
-        || ui_layout == UiLayout::SelectionPanelFull;
-
-    // We use collapsible header as a means for the user to limit the height, so the annotation info
-    // tables can be fully unrolled.
-    if ui_layout == UiLayout::SelectionPanelLimitHeight {
-        ui_layout = UiLayout::SelectionPanelFull;
-    }
+    let use_collapsible = ui_layout == UiLayout::SelectionPanel;
 
     let row_height = DesignTokens::table_line_height();
     if !class.keypoint_annotations.is_empty() {
@@ -202,60 +190,59 @@ fn class_description_ui(
             &format!("Keypoint Connections for Class {}", id.0),
             true,
             |ui| {
-                ui.push_id(format!("keypoints_connections_{}", id.0), |ui| {
-                    use egui_extras::Column;
+                use egui_extras::Column;
 
-                    let table = ui_layout
-                        .table(ui)
-                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::auto().clip(true).at_least(40.0))
-                        .column(Column::auto().clip(true).at_least(40.0));
-                    table
-                        .header(DesignTokens::table_header_height(), |mut header| {
-                            DesignTokens::setup_table_header(&mut header);
-                            header.col(|ui| {
-                                ui.strong("From");
-                            });
-                            header.col(|ui| {
-                                ui.strong("To");
-                            });
-                        })
-                        .body(|mut body| {
-                            DesignTokens::setup_table_body(&mut body);
-
-                            // TODO(jleibs): Helper to do this with caching somewhere
-                            let keypoint_map: ahash::HashMap<KeypointId, AnnotationInfo> = {
-                                re_tracing::profile_scope!("build_annotation_map");
-                                class
-                                    .keypoint_annotations
-                                    .iter()
-                                    .map(|kp| (kp.id.into(), kp.clone()))
-                                    .collect()
-                            };
-
-                            body.rows(row_height, class.keypoint_connections.len(), |mut row| {
-                                let pair = &class.keypoint_connections[row.index()];
-                                let KeypointPair {
-                                    keypoint0,
-                                    keypoint1,
-                                } = pair;
-
-                                for id in [keypoint0, keypoint1] {
-                                    row.col(|ui| {
-                                        ui.label(
-                                            keypoint_map
-                                                .get(id)
-                                                .and_then(|info| info.label.as_ref())
-                                                .map_or_else(
-                                                    || format!("id {}", id.0),
-                                                    |label| label.to_string(),
-                                                ),
-                                        );
-                                    });
-                                }
-                            });
+                let table = ui_layout
+                    .table(ui)
+                    .id_salt(("keypoints_connections", id))
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::auto().clip(true).at_least(40.0))
+                    .column(Column::auto().clip(true).at_least(40.0));
+                table
+                    .header(DesignTokens::table_header_height(), |mut header| {
+                        DesignTokens::setup_table_header(&mut header);
+                        header.col(|ui| {
+                            ui.strong("From");
                         });
-                });
+                        header.col(|ui| {
+                            ui.strong("To");
+                        });
+                    })
+                    .body(|mut body| {
+                        DesignTokens::setup_table_body(&mut body);
+
+                        // TODO(jleibs): Helper to do this with caching somewhere
+                        let keypoint_map: ahash::HashMap<KeypointId, AnnotationInfo> = {
+                            re_tracing::profile_scope!("build_annotation_map");
+                            class
+                                .keypoint_annotations
+                                .iter()
+                                .map(|kp| (kp.id.into(), kp.clone()))
+                                .collect()
+                        };
+
+                        body.rows(row_height, class.keypoint_connections.len(), |mut row| {
+                            let pair = &class.keypoint_connections[row.index()];
+                            let KeypointPair {
+                                keypoint0,
+                                keypoint1,
+                            } = pair;
+
+                            for id in [keypoint0, keypoint1] {
+                                row.col(|ui| {
+                                    ui.label(
+                                        keypoint_map
+                                            .get(id)
+                                            .and_then(|info| info.label.as_ref())
+                                            .map_or_else(
+                                                || format!("id {}", id.0),
+                                                |label| label.to_string(),
+                                            ),
+                                    );
+                                });
+                            }
+                        });
+                    });
             },
         );
     }

@@ -71,7 +71,7 @@ pub fn stream_rrd_from_http(url: String, on_msg: Arc<HttpMessageCallback>) {
     re_log::debug!("Downloading .rrd file from {url:?}…");
 
     ehttp::streaming::fetch(ehttp::Request::get(&url), {
-        let version_policy = crate::decoder::VersionPolicy::Warn;
+        let version_policy = crate::VersionPolicy::Warn;
         let decoder = RefCell::new(StreamDecoder::new(version_policy));
         move |part| match part {
             Ok(part) => match part {
@@ -127,7 +127,7 @@ pub fn stream_rrd_from_http(url: String, on_msg: Arc<HttpMessageCallback>) {
 }
 
 #[cfg(target_arch = "wasm32")]
-// TODO(#3408): remove unwrap()
+// TODO(#6330): remove unwrap()
 #[allow(clippy::unwrap_used)]
 mod web_event_listener {
     use super::HttpMessageCallback;
@@ -168,7 +168,7 @@ mod web_event_listener {
 pub use web_event_listener::stream_rrd_from_event_listener;
 
 #[cfg(target_arch = "wasm32")]
-// TODO(#3408): remove unwrap()
+// TODO(#6330): remove unwrap()
 #[allow(clippy::unwrap_used)]
 pub mod web_decode {
     use super::{HttpMessage, HttpMessageCallback};
@@ -184,7 +184,7 @@ pub mod web_decode {
     async fn decode_rrd_async(rrd_bytes: Vec<u8>, on_msg: Arc<HttpMessageCallback>) {
         let mut last_yield = web_time::Instant::now();
 
-        let version_policy = crate::decoder::VersionPolicy::Warn;
+        let version_policy = crate::VersionPolicy::Warn;
         match crate::decoder::Decoder::new(version_policy, rrd_bytes.as_slice()) {
             Ok(decoder) => {
                 for msg in decoder {

@@ -1,49 +1,23 @@
-use std::collections::HashSet;
-use std::ops::RangeInclusive;
+use egui::{NumExt as _, Ui};
 
-use egui::{NumExt as _, Response, Ui};
-
-use re_entity_db::TimeHistogram;
-use re_log_types::{EntityPath, ResolvedTimeRange, TimeType, TimeZone, TimelineName};
-use re_space_view_dataframe::DataframeSpaceView;
-use re_space_view_spatial::{SpatialSpaceView2D, SpatialSpaceView3D};
-use re_space_view_time_series::TimeSeriesSpaceView;
+use re_log_types::{EntityPath, ResolvedTimeRange, TimeType, TimelineName};
 use re_types::{
     blueprint::components::VisibleTimeRange,
     datatypes::{TimeInt, TimeRange, TimeRangeBoundary},
-    Archetype, SpaceViewClassIdentifier,
+    Archetype,
 };
 use re_ui::UiExt as _;
-use re_viewer_context::{QueryRange, SpaceViewClass, SpaceViewState, ViewerContext};
-use re_viewport_blueprint::{entity_path_for_view_property, SpaceViewBlueprint};
-
-/// These space views support the Visible History feature.
-static VISIBLE_HISTORY_SUPPORTED_SPACE_VIEWS: once_cell::sync::Lazy<
-    HashSet<SpaceViewClassIdentifier>,
-> = once_cell::sync::Lazy::new(|| {
-    [
-        SpatialSpaceView3D::identifier(),
-        SpatialSpaceView2D::identifier(),
-        TimeSeriesSpaceView::identifier(),
-        DataframeSpaceView::identifier(),
-    ]
-    .map(Into::into)
-    .into()
-});
-
-// TODO(#4145): This method is obviously unfortunate. It's a temporary solution until the Visualizer
-// system is able to report its ability to handle the visible history feature.
-fn space_view_with_visible_history(space_view_class: SpaceViewClassIdentifier) -> bool {
-    VISIBLE_HISTORY_SUPPORTED_SPACE_VIEWS.contains(&space_view_class)
-}
+use re_viewer_context::{QueryRange, TimeDragValue, ViewClass, ViewState, ViewerContext};
+use re_viewport_blueprint::{entity_path_for_view_property, ViewBlueprint};
 
 pub fn visible_time_range_ui_for_view(
     ctx: &ViewerContext<'_>,
     ui: &mut Ui,
-    view: &SpaceViewBlueprint,
-    view_state: &dyn SpaceViewState,
+    view: &ViewBlueprint,
+    view_class: &dyn ViewClass,
+    view_state: &dyn ViewState,
 ) {
-    if !space_view_with_visible_history(view.class_identifier()) {
+    if !view_class.supports_visible_time_range() {
         return;
     }
 
@@ -57,12 +31,12 @@ pub fn visible_time_range_ui_for_view(
         ctx.store_context.blueprint,
         ctx.blueprint_query,
         ctx.rec_cfg.time_ctrl.read().timeline(),
-        ctx.space_view_class_registry,
+        ctx.view_class_registry,
         view_state,
     );
 
-    let is_space_view = true;
-    visible_time_range_ui(ctx, ui, query_range, &property_path, is_space_view);
+    let is_view = true;
+    visible_time_range_ui(ctx, ui, query_range, &property_path, is_view);
 }
 
 pub fn visible_time_range_ui_for_data_result(
@@ -73,8 +47,8 @@ pub fn visible_time_range_ui_for_data_result(
     let override_path = data_result.recursive_override_path();
     let query_range = data_result.property_overrides.query_range.clone();
 
-    let is_space_view = false;
-    visible_time_range_ui(ctx, ui, query_range, override_path, is_space_view);
+    let is_view = false;
+    visible_time_range_ui(ctx, ui, query_range, override_path, is_view);
 }
 
 /// Draws ui for a visible time range from a given override path and a resulting query range.
@@ -83,27 +57,24 @@ fn visible_time_range_ui(
     ui: &mut Ui,
     mut resolved_query_range: QueryRange,
     time_range_override_path: &EntityPath,
-    is_space_view: bool,
+    is_view: bool,
 ) {
-    use re_types::Loggable as _;
+    use re_types::Component as _;
 
-    let results = ctx.blueprint_db().latest_at(
-        ctx.blueprint_query,
-        time_range_override_path,
-        std::iter::once(VisibleTimeRange::name()),
-    );
-    let ranges: &[VisibleTimeRange] = results
-        .get(VisibleTimeRange::name())
-        .and_then(|results| results.dense(ctx.blueprint_db().resolver()))
+    let visible_time_ranges = ctx
+        .blueprint_db()
+        .latest_at(
+            ctx.blueprint_query,
+            time_range_override_path,
+            std::iter::once(VisibleTimeRange::name()),
+        )
+        .component_batch::<VisibleTimeRange>()
         .unwrap_or_default();
-    let visible_time_ranges = re_types::blueprint::archetypes::VisibleTimeRanges {
-        ranges: ranges.to_vec(),
-    };
 
     let timeline_name = *ctx.rec_cfg.time_ctrl.read().timeline().name();
     let mut has_individual_range = visible_time_ranges
-        .range_for_timeline(timeline_name.as_str())
-        .is_some();
+        .iter()
+        .any(|range| range.timeline.as_str() == timeline_name.as_str());
 
     let has_individual_range_before = has_individual_range;
     let query_range_before = resolved_query_range.clone();
@@ -116,7 +87,7 @@ fn visible_time_range_ui(
             ui,
             &mut resolved_query_range,
             &mut has_individual_range,
-            is_space_view,
+            is_view,
         );
     });
 
@@ -140,7 +111,7 @@ fn save_visible_time_ranges(
     has_individual_range: bool,
     query_range: QueryRange,
     property_path: &EntityPath,
-    mut visible_time_ranges: re_types::blueprint::archetypes::VisibleTimeRanges,
+    mut visible_time_range_list: Vec<VisibleTimeRange>,
 ) {
     if has_individual_range {
         let time_range = match query_range {
@@ -153,12 +124,26 @@ fn save_visible_time_ranges(
                 return;
             }
         };
-        visible_time_ranges.set_range_for_timeline(timeline_name, Some(time_range));
+
+        if let Some(existing) = visible_time_range_list
+            .iter_mut()
+            .find(|r| r.timeline.as_str() == timeline_name.as_str())
+        {
+            existing.range = time_range;
+        } else {
+            visible_time_range_list.push(
+                re_types::datatypes::VisibleTimeRange {
+                    timeline: timeline_name.as_str().into(),
+                    range: time_range,
+                }
+                .into(),
+            );
+        }
     } else {
-        visible_time_ranges.set_range_for_timeline(timeline_name, None);
+        visible_time_range_list.retain(|r| r.timeline.as_str() != timeline_name.as_str());
     }
 
-    ctx.save_blueprint_archetype(property_path, &visible_time_ranges);
+    ctx.save_blueprint_component(property_path, &visible_time_range_list);
 }
 
 /// Draws ui for showing and configuring a query range.
@@ -167,17 +152,17 @@ fn query_range_ui(
     ui: &mut Ui,
     query_range: &mut QueryRange,
     has_individual_time_range: &mut bool,
-    is_space_view: bool,
+    is_view: bool,
 ) {
     let time_ctrl = ctx.rec_cfg.time_ctrl.read().clone();
     let time_type = time_ctrl.timeline().typ();
 
     let mut interacting_with_controls = false;
     let markdown = "# Visible time range\n
-This feature controls the time range used to display data in the space view.
+This feature controls the time range used to display data in the view.
 
 Notes:
-- The settings are inherited from the parent entity or enclosing space view if not overridden.
+- The settings are inherited from the parent entity or enclosing view if not overridden.
 - Visible time range properties are stored on a per-timeline basis.
 - The data current as of the time range starting time is included.";
 
@@ -188,32 +173,32 @@ Notes:
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.re_radio_value(has_individual_time_range, false, "Default")
-                    .on_hover_text(if is_space_view {
-                        "Default query range settings for this kind of space view"
+                    .on_hover_text(if is_view {
+                        "Default query range settings for this kind of view"
                     } else {
                         "Query range settings inherited from parent entity or enclosing \
-                        space view"
+                        view"
                     });
                 ui.re_radio_value(has_individual_time_range, true, "Override")
-                    .on_hover_text(if is_space_view {
-                        "Set query range settings for the contents of this space view"
+                    .on_hover_text(if is_view {
+                        "Set query range settings for the contents of this view"
                     } else {
                         "Set query range settings for this entity"
                     });
             });
-            let timeline_spec =
+            let time_drag_value =
                 if let Some(times) = ctx.recording().time_histogram(time_ctrl.timeline()) {
-                    TimelineSpec::from_time_histogram(times)
+                    TimeDragValue::from_time_histogram(times)
                 } else {
-                    TimelineSpec::from_time_range(0..=0)
+                    TimeDragValue::from_time_range(0..=0)
                 };
 
             let current_time = TimeInt(
                 time_ctrl
                     .time_i64()
                     .unwrap_or_default()
-                    .at_least(*timeline_spec.range.start()),
-            ); // accounts for timeless time (TimeInt::MIN)
+                    .at_least(*time_drag_value.range.start()),
+            ); // accounts for static time (TimeInt::MIN)
 
             if *has_individual_time_range {
                 let time_range = match query_range {
@@ -235,7 +220,7 @@ Notes:
                     current_time,
                     &mut interacting_with_controls,
                     time_type,
-                    &timeline_spec,
+                    &time_drag_value,
                 );
             } else {
                 match &query_range {
@@ -261,7 +246,7 @@ Notes:
         || collapsing_response.header_response.hovered()
         || collapsing_response
             .body_response
-            .map_or(false, |r| r.hovered());
+            .is_some_and(|r| r.hovered());
 
     if should_display_visible_time_range {
         if let Some(current_time) = time_ctrl.time_int() {
@@ -281,7 +266,7 @@ fn time_range_editor(
     current_time: TimeInt,
     interacting_with_controls: &mut bool,
     time_type: TimeType,
-    timeline_spec: &TimelineSpec,
+    time_drag_value: &TimeDragValue,
 ) {
     let current_start = resolved_range.start.start_boundary_time(current_time);
     let current_end = resolved_range.end.end_boundary_time(current_time);
@@ -296,7 +281,7 @@ fn time_range_editor(
                     &mut resolved_range.start,
                     time_type,
                     current_time,
-                    timeline_spec,
+                    time_drag_value,
                     true,
                     current_end,
                 )
@@ -313,7 +298,7 @@ fn time_range_editor(
                     &mut resolved_range.end,
                     time_type,
                     current_time,
-                    timeline_spec,
+                    time_drag_value,
                     false,
                     current_start,
                 )
@@ -478,7 +463,7 @@ fn visible_history_boundary_ui(
     visible_history_boundary: &mut TimeRangeBoundary,
     time_type: TimeType,
     current_time: TimeInt,
-    timeline_spec: &TimelineSpec,
+    time_drag_value: &TimeDragValue,
     low_bound: bool,
     other_boundary_absolute: TimeInt,
 ) -> bool {
@@ -490,7 +475,7 @@ fn visible_history_boundary_ui(
     let abs_time = TimeRangeBoundary::Absolute(abs_time);
     let rel_time = TimeRangeBoundary::CursorRelative(rel_time);
 
-    egui::ComboBox::from_id_source(if low_bound {
+    egui::ComboBox::from_id_salt(if low_bound {
         "time_history_low_bound"
     } else {
         "time_history_high_bound"
@@ -546,15 +531,16 @@ fn visible_history_boundary_ui(
             let low_bound_override = if low_bound {
                 None
             } else {
-                Some(other_boundary_absolute - current_time)
+                Some((other_boundary_absolute - current_time).into())
             };
 
-            match time_type {
+            let mut edit_value = (*value).into();
+            let response = match time_type {
                 TimeType::Time => Some(
-                    timeline_spec
-                        .temporal_drag_value(
+                    time_drag_value
+                        .temporal_drag_value_ui(
                             ui,
-                            value,
+                            &mut edit_value,
                             false,
                             low_bound_override,
                             ctx.app_options.time_zone,
@@ -566,28 +552,31 @@ fn visible_history_boundary_ui(
                         ),
                 ),
                 TimeType::Sequence => Some(
-                    timeline_spec
-                        .sequence_drag_value(ui, value, false, low_bound_override)
+                    time_drag_value
+                        .sequence_drag_value_ui(ui, &mut edit_value, false, low_bound_override)
                         .on_hover_text(
                             "Number of frames before/after the current time to use a time \
                         range boundary",
                         ),
                 ),
-            }
+            };
+            *value = edit_value.into();
+            response
         }
         TimeRangeBoundary::Absolute(value) => {
             // see note above
             let low_bound_override = if low_bound {
                 None
             } else {
-                Some(other_boundary_absolute)
+                Some(other_boundary_absolute.into())
             };
 
-            match time_type {
+            let mut edit_value = (*value).into();
+            let response = match time_type {
                 TimeType::Time => {
-                    let (drag_resp, base_time_resp) = timeline_spec.temporal_drag_value(
+                    let (drag_resp, base_time_resp) = time_drag_value.temporal_drag_value_ui(
                         ui,
-                        value,
+                        &mut edit_value,
                         true,
                         low_bound_override,
                         ctx.app_options.time_zone,
@@ -600,239 +589,16 @@ fn visible_history_boundary_ui(
                     Some(drag_resp.on_hover_text("Absolute time to use as time range boundary"))
                 }
                 TimeType::Sequence => Some(
-                    timeline_spec
-                        .sequence_drag_value(ui, value, true, low_bound_override)
+                    time_drag_value
+                        .sequence_drag_value_ui(ui, &mut edit_value, true, low_bound_override)
                         .on_hover_text("Absolute frame number to use as time range boundary"),
                 ),
-            }
+            };
+            *value = edit_value.into();
+            response
         }
         TimeRangeBoundary::Infinite => None,
     };
 
-    response.map_or(false, |r| r.dragged() || r.has_focus())
-}
-
-// ---
-
-/// Compute and store various information about a timeline related to how the UI should behave.
-#[derive(Debug)]
-struct TimelineSpec {
-    /// Actual range of logged data on the timelines (excluding timeless data).
-    range: RangeInclusive<i64>,
-
-    /// For timelines with large offsets (e.g. `log_time`), this is a rounded time just before the
-    /// first logged data, which can be used as offset in the UI.
-    base_time: Option<i64>,
-
-    // used only for temporal timelines
-    /// For temporal timelines, this is a nice unit factor to use.
-    unit_factor: i64,
-
-    /// For temporal timelines, this is the unit symbol to display.
-    unit_symbol: &'static str,
-
-    /// This is a nice range of absolute times to use when editing an absolute time. The boundaries
-    /// are extended to the nearest rounded unit to minimize glitches.
-    abs_range: RangeInclusive<i64>,
-
-    /// This is a nice range of relative times to use when editing an absolute time. The boundaries
-    /// are extended to the nearest rounded unit to minimize glitches.
-    rel_range: RangeInclusive<i64>,
-}
-
-impl TimelineSpec {
-    fn from_time_histogram(times: &TimeHistogram) -> Self {
-        Self::from_time_range(
-            times.min_key().unwrap_or_default()..=times.max_key().unwrap_or_default(),
-        )
-    }
-
-    fn from_time_range(range: RangeInclusive<i64>) -> Self {
-        let span = range.end() - range.start();
-        let base_time = time_range_base_time(*range.start(), span);
-        let (unit_symbol, unit_factor) = unit_from_span(span);
-
-        // `abs_range` is used by the DragValue when editing an absolute time, its bound expended to
-        // nearest unit to minimize glitches.
-        let abs_range =
-            round_down(*range.start(), unit_factor)..=round_up(*range.end(), unit_factor);
-
-        // `rel_range` is used by the DragValue when editing a relative time offset. It must have
-        // enough margin either side to accommodate for all possible values of current time.
-        let rel_range = round_down(-span, unit_factor)..=round_up(2 * span, unit_factor);
-
-        Self {
-            range,
-            base_time,
-            unit_factor,
-            unit_symbol,
-            abs_range,
-            rel_range,
-        }
-    }
-
-    fn sequence_drag_value(
-        &self,
-        ui: &mut egui::Ui,
-        value: &mut TimeInt,
-        absolute: bool,
-        low_bound_override: Option<TimeInt>,
-    ) -> Response {
-        let mut time_range = if absolute {
-            self.abs_range.clone()
-        } else {
-            self.rel_range.clone()
-        };
-
-        // speed must be computed before messing with time_range for consistency
-        let span = time_range.end() - time_range.start();
-        let speed = (span as f32 * 0.005).at_least(1.0);
-
-        if let Some(low_bound_override) = low_bound_override {
-            time_range = low_bound_override.0.at_least(*time_range.start())..=*time_range.end();
-        }
-
-        ui.add(
-            egui::DragValue::new(&mut value.0)
-                .range(time_range)
-                .speed(speed),
-        )
-    }
-
-    /// Show a temporal drag value.
-    ///
-    /// Feature rich:
-    /// - scale to the proper units
-    /// - display the base time if any
-    /// - etc.
-    ///
-    /// Returns a tuple of the [`egui::DragValue`]'s [`egui::Response`], and the base time label's
-    /// [`egui::Response`], if any.
-    fn temporal_drag_value(
-        &self,
-        ui: &mut egui::Ui,
-        value: &mut TimeInt,
-        absolute: bool,
-        low_bound_override: Option<TimeInt>,
-        time_zone_for_timestamps: TimeZone,
-    ) -> (Response, Option<Response>) {
-        let mut time_range = if absolute {
-            self.abs_range.clone()
-        } else {
-            self.rel_range.clone()
-        };
-
-        let factor = self.unit_factor as f32;
-        let offset = if absolute {
-            self.base_time.unwrap_or(0)
-        } else {
-            0
-        };
-
-        // speed must be computed before messing with time_range for consistency
-        let speed = (time_range.end() - time_range.start()) as f32 / factor * 0.005;
-
-        if let Some(low_bound_override) = low_bound_override {
-            time_range = low_bound_override.0.at_least(*time_range.start())..=*time_range.end();
-        }
-
-        let mut time_unit = (value.0 - offset) as f32 / factor;
-
-        let time_range = (*time_range.start() - offset) as f32 / factor
-            ..=(*time_range.end() - offset) as f32 / factor;
-
-        let base_time_response = if absolute {
-            self.base_time.map(|base_time| {
-                ui.label(format!(
-                    "{} + ",
-                    TimeType::Time.format(TimeInt(base_time), time_zone_for_timestamps)
-                ))
-            })
-        } else {
-            None
-        };
-
-        let drag_value_response = ui.add(
-            egui::DragValue::new(&mut time_unit)
-                .range(time_range)
-                .speed(speed)
-                .suffix(self.unit_symbol),
-        );
-
-        *value = TimeInt((time_unit * factor).round() as i64 + offset);
-
-        (drag_value_response, base_time_response)
-    }
-}
-
-fn unit_from_span(span: i64) -> (&'static str, i64) {
-    if span / 1_000_000_000 > 0 {
-        ("s", 1_000_000_000)
-    } else if span / 1_000_000 > 0 {
-        ("ms", 1_000_000)
-    } else if span / 1_000 > 0 {
-        ("μs", 1_000)
-    } else {
-        ("ns", 1)
-    }
-}
-
-/// Value of the start time over time span ratio above which an explicit offset is handled.
-static SPAN_TO_START_TIME_OFFSET_THRESHOLD: i64 = 10;
-
-fn time_range_base_time(min_time: i64, span: i64) -> Option<i64> {
-    if min_time <= 0 {
-        return None;
-    }
-
-    if span.saturating_mul(SPAN_TO_START_TIME_OFFSET_THRESHOLD) < min_time {
-        let factor = if span / 1_000_000 > 0 {
-            1_000_000_000
-        } else if span / 1_000 > 0 {
-            1_000_000
-        } else {
-            1_000
-        };
-
-        Some(min_time - (min_time % factor))
-    } else {
-        None
-    }
-}
-
-fn round_down(value: i64, factor: i64) -> i64 {
-    value - (value.rem_euclid(factor))
-}
-
-fn round_up(value: i64, factor: i64) -> i64 {
-    let val = round_down(value, factor);
-
-    if val == value {
-        val
-    } else {
-        val + factor
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_round_down() {
-        assert_eq!(round_down(2200, 1000), 2000);
-        assert_eq!(round_down(2000, 1000), 2000);
-        assert_eq!(round_down(-2200, 1000), -3000);
-        assert_eq!(round_down(-3000, 1000), -3000);
-        assert_eq!(round_down(0, 1000), 0);
-    }
-
-    #[test]
-    fn test_round_up() {
-        assert_eq!(round_up(2200, 1000), 3000);
-        assert_eq!(round_up(2000, 1000), 2000);
-        assert_eq!(round_up(-2200, 1000), -2000);
-        assert_eq!(round_up(-3000, 1000), -3000);
-        assert_eq!(round_up(0, 1000), 0);
-    }
+    response.is_some_and(|r| r.dragged() || r.has_focus())
 }

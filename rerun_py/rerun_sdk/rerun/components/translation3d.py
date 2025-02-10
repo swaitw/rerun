@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["Translation3D", "Translation3DBatch", "Translation3DType"]
+__all__ = ["Translation3D", "Translation3DBatch"]
 
 
 class Translation3D(datatypes.Vec3D, ComponentMixin):
@@ -24,12 +25,8 @@ class Translation3D(datatypes.Vec3D, ComponentMixin):
     pass
 
 
-class Translation3DType(datatypes.Vec3DType):
-    _TYPE_NAME: str = "rerun.components.Translation3D"
-
-
 class Translation3DBatch(datatypes.Vec3DBatch, ComponentBatchMixin):
-    _ARROW_TYPE = Translation3DType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.Translation3D")
 
 
 # This is patched in late to avoid circular dependencies.

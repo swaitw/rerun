@@ -4,12 +4,12 @@
 #pragma once
 
 #include "../collection.hpp"
-#include "../compiler_utils.hpp"
+#include "../component_batch.hpp"
+#include "../component_column.hpp"
 #include "../components/aggregation_policy.hpp"
 #include "../components/color.hpp"
 #include "../components/name.hpp"
 #include "../components/stroke_width.hpp"
-#include "../data_cell.hpp"
 #include "../indicator_component.hpp"
 #include "../result.hpp"
 
@@ -58,28 +58,28 @@ namespace rerun::archetypes {
     ///         rec.set_time_sequence("step", t);
     ///
     ///         rec.log("trig/sin", rerun::Scalar(sin(static_cast<double>(t) / 100.0)));
-    ///         rec.log("trig/cos", rerun::Scalar(cos(static_cast<double>(t) / 100.0f)));
+    ///         rec.log("trig/cos", rerun::Scalar(cos(static_cast<double>(t) / 100.0)));
     ///     }
     /// }
     /// ```
     struct SeriesLine {
         /// Color for the corresponding series.
-        std::optional<rerun::components::Color> color;
+        std::optional<ComponentBatch> color;
 
         /// Stroke width for the corresponding series.
-        std::optional<rerun::components::StrokeWidth> width;
+        std::optional<ComponentBatch> width;
 
         /// Display name of the series.
         ///
         /// Used in the legend.
-        std::optional<rerun::components::Name> name;
+        std::optional<ComponentBatch> name;
 
         /// Configures the zoom-dependent scalar aggregation.
         ///
         /// This is done only if steps on the X axis go below a single pixel,
         /// i.e. a single pixel covers more than one tick worth of data. It can greatly improve performance
         /// (and readability) in such situations as it prevents overdraw.
-        std::optional<rerun::components::AggregationPolicy> aggregation_policy;
+        std::optional<ComponentBatch> aggregation_policy;
 
       public:
         static constexpr const char IndicatorComponentName[] =
@@ -87,32 +87,88 @@ namespace rerun::archetypes {
 
         /// Indicator component, used to identify the archetype when converting to a list of components.
         using IndicatorComponent = rerun::components::IndicatorComponent<IndicatorComponentName>;
+        /// The name of the archetype as used in `ComponentDescriptor`s.
+        static constexpr const char ArchetypeName[] = "rerun.archetypes.SeriesLine";
+
+        /// `ComponentDescriptor` for the `color` field.
+        static constexpr auto Descriptor_color = ComponentDescriptor(
+            ArchetypeName, "color", Loggable<rerun::components::Color>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `width` field.
+        static constexpr auto Descriptor_width = ComponentDescriptor(
+            ArchetypeName, "width",
+            Loggable<rerun::components::StrokeWidth>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `name` field.
+        static constexpr auto Descriptor_name = ComponentDescriptor(
+            ArchetypeName, "name", Loggable<rerun::components::Name>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `aggregation_policy` field.
+        static constexpr auto Descriptor_aggregation_policy = ComponentDescriptor(
+            ArchetypeName, "aggregation_policy",
+            Loggable<rerun::components::AggregationPolicy>::Descriptor.component_name
+        );
 
       public:
         SeriesLine() = default;
         SeriesLine(SeriesLine&& other) = default;
+        SeriesLine(const SeriesLine& other) = default;
+        SeriesLine& operator=(const SeriesLine& other) = default;
+        SeriesLine& operator=(SeriesLine&& other) = default;
+
+        /// Update only some specific fields of a `SeriesLine`.
+        static SeriesLine update_fields() {
+            return SeriesLine();
+        }
+
+        /// Clear all the fields of a `SeriesLine`.
+        static SeriesLine clear_fields();
 
         /// Color for the corresponding series.
-        SeriesLine with_color(rerun::components::Color _color) && {
-            color = std::move(_color);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        SeriesLine with_color(const rerun::components::Color& _color) && {
+            color = ComponentBatch::from_loggable(_color, Descriptor_color).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `color` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_color` should
+        /// be used when logging a single row's worth of data.
+        SeriesLine with_many_color(const Collection<rerun::components::Color>& _color) && {
+            color = ComponentBatch::from_loggable(_color, Descriptor_color).value_or_throw();
+            return std::move(*this);
         }
 
         /// Stroke width for the corresponding series.
-        SeriesLine with_width(rerun::components::StrokeWidth _width) && {
-            width = std::move(_width);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        SeriesLine with_width(const rerun::components::StrokeWidth& _width) && {
+            width = ComponentBatch::from_loggable(_width, Descriptor_width).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `width` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_width` should
+        /// be used when logging a single row's worth of data.
+        SeriesLine with_many_width(const Collection<rerun::components::StrokeWidth>& _width) && {
+            width = ComponentBatch::from_loggable(_width, Descriptor_width).value_or_throw();
+            return std::move(*this);
         }
 
         /// Display name of the series.
         ///
         /// Used in the legend.
-        SeriesLine with_name(rerun::components::Name _name) && {
-            name = std::move(_name);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        SeriesLine with_name(const rerun::components::Name& _name) && {
+            name = ComponentBatch::from_loggable(_name, Descriptor_name).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `name` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_name` should
+        /// be used when logging a single row's worth of data.
+        SeriesLine with_many_name(const Collection<rerun::components::Name>& _name) && {
+            name = ComponentBatch::from_loggable(_name, Descriptor_name).value_or_throw();
+            return std::move(*this);
         }
 
         /// Configures the zoom-dependent scalar aggregation.
@@ -120,12 +176,43 @@ namespace rerun::archetypes {
         /// This is done only if steps on the X axis go below a single pixel,
         /// i.e. a single pixel covers more than one tick worth of data. It can greatly improve performance
         /// (and readability) in such situations as it prevents overdraw.
-        SeriesLine with_aggregation_policy(rerun::components::AggregationPolicy _aggregation_policy
+        SeriesLine with_aggregation_policy(
+            const rerun::components::AggregationPolicy& _aggregation_policy
         ) && {
-            aggregation_policy = std::move(_aggregation_policy);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+            aggregation_policy =
+                ComponentBatch::from_loggable(_aggregation_policy, Descriptor_aggregation_policy)
+                    .value_or_throw();
+            return std::move(*this);
         }
+
+        /// This method makes it possible to pack multiple `aggregation_policy` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_aggregation_policy` should
+        /// be used when logging a single row's worth of data.
+        SeriesLine with_many_aggregation_policy(
+            const Collection<rerun::components::AggregationPolicy>& _aggregation_policy
+        ) && {
+            aggregation_policy =
+                ComponentBatch::from_loggable(_aggregation_policy, Descriptor_aggregation_policy)
+                    .value_or_throw();
+            return std::move(*this);
+        }
+
+        /// Partitions the component data into multiple sub-batches.
+        ///
+        /// Specifically, this transforms the existing `ComponentBatch` data into `ComponentColumn`s
+        /// instead, via `ComponentBatch::partitioned`.
+        ///
+        /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+        ///
+        /// The specified `lengths` must sum to the total length of the component batch.
+        Collection<ComponentColumn> columns(const Collection<uint32_t>& lengths_);
+
+        /// Partitions the component data into unit-length sub-batches.
+        ///
+        /// This is semantically similar to calling `columns` with `std::vector<uint32_t>(n, 1)`,
+        /// where `n` is automatically guessed.
+        Collection<ComponentColumn> columns();
     };
 
 } // namespace rerun::archetypes
@@ -139,6 +226,7 @@ namespace rerun {
     template <>
     struct AsComponents<archetypes::SeriesLine> {
         /// Serialize all set component batches.
-        static Result<std::vector<DataCell>> serialize(const archetypes::SeriesLine& archetype);
+        static Result<Collection<ComponentBatch>> as_batches(const archetypes::SeriesLine& archetype
+        );
     };
 } // namespace rerun

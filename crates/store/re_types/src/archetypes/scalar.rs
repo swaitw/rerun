@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Archetype**: A double-precision scalar, e.g. for use for time-series plots.
@@ -28,17 +28,16 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 /// this by logging both archetypes to the same path, or alternatively configuring
 /// the plot-specific archetypes through the blueprint.
 ///
-/// ## Example
+/// ## Examples
 ///
-/// ### Simple line plot
+/// ### Update a scalar over time
 /// ```ignore
 /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let rec = rerun::RecordingStreamBuilder::new("rerun_example_scalar").spawn()?;
+///     let rec = rerun::RecordingStreamBuilder::new("rerun_example_scalar_row_updates").spawn()?;
 ///
-///     // Log the data on a timeline called "step".
 ///     for step in 0..64 {
 ///         rec.set_time_sequence("step", step);
-///         rec.log("scalar", &rerun::Scalar::new((step as f64 / 10.0).sin()))?;
+///         rec.log("scalars", &rerun::Scalar::new((step as f64 / 10.0).sin()))?;
 ///     }
 ///
 ///     Ok(())
@@ -46,47 +45,83 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 /// ```
 /// <center>
 /// <picture>
-///   <source media="(max-width: 480px)" srcset="https://static.rerun.io/scalar_simple/8bcc92f56268739f8cd24d60d1fe72a655f62a46/480w.png">
-///   <source media="(max-width: 768px)" srcset="https://static.rerun.io/scalar_simple/8bcc92f56268739f8cd24d60d1fe72a655f62a46/768w.png">
-///   <source media="(max-width: 1024px)" srcset="https://static.rerun.io/scalar_simple/8bcc92f56268739f8cd24d60d1fe72a655f62a46/1024w.png">
-///   <source media="(max-width: 1200px)" srcset="https://static.rerun.io/scalar_simple/8bcc92f56268739f8cd24d60d1fe72a655f62a46/1200w.png">
-///   <img src="https://static.rerun.io/scalar_simple/8bcc92f56268739f8cd24d60d1fe72a655f62a46/full.png" width="640">
+///   <source media="(max-width: 480px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/480w.png">
+///   <source media="(max-width: 768px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/768w.png">
+///   <source media="(max-width: 1024px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/1024w.png">
+///   <source media="(max-width: 1200px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/1200w.png">
+///   <img src="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/full.png" width="640">
 /// </picture>
 /// </center>
-#[derive(Clone, Debug, PartialEq)]
+///
+/// ### Update a scalar over time, in a single operation
+/// ```ignore
+/// use rerun::TimeColumn;
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let rec = rerun::RecordingStreamBuilder::new("rerun_example_scalar_column_updates").spawn()?;
+///
+///     let times = TimeColumn::new_sequence("step", 0..64);
+///     let scalars = (0..64).map(|step| (step as f64 / 10.0).sin());
+///
+///     rec.send_columns(
+///         "scalars",
+///         [times],
+///         rerun::Scalar::update_fields()
+///             .with_many_scalar(scalars)
+///             .columns_of_unit_batches()?,
+///     )?;
+///
+///     Ok(())
+/// }
+/// ```
+/// <center>
+/// <picture>
+///   <source media="(max-width: 480px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/480w.png">
+///   <source media="(max-width: 768px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/768w.png">
+///   <source media="(max-width: 1024px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/1024w.png">
+///   <source media="(max-width: 1200px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/1200w.png">
+///   <img src="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/full.png" width="640">
+/// </picture>
+/// </center>
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Scalar {
     /// The scalar value to log.
-    pub scalar: crate::components::Scalar,
+    pub scalar: Option<SerializedComponentBatch>,
 }
 
-impl ::re_types_core::SizeBytes for Scalar {
+impl Scalar {
+    /// Returns the [`ComponentDescriptor`] for [`Self::scalar`].
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.scalar.heap_size_bytes()
+    pub fn descriptor_scalar() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.Scalar".into()),
+            component_name: "rerun.components.Scalar".into(),
+            archetype_field_name: Some("scalar".into()),
+        }
     }
 
+    /// Returns the [`ComponentDescriptor`] for the associated indicator component.
     #[inline]
-    fn is_pod() -> bool {
-        <crate::components::Scalar>::is_pod()
+    pub fn descriptor_indicator() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.Scalar".into()),
+            component_name: "rerun.components.ScalarIndicator".into(),
+            archetype_field_name: None,
+        }
     }
 }
 
-static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.components.Scalar".into()]);
+static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [Scalar::descriptor_scalar()]);
 
-static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.components.ScalarIndicator".into()]);
+static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [Scalar::descriptor_indicator()]);
 
-static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 0usize]> =
+static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 0usize]> =
     once_cell::sync::Lazy::new(|| []);
 
-static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 2usize]> =
-    once_cell::sync::Lazy::new(|| {
-        [
-            "rerun.components.Scalar".into(),
-            "rerun.components.ScalarIndicator".into(),
-        ]
-    });
+static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 2usize]> =
+    once_cell::sync::Lazy::new(|| [Scalar::descriptor_scalar(), Scalar::descriptor_indicator()]);
 
 impl Scalar {
     /// The total number of components in the archetype: 1 required, 1 recommended, 0 optional
@@ -110,78 +145,152 @@ impl ::re_types_core::Archetype for Scalar {
     }
 
     #[inline]
-    fn indicator() -> MaybeOwnedComponentBatch<'static> {
-        static INDICATOR: ScalarIndicator = ScalarIndicator::DEFAULT;
-        MaybeOwnedComponentBatch::Ref(&INDICATOR)
+    fn indicator() -> SerializedComponentBatch {
+        #[allow(clippy::unwrap_used)]
+        ScalarIndicator::DEFAULT.serialized().unwrap()
     }
 
     #[inline]
-    fn required_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn required_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         REQUIRED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         RECOMMENDED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         OPTIONAL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn all_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn all_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         ALL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
     fn from_arrow_components(
-        arrow_data: impl IntoIterator<Item = (ComponentName, Box<dyn arrow2::array::Array>)>,
+        arrow_data: impl IntoIterator<Item = (ComponentDescriptor, arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self> {
         re_tracing::profile_function!();
         use ::re_types_core::{Loggable as _, ResultExt as _};
-        let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data
-            .into_iter()
-            .map(|(name, array)| (name.full_name(), array))
-            .collect();
-        let scalar = {
-            let array = arrays_by_name
-                .get("rerun.components.Scalar")
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.Scalar#scalar")?;
-            <crate::components::Scalar>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.Scalar#scalar")?
-                .into_iter()
-                .next()
-                .flatten()
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.Scalar#scalar")?
-        };
+        let arrays_by_descr: ::nohash_hasher::IntMap<_, _> = arrow_data.into_iter().collect();
+        let scalar = arrays_by_descr
+            .get(&Self::descriptor_scalar())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_scalar()));
         Ok(Self { scalar })
     }
 }
 
 impl ::re_types_core::AsComponents for Scalar {
-    fn as_component_batches(&self) -> Vec<MaybeOwnedComponentBatch<'_>> {
-        re_tracing::profile_function!();
+    #[inline]
+    fn as_serialized_batches(&self) -> Vec<SerializedComponentBatch> {
         use ::re_types_core::Archetype as _;
-        [
-            Some(Self::indicator()),
-            Some((&self.scalar as &dyn ComponentBatch).into()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
+        [Some(Self::indicator()), self.scalar.clone()]
+            .into_iter()
+            .flatten()
+            .collect()
     }
 }
+
+impl ::re_types_core::ArchetypeReflectionMarker for Scalar {}
 
 impl Scalar {
     /// Create a new `Scalar`.
     #[inline]
     pub fn new(scalar: impl Into<crate::components::Scalar>) -> Self {
         Self {
-            scalar: scalar.into(),
+            scalar: try_serialize_field(Self::descriptor_scalar(), [scalar]),
         }
+    }
+
+    /// Update only some specific fields of a `Scalar`.
+    #[inline]
+    pub fn update_fields() -> Self {
+        Self::default()
+    }
+
+    /// Clear all the fields of a `Scalar`.
+    #[inline]
+    pub fn clear_fields() -> Self {
+        use ::re_types_core::Loggable as _;
+        Self {
+            scalar: Some(SerializedComponentBatch::new(
+                crate::components::Scalar::arrow_empty(),
+                Self::descriptor_scalar(),
+            )),
+        }
+    }
+
+    /// Partitions the component data into multiple sub-batches.
+    ///
+    /// Specifically, this transforms the existing [`SerializedComponentBatch`]es data into [`SerializedComponentColumn`]s
+    /// instead, via [`SerializedComponentBatch::partitioned`].
+    ///
+    /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+    ///
+    /// The specified `lengths` must sum to the total length of the component batch.
+    ///
+    /// [`SerializedComponentColumn`]: [::re_types_core::SerializedComponentColumn]
+    #[inline]
+    pub fn columns<I>(
+        self,
+        _lengths: I,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>>
+    where
+        I: IntoIterator<Item = usize> + Clone,
+    {
+        let columns = [self
+            .scalar
+            .map(|scalar| scalar.partitioned(_lengths.clone()))
+            .transpose()?];
+        Ok(columns
+            .into_iter()
+            .flatten()
+            .chain([::re_types_core::indicator_column::<Self>(
+                _lengths.into_iter().count(),
+            )?]))
+    }
+
+    /// Helper to partition the component data into unit-length sub-batches.
+    ///
+    /// This is semantically similar to calling [`Self::columns`] with `std::iter::take(1).repeat(n)`,
+    /// where `n` is automatically guessed.
+    #[inline]
+    pub fn columns_of_unit_batches(
+        self,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>> {
+        let len_scalar = self.scalar.as_ref().map(|b| b.array.len());
+        let len = None.or(len_scalar).unwrap_or(0);
+        self.columns(std::iter::repeat(1).take(len))
+    }
+
+    /// The scalar value to log.
+    #[inline]
+    pub fn with_scalar(mut self, scalar: impl Into<crate::components::Scalar>) -> Self {
+        self.scalar = try_serialize_field(Self::descriptor_scalar(), [scalar]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::Scalar`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_scalar`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_scalar(
+        mut self,
+        scalar: impl IntoIterator<Item = impl Into<crate::components::Scalar>>,
+    ) -> Self {
+        self.scalar = try_serialize_field(Self::descriptor_scalar(), scalar);
+        self
+    }
+}
+
+impl ::re_byte_size::SizeBytes for Scalar {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.scalar.heap_size_bytes()
     }
 }

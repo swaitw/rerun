@@ -8,10 +8,11 @@ from __future__ import annotations
 from ... import datatypes
 from ..._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["Interactive", "InteractiveBatch", "InteractiveType"]
+__all__ = ["Interactive", "InteractiveBatch"]
 
 
 class Interactive(datatypes.Bool, ComponentMixin):
@@ -28,12 +29,8 @@ class Interactive(datatypes.Bool, ComponentMixin):
     pass
 
 
-class InteractiveType(datatypes.BoolType):
-    _TYPE_NAME: str = "rerun.blueprint.components.Interactive"
-
-
 class InteractiveBatch(datatypes.BoolBatch, ComponentBatchMixin):
-    _ARROW_TYPE = InteractiveType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.blueprint.components.Interactive")
 
 
 # This is patched in late to avoid circular dependencies.

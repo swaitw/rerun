@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["DrawOrder", "DrawOrderBatch", "DrawOrderType"]
+__all__ = ["DrawOrder", "DrawOrderBatch"]
 
 
 class DrawOrder(datatypes.Float32, ComponentMixin):
@@ -31,12 +32,8 @@ class DrawOrder(datatypes.Float32, ComponentMixin):
     pass
 
 
-class DrawOrderType(datatypes.Float32Type):
-    _TYPE_NAME: str = "rerun.components.DrawOrder"
-
-
 class DrawOrderBatch(datatypes.Float32Batch, ComponentBatchMixin):
-    _ARROW_TYPE = DrawOrderType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.DrawOrder")
 
 
 # This is patched in late to avoid circular dependencies.

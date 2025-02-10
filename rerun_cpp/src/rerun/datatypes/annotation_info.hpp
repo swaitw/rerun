@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../result.hpp"
 #include "rgba32.hpp"
 #include "utf8.hpp"
@@ -32,9 +33,7 @@ namespace rerun::datatypes {
         /// The color that will be applied to the annotated entity.
         std::optional<rerun::datatypes::Rgba32> color;
 
-      public:
-        // Extensions to generated type defined in 'annotation_info_ext.cpp'
-
+      public: // START of extensions from annotation_info_ext.cpp:
         AnnotationInfo(
             uint16_t _id, std::optional<std::string> _label = std::nullopt,
             std::optional<datatypes::Rgba32> _color = std::nullopt
@@ -43,6 +42,8 @@ namespace rerun::datatypes {
 
         AnnotationInfo(uint16_t _id, datatypes::Rgba32 _color)
             : id(_id), label(std::nullopt), color(_color) {}
+
+        // END of extensions from annotation_info_ext.cpp, start of generated code:
 
       public:
         AnnotationInfo() = default;
@@ -56,7 +57,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::AnnotationInfo> {
-        static constexpr const char Name[] = "rerun.datatypes.AnnotationInfo";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.AnnotationInfo";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

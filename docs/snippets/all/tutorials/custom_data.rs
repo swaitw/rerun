@@ -2,7 +2,8 @@
 
 use rerun::{
     demo_util::grid,
-    external::{arrow2, glam, re_types},
+    external::{arrow, glam, re_types},
+    ComponentBatch, SerializedComponentBatch,
 };
 
 // ---
@@ -17,19 +18,21 @@ struct CustomPoints3D {
 }
 
 impl rerun::AsComponents for CustomPoints3D {
-    fn as_component_batches(&self) -> Vec<rerun::MaybeOwnedComponentBatch<'_>> {
-        let indicator = rerun::NamedIndicatorComponent("user.CustomPoints3DIndicator".into());
+    fn as_serialized_batches(&self) -> Vec<SerializedComponentBatch> {
         self.points3d
-            .as_component_batches()
+            .as_serialized_batches()
             .into_iter()
             .chain(
-                [
-                    Some(indicator.to_batch()),
+                std::iter::once(
                     self.confidences
                         .as_ref()
-                        .map(|v| (v as &dyn rerun::ComponentBatch).into()),
-                ]
-                .into_iter()
+                        .and_then(|batch| batch.serialized())
+                        .map(|batch|
+                            // Optionally override the descriptor with extra information.
+                            batch
+                                .or_with_archetype_name(|| "user.CustomPoints3D".into())
+                                .or_with_archetype_field_name(|| "confidences".into())),
+                )
                 .flatten(),
             )
             .collect()
@@ -38,7 +41,7 @@ impl rerun::AsComponents for CustomPoints3D {
 
 // ---
 
-/// A custom [`rerun::Component`] that is backed by a builtin [`rerun::Float32`] scalar [`rerun::Datatype`].
+/// A custom [`rerun::Component`] that is backed by a builtin [`rerun::Float32`] scalar.
 #[derive(Debug, Clone, Copy)]
 struct Confidence(rerun::Float32);
 
@@ -56,26 +59,26 @@ impl rerun::SizeBytes for Confidence {
 }
 
 impl rerun::Loggable for Confidence {
-    type Name = rerun::ComponentName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "user.Confidence".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
+    fn arrow_datatype() -> arrow::datatypes::DataType {
         rerun::Float32::arrow_datatype()
     }
 
     #[inline]
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<std::borrow::Cow<'a, Self>>>>,
-    ) -> re_types::SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> re_types::SerializationResult<arrow::array::ArrayRef>
     where
         Self: 'a,
     {
         rerun::Float32::to_arrow_opt(data.into_iter().map(|opt| opt.map(Into::into).map(|c| c.0)))
+    }
+}
+
+impl rerun::Component for Confidence {
+    #[inline]
+    fn descriptor() -> rerun::ComponentDescriptor {
+        rerun::ComponentDescriptor::new("user.Confidence")
     }
 }
 

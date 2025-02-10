@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../datatypes/uvec3d.hpp"
 #include "../result.hpp"
 
@@ -15,15 +16,15 @@ namespace rerun::components {
     struct TriangleIndices {
         rerun::datatypes::UVec3D indices;
 
-      public:
-        // Extensions to generated type defined in 'triangle_indices_ext.cpp'
-
+      public: // START of extensions from triangle_indices_ext.cpp:
         /// Construct TriangleIndices from v0/v1/v2 values.
         TriangleIndices(uint32_t v0, uint32_t v1, uint32_t v2) : indices{v0, v1, v2} {}
 
         /// Construct UVec3D from v0/v1/v2 uint32_t pointer.
         explicit TriangleIndices(const uint32_t* indices_)
             : indices{indices_[0], indices_[1], indices_[2]} {}
+
+        // END of extensions from triangle_indices_ext.cpp, start of generated code:
 
       public:
         TriangleIndices() = default;
@@ -55,7 +56,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::TriangleIndices> {
-        static constexpr const char Name[] = "rerun.components.TriangleIndices";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.TriangleIndices";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -66,7 +67,19 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const components::TriangleIndices* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::UVec3D>::to_arrow(&instances->indices, num_instances);
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::UVec3D>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::UVec3D>::to_arrow(
+                    &instances->indices,
+                    num_instances
+                );
+            }
         }
     };
 } // namespace rerun

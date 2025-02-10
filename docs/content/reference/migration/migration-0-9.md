@@ -1,6 +1,6 @@
 ---
 title: Migrating from 0.8 to 0.9
-order: 90
+order: 1000
 ---
 
 Rerun-0.9 introduces a new set of type-oriented logging APIs built on top of an updated, more concrete,
@@ -76,9 +76,9 @@ Notes:
  * `image` has become `data`
 
 ### log_disconnected_space
-Replace with [DisconnectedSpace](../types/archetypes/disconnected_space.md)
+Replace with `DisconnectedSpace`
 
-Python docs: [DisconnectedSpace](https://ref.rerun.io/docs/python/stable/common/archetypes/#rerun.archetypes.DisconnectedSpace)
+Python docs: [DisconnectedSpace](https://ref.rerun.io/docs/python/0.21.0/common/archetypes/#rerun.archetypes.DisconnectedSpace)
 
 ### log_extension_components
 Replace with `AnyValues`

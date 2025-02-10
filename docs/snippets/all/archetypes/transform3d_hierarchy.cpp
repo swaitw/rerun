@@ -8,7 +8,7 @@ int main() {
     const auto rec = rerun::RecordingStream("rerun_example_transform3d_hierarchy");
     rec.spawn().exit_on_failure();
 
-    // TODO(#5521): log two space views as in the python example
+    // TODO(#5521): log two views as in the python example
 
     rec.set_time_seconds("sim_time", 0.0);
 
@@ -71,7 +71,7 @@ int main() {
             rerun::Transform3D::from_translation(
                 {std::cos(r_moon) * d_moon, std::sin(r_moon) * d_moon, 0.0f}
             )
-                .with_from_parent(true)
+                .with_relation(rerun::components::TransformRelation::ChildFromParent)
         );
     }
 }

@@ -10,7 +10,7 @@
 #![doc = document_features::document_features!()]
 //!
 
-// TODO(#3408): remove unwrap()
+// TODO(#6330): remove unwrap()
 #![allow(clippy::unwrap_used)]
 #![warn(missing_docs)] // Let's keep the this crate well-documented!
 
@@ -70,6 +70,9 @@ pub mod sink {
         BufferedSink, CallbackSink, LogSink, MemorySink, MemorySinkStorage, TcpSink,
     };
 
+    #[cfg(feature = "grpc")]
+    pub use crate::log_sink::grpc::GrpcSink;
+
     #[cfg(not(target_arch = "wasm32"))]
     pub use re_log_encoding::{FileSink, FileSinkError};
 }
@@ -77,8 +80,9 @@ pub mod sink {
 /// Things directly related to logging.
 pub mod log {
     pub use re_chunk::{
-        Chunk, ChunkBatcher, ChunkBatcherConfig, ChunkBatcherError, ChunkBatcherResult, ChunkError,
-        ChunkId, ChunkResult, PendingRow, RowId, TransportChunk,
+        Chunk, ChunkBatcher, ChunkBatcherConfig, ChunkBatcherError, ChunkBatcherResult,
+        ChunkComponents, ChunkError, ChunkId, ChunkResult, PendingRow, RowId, TimeColumn,
+        TransportChunk,
     };
     pub use re_log_types::LogMsg;
 }
@@ -90,10 +94,13 @@ pub mod time {
 pub use time::{Time, TimePoint, Timeline};
 
 pub use re_types_core::{
-    Archetype, ArchetypeName, AsComponents, Component, ComponentBatch, ComponentName, Datatype,
-    DatatypeBatch, DatatypeName, GenericIndicatorComponent, Loggable, LoggableBatch,
-    MaybeOwnedComponentBatch, NamedIndicatorComponent, SizeBytes,
+    Archetype, ArchetypeName, AsComponents, Component, ComponentBatch, ComponentDescriptor,
+    ComponentName, DatatypeName, DeserializationError, DeserializationResult,
+    GenericIndicatorComponent, Loggable, LoggableBatch, NamedIndicatorComponent,
+    SerializationError, SerializationResult, SerializedComponentBatch, SerializedComponentColumn,
 };
+
+pub use re_byte_size::SizeBytes;
 
 #[cfg(feature = "data_loaders")]
 pub use re_data_loader::{DataLoader, DataLoaderError, DataLoaderSettings, LoadedData};
@@ -109,6 +116,7 @@ pub mod external {
     pub use re_log_types;
     pub use re_sdk_comms;
 
+    pub use re_chunk::external::*;
     pub use re_log::external::*;
     pub use re_log_types::external::*;
 

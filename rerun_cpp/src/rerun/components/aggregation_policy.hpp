@@ -3,15 +3,21 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../result.hpp"
 
 #include <cstdint>
 #include <memory>
 
 namespace arrow {
+    /// \private
+    template <typename T>
+    class NumericBuilder;
+
     class Array;
     class DataType;
-    class SparseUnionBuilder;
+    class UInt8Type;
+    using UInt8Builder = NumericBuilder<UInt8Type>;
 } // namespace arrow
 
 namespace rerun::components {
@@ -51,7 +57,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::AggregationPolicy> {
-        static constexpr const char Name[] = "rerun.components.AggregationPolicy";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.AggregationPolicy";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();
@@ -63,7 +69,7 @@ namespace rerun {
 
         /// Fills an arrow array builder with an array of this type.
         static rerun::Error fill_arrow_array_builder(
-            arrow::SparseUnionBuilder* builder, const components::AggregationPolicy* elements,
+            arrow::UInt8Builder* builder, const components::AggregationPolicy* elements,
             size_t num_elements
         );
     };

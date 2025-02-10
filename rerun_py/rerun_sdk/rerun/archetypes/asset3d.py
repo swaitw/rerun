@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import numpy as np
 from attrs import define, field
 
-from .. import components
+from .. import components, datatypes
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
+from ..error_utils import catch_and_log_exceptions
 from .asset3d_ext import Asset3DExt
 
 __all__ = ["Asset3D"]
@@ -22,6 +25,9 @@ class Asset3D(Asset3DExt, Archetype):
     **Archetype**: A prepacked 3D asset (`.gltf`, `.glb`, `.obj`, `.stl`, etc.).
 
     See also [`archetypes.Mesh3D`][rerun.archetypes.Mesh3D].
+
+    If there are multiple [`archetypes.InstancePoses3D`][rerun.archetypes.InstancePoses3D] instances logged to the same entity as a mesh,
+    an instance of the mesh will be drawn for each transform.
 
     Example
     -------
@@ -57,9 +63,9 @@ class Asset3D(Asset3DExt, Archetype):
     def __attrs_clear__(self) -> None:
         """Convenience method for calling `__attrs_init__` with all `None`s."""
         self.__attrs_init__(
-            blob=None,  # type: ignore[arg-type]
-            media_type=None,  # type: ignore[arg-type]
-            transform=None,  # type: ignore[arg-type]
+            blob=None,
+            media_type=None,
+            albedo_factor=None,
         )
 
     @classmethod
@@ -69,18 +75,136 @@ class Asset3D(Asset3DExt, Archetype):
         inst.__attrs_clear__()
         return inst
 
-    blob: components.BlobBatch = field(
-        metadata={"component": "required"},
-        converter=components.BlobBatch._required,  # type: ignore[misc]
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        clear_unset: bool = False,
+        blob: datatypes.BlobLike | None = None,
+        media_type: datatypes.Utf8Like | None = None,
+        albedo_factor: datatypes.Rgba32Like | None = None,
+    ) -> Asset3D:
+        """
+        Update only some specific fields of a `Asset3D`.
+
+        Parameters
+        ----------
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        blob:
+            The asset's bytes.
+        media_type:
+            The Media Type of the asset.
+
+            Supported values:
+            * `model/gltf-binary`
+            * `model/gltf+json`
+            * `model/obj` (.mtl material files are not supported yet, references are silently ignored)
+            * `model/stl`
+
+            If omitted, the viewer will try to guess from the data blob.
+            If it cannot guess, it won't be able to render the asset.
+        albedo_factor:
+            A color multiplier applied to the whole asset.
+
+            For mesh who already have `albedo_factor` in materials,
+            it will be overwritten by actual `albedo_factor` of [`archetypes.Asset3D`][rerun.archetypes.Asset3D] (if specified).
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "blob": blob,
+                "media_type": media_type,
+                "albedo_factor": albedo_factor,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def cleared(cls) -> Asset3D:
+        """Clear all the fields of a `Asset3D`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        blob: datatypes.BlobArrayLike | None = None,
+        media_type: datatypes.Utf8ArrayLike | None = None,
+        albedo_factor: datatypes.Rgba32ArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        blob:
+            The asset's bytes.
+        media_type:
+            The Media Type of the asset.
+
+            Supported values:
+            * `model/gltf-binary`
+            * `model/gltf+json`
+            * `model/obj` (.mtl material files are not supported yet, references are silently ignored)
+            * `model/stl`
+
+            If omitted, the viewer will try to guess from the data blob.
+            If it cannot guess, it won't be able to render the asset.
+        albedo_factor:
+            A color multiplier applied to the whole asset.
+
+            For mesh who already have `albedo_factor` in materials,
+            it will be overwritten by actual `albedo_factor` of [`archetypes.Asset3D`][rerun.archetypes.Asset3D] (if specified).
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                blob=blob,
+                media_type=media_type,
+                albedo_factor=albedo_factor,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
+    blob: components.BlobBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.BlobBatch._converter,  # type: ignore[misc]
     )
     # The asset's bytes.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     media_type: components.MediaTypeBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.MediaTypeBatch._optional,  # type: ignore[misc]
+        converter=components.MediaTypeBatch._converter,  # type: ignore[misc]
     )
     # The Media Type of the asset.
     #
@@ -95,14 +219,15 @@ class Asset3D(Asset3DExt, Archetype):
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
-    transform: components.OutOfTreeTransform3DBatch | None = field(
-        metadata={"component": "optional"},
+    albedo_factor: components.AlbedoFactorBatch | None = field(
+        metadata={"component": True},
         default=None,
-        converter=components.OutOfTreeTransform3DBatch._optional,  # type: ignore[misc]
+        converter=components.AlbedoFactorBatch._converter,  # type: ignore[misc]
     )
-    # An out-of-tree transform.
+    # A color multiplier applied to the whole asset.
     #
-    # Applies a transformation to the asset itself without impacting its children.
+    # For mesh who already have `albedo_factor` in materials,
+    # it will be overwritten by actual `albedo_factor` of [`archetypes.Asset3D`][rerun.archetypes.Asset3D] (if specified).
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 

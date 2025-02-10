@@ -45,6 +45,14 @@ impl MediaType {
     /// Either binary or ASCII.
     /// <https://www.iana.org/assignments/media-types/model/stl>
     pub const STL: &'static str = "model/stl";
+
+    // -------------------------------------------------------
+    // Videos:
+
+    /// [MP4 video](https://en.wikipedia.org/wiki/MP4_file_format): `video/mp4`.
+    ///
+    /// <https://www.iana.org/assignments/media-types/video/mp4>
+    pub const MP4: &'static str = "video/mp4";
 }
 
 impl MediaType {
@@ -100,6 +108,15 @@ impl MediaType {
     #[inline]
     pub fn stl() -> Self {
         Self(Self::STL.into())
+    }
+
+    // -------------------------------------------------------
+    // Video:
+
+    /// `video/mp4`
+    #[inline]
+    pub fn mp4() -> Self {
+        Self(Self::MP4.into())
     }
 }
 
@@ -164,8 +181,8 @@ impl MediaType {
         // - obj is simply text, so no magic byte
 
         let mut inferer = infer::Infer::new();
-        inferer.add(Self::GLB, "", glb_matcher);
-        inferer.add(Self::STL, "", stl_matcher);
+        inferer.add(Self::GLB, "glb", glb_matcher);
+        inferer.add(Self::STL, "stl", stl_matcher);
 
         inferer
             .get(data)
@@ -188,6 +205,34 @@ impl MediaType {
     pub fn or_guess_from_data(opt: Option<Self>, data: &[u8]) -> Option<Self> {
         opt.or_else(|| Self::guess_from_data(data))
     }
+
+    /// Return e.g. "jpg" for `image/jpeg`.
+    pub fn file_extension(&self) -> Option<&'static str> {
+        match self.as_str() {
+            // Special-case some where there are multiple extensions:
+            Self::JPEG => Some("jpg"),
+            Self::MARKDOWN => Some("md"),
+            Self::STL => Some("stl"),
+            Self::TEXT => Some("txt"),
+
+            _ => {
+                let alternatives = mime_guess2::get_mime_extensions_str(&self.0)?;
+
+                // Return shortest alternative:
+                alternatives.iter().min_by_key(|s| s.len()).copied()
+            }
+        }
+    }
+
+    /// Returns `true` if this is an image media type.
+    pub fn is_image(&self) -> bool {
+        self.as_str().starts_with("image/")
+    }
+
+    /// Returns `true` if this is an video media type.
+    pub fn is_video(&self) -> bool {
+        self.as_str().starts_with("video/")
+    }
 }
 
 impl std::fmt::Display for MediaType {
@@ -204,4 +249,16 @@ impl Default for MediaType {
         // "The "octet-stream" subtype is used to indicate that a body contains arbitrary binary data."
         Self("application/octet-stream".into())
     }
+}
+
+#[test]
+fn test_media_type_extension() {
+    assert_eq!(MediaType::glb().file_extension(), Some("glb"));
+    assert_eq!(MediaType::gltf().file_extension(), Some("gltf"));
+    assert_eq!(MediaType::jpeg().file_extension(), Some("jpg"));
+    assert_eq!(MediaType::mp4().file_extension(), Some("mp4"));
+    assert_eq!(MediaType::markdown().file_extension(), Some("md"));
+    assert_eq!(MediaType::plain_text().file_extension(), Some("txt"));
+    assert_eq!(MediaType::png().file_extension(), Some("png"));
+    assert_eq!(MediaType::stl().file_extension(), Some("stl"));
 }

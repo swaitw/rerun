@@ -12,20 +12,22 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Component**: How we interpret the coordinate system of an entity/space.
 ///
-/// For instance: What is "up"? What does the Z axis mean? Is this right-handed or left-handed?
+/// For instance: What is "up"? What does the Z axis mean?
 ///
 /// The three coordinates are always ordered as [x, y, z].
 ///
 /// For example [Right, Down, Forward] means that the X axis points to the right, the Y axis points
 /// down, and the Z axis points forward.
+///
+/// ⚠ [Rerun does not yet support left-handed coordinate systems](https://github.com/rerun-io/rerun/issues/5032).
 ///
 /// The following constants are used to represent the different directions:
 ///  * Up = 1
@@ -41,15 +43,51 @@ pub struct ViewCoordinates(
     pub crate::datatypes::ViewCoordinates,
 );
 
-impl ::re_types_core::SizeBytes for ViewCoordinates {
+impl ::re_types_core::Component for ViewCoordinates {
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.0.heap_size_bytes()
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("rerun.components.ViewCoordinates")
+    }
+}
+
+::re_types_core::macros::impl_into_cow!(ViewCoordinates);
+
+impl ::re_types_core::Loggable for ViewCoordinates {
+    #[inline]
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        crate::datatypes::ViewCoordinates::arrow_datatype()
+    }
+
+    fn to_arrow_opt<'a>(
+        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+    ) -> SerializationResult<arrow::array::ArrayRef>
+    where
+        Self: Clone + 'a,
+    {
+        crate::datatypes::ViewCoordinates::to_arrow_opt(data.into_iter().map(|datum| {
+            datum.map(|datum| match datum.into() {
+                ::std::borrow::Cow::Borrowed(datum) => ::std::borrow::Cow::Borrowed(&datum.0),
+                ::std::borrow::Cow::Owned(datum) => ::std::borrow::Cow::Owned(datum.0),
+            })
+        }))
+    }
+
+    fn from_arrow_opt(
+        arrow_data: &dyn arrow::array::Array,
+    ) -> DeserializationResult<Vec<Option<Self>>>
+    where
+        Self: Sized,
+    {
+        crate::datatypes::ViewCoordinates::from_arrow_opt(arrow_data)
+            .map(|v| v.into_iter().map(|v| v.map(Self)).collect())
     }
 
     #[inline]
-    fn is_pod() -> bool {
-        <crate::datatypes::ViewCoordinates>::is_pod()
+    fn from_arrow(arrow_data: &dyn arrow::array::Array) -> DeserializationResult<Vec<Self>>
+    where
+        Self: Sized,
+    {
+        crate::datatypes::ViewCoordinates::from_arrow(arrow_data).map(bytemuck::cast_vec)
     }
 }
 
@@ -82,50 +120,14 @@ impl std::ops::DerefMut for ViewCoordinates {
     }
 }
 
-::re_types_core::macros::impl_into_cow!(ViewCoordinates);
-
-impl ::re_types_core::Loggable for ViewCoordinates {
-    type Name = ::re_types_core::ComponentName;
-
+impl ::re_byte_size::SizeBytes for ViewCoordinates {
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.components.ViewCoordinates".into()
+    fn heap_size_bytes(&self) -> u64 {
+        self.0.heap_size_bytes()
     }
 
     #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        crate::datatypes::ViewCoordinates::arrow_datatype()
-    }
-
-    fn to_arrow_opt<'a>(
-        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
-    where
-        Self: Clone + 'a,
-    {
-        crate::datatypes::ViewCoordinates::to_arrow_opt(data.into_iter().map(|datum| {
-            datum.map(|datum| match datum.into() {
-                ::std::borrow::Cow::Borrowed(datum) => ::std::borrow::Cow::Borrowed(&datum.0),
-                ::std::borrow::Cow::Owned(datum) => ::std::borrow::Cow::Owned(datum.0),
-            })
-        }))
-    }
-
-    fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
-    ) -> DeserializationResult<Vec<Option<Self>>>
-    where
-        Self: Sized,
-    {
-        crate::datatypes::ViewCoordinates::from_arrow_opt(arrow_data)
-            .map(|v| v.into_iter().map(|v| v.map(Self)).collect())
-    }
-
-    #[inline]
-    fn from_arrow(arrow_data: &dyn arrow2::array::Array) -> DeserializationResult<Vec<Self>>
-    where
-        Self: Sized,
-    {
-        crate::datatypes::ViewCoordinates::from_arrow(arrow_data).map(bytemuck::cast_vec)
+    fn is_pod() -> bool {
+        <crate::datatypes::ViewCoordinates>::is_pod()
     }
 }

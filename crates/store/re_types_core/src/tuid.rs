@@ -1,46 +1,39 @@
 use std::sync::Arc;
 
-use crate::{DeserializationError, Loggable, SizeBytes};
-use arrow2::{
-    array::{StructArray, UInt64Array},
-    datatypes::{DataType, Field},
+use arrow::{
+    array::{ArrayRef, StructArray, UInt64Array},
+    datatypes::{DataType, Field, Fields},
 };
 
+use re_arrow_util::ArrowArrayDowncastRef as _;
 use re_tuid::Tuid;
+
+use crate::{DeserializationError, Loggable};
 
 // ---
 
-impl SizeBytes for Tuid {
-    #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        Self::heap_size_bytes(self)
-    }
+// TODO(emilk): This is a bit ugly… but good enough for now?
+pub fn tuid_arrow_fields() -> Fields {
+    Fields::from(vec![
+        Field::new("time_ns", DataType::UInt64, false),
+        Field::new("inc", DataType::UInt64, false),
+    ])
 }
 
 impl Loggable for Tuid {
-    type Name = crate::ComponentName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.controls.TUID".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        DataType::Struct(Arc::new(vec![
-            Field::new("time_ns", DataType::UInt64, false),
-            Field::new("inc", DataType::UInt64, false),
-        ]))
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        DataType::Struct(tuid_arrow_fields())
     }
 
     fn to_arrow_opt<'a>(
         _data: impl IntoIterator<Item = Option<impl Into<std::borrow::Cow<'a, Self>>>>,
-    ) -> crate::SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> crate::SerializationResult<ArrayRef>
     where
         Self: 'a,
     {
         Err(crate::SerializationError::not_implemented(
-            Self::name(),
+            Self::ARROW_EXTENSION_NAME,
             "TUIDs are never nullable, use `to_arrow()` instead",
         ))
     }
@@ -48,7 +41,7 @@ impl Loggable for Tuid {
     #[inline]
     fn to_arrow<'a>(
         data: impl IntoIterator<Item = impl Into<std::borrow::Cow<'a, Self>>>,
-    ) -> crate::SerializationResult<Box<dyn ::arrow2::array::Array>>
+    ) -> crate::SerializationResult<ArrayRef>
     where
         Self: 'a,
     {
@@ -58,19 +51,25 @@ impl Loggable for Tuid {
             .map(|tuid| (tuid.nanoseconds_since_epoch(), tuid.inc()))
             .unzip();
 
-        let values = vec![
-            UInt64Array::from_vec(time_ns_values).boxed(),
-            UInt64Array::from_vec(inc_values).boxed(),
+        let values: Vec<ArrayRef> = vec![
+            Arc::new(UInt64Array::from(time_ns_values)),
+            Arc::new(UInt64Array::from(inc_values)),
         ];
         let validity = None;
 
-        // TODO(#3360): We use the extended type here because we rely on it for formatting.
-        Ok(StructArray::new(Self::extended_arrow_datatype(), values, validity).boxed())
+        Ok(Arc::new(StructArray::new(
+            Fields::from(vec![
+                Field::new("time_ns", DataType::UInt64, false),
+                Field::new("inc", DataType::UInt64, false),
+            ]),
+            values,
+            validity,
+        )))
     }
 
-    fn from_arrow(array: &dyn ::arrow2::array::Array) -> crate::DeserializationResult<Vec<Self>> {
+    fn from_arrow(array: &dyn ::arrow::array::Array) -> crate::DeserializationResult<Vec<Self>> {
         let expected_datatype = Self::arrow_datatype();
-        let actual_datatype = array.data_type().to_logical_type();
+        let actual_datatype = array.data_type();
         if actual_datatype != &expected_datatype {
             return Err(DeserializationError::datatype_mismatch(
                 expected_datatype,
@@ -81,7 +80,8 @@ impl Loggable for Tuid {
         // NOTE: Unwrap is safe everywhere below, datatype is checked above.
         // NOTE: We don't even look at the validity, our datatype says we don't care.
 
-        let array = array.as_any().downcast_ref::<StructArray>().unwrap();
+        #[allow(clippy::unwrap_used)]
+        let array = array.downcast_array_ref::<StructArray>().unwrap();
 
         // TODO(cmc): Can we rely on the fields ordering from the datatype? I would assume not
         // since we generally cannot rely on anything when it comes to arrow…
@@ -90,19 +90,20 @@ impl Loggable for Tuid {
             let mut time_ns_index = None;
             let mut inc_index = None;
             for (i, field) in array.fields().iter().enumerate() {
-                if field.name == "time_ns" {
+                if field.name() == "time_ns" {
                     time_ns_index = Some(i);
-                } else if field.name == "inc" {
+                } else if field.name() == "inc" {
                     inc_index = Some(i);
                 }
             }
+            #[allow(clippy::unwrap_used)]
             (time_ns_index.unwrap(), inc_index.unwrap())
         };
 
         let get_buffer = |field_index: usize| {
-            array.values()[field_index]
-                .as_any()
-                .downcast_ref::<UInt64Array>()
+            #[allow(clippy::unwrap_used)]
+            array.columns()[field_index]
+                .downcast_array_ref::<UInt64Array>()
                 .unwrap()
                 .values()
         };
@@ -141,27 +142,20 @@ macro_rules! delegate_arrow_tuid {
         $crate::macros::impl_into_cow!($typ);
 
         impl $crate::Loggable for $typ {
-            type Name = $crate::ComponentName;
-
             #[inline]
-            fn name() -> Self::Name {
-                $fqname.into()
-            }
-
-            #[inline]
-            fn arrow_datatype() -> ::arrow2::datatypes::DataType {
+            fn arrow_datatype() -> ::arrow::datatypes::DataType {
                 $crate::external::re_tuid::Tuid::arrow_datatype()
             }
 
             #[inline]
             fn to_arrow_opt<'a>(
-                values: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-            ) -> $crate::SerializationResult<Box<dyn ::arrow2::array::Array>>
+                _values: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+            ) -> $crate::SerializationResult<arrow::array::ArrayRef>
             where
                 Self: 'a,
             {
                 Err($crate::SerializationError::not_implemented(
-                    Self::name(),
+                    <Self as $crate::Component>::name(),
                     "TUIDs are never nullable, use `to_arrow()` instead",
                 ))
             }
@@ -169,7 +163,7 @@ macro_rules! delegate_arrow_tuid {
             #[inline]
             fn to_arrow<'a>(
                 values: impl IntoIterator<Item = impl Into<std::borrow::Cow<'a, Self>>>,
-            ) -> $crate::SerializationResult<Box<dyn ::arrow2::array::Array>> {
+            ) -> $crate::SerializationResult<arrow::array::ArrayRef> {
                 let values = values.into_iter().map(|value| {
                     let value: ::std::borrow::Cow<'a, Self> = value.into();
                     value.into_owned()
@@ -181,7 +175,7 @@ macro_rules! delegate_arrow_tuid {
 
             #[inline]
             fn from_arrow(
-                array: &dyn arrow2::array::Array,
+                array: &dyn arrow::array::Array,
             ) -> $crate::DeserializationResult<Vec<Self>> {
                 Ok(
                     <$crate::external::re_tuid::Tuid as $crate::Loggable>::from_arrow(array)?
@@ -189,6 +183,18 @@ macro_rules! delegate_arrow_tuid {
                         .map(|tuid| Self(tuid))
                         .collect(),
                 )
+            }
+        }
+
+        impl $crate::Component for $typ {
+            #[inline]
+            fn name() -> $crate::ComponentName {
+                $fqname.into()
+            }
+
+            #[inline]
+            fn descriptor() -> $crate::ComponentDescriptor {
+                $crate::ComponentDescriptor::new($fqname)
             }
         }
     };

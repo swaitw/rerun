@@ -4,6 +4,7 @@
 #pragma once
 
 #include "../collection.hpp"
+#include "../component_descriptor.hpp"
 #include "../result.hpp"
 
 #include <cstdint>
@@ -20,6 +21,14 @@ namespace rerun::datatypes {
     /// **Datatype**: A binary blob of data.
     struct Blob {
         rerun::Collection<uint8_t> data;
+
+      public: // START of extensions from blob_ext.cpp:
+        /// Number of bytes
+        size_t size() const {
+            return data.size();
+        }
+
+        // END of extensions from blob_ext.cpp, start of generated code:
 
       public:
         Blob() = default;
@@ -40,7 +49,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::Blob> {
-        static constexpr const char Name[] = "rerun.datatypes.Blob";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.Blob";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

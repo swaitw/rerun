@@ -5,29 +5,55 @@
 
 #include "../../collection_adapter_builtins.hpp"
 
-namespace rerun::blueprint::archetypes {}
+namespace rerun::blueprint::archetypes {
+    VisualBounds2D VisualBounds2D::clear_fields() {
+        auto archetype = VisualBounds2D();
+        archetype.range =
+            ComponentBatch::empty<rerun::blueprint::components::VisualBounds2D>(Descriptor_range)
+                .value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> VisualBounds2D::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(2);
+        if (range.has_value()) {
+            columns.push_back(range.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(
+            ComponentColumn::from_indicators<VisualBounds2D>(static_cast<uint32_t>(lengths_.size()))
+                .value_or_throw()
+        );
+        return columns;
+    }
+
+    Collection<ComponentColumn> VisualBounds2D::columns() {
+        if (range.has_value()) {
+            return columns(std::vector<uint32_t>(range.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::blueprint::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<blueprint::archetypes::VisualBounds2D>::serialize(
-        const blueprint::archetypes::VisualBounds2D& archetype
-    ) {
+    Result<Collection<ComponentBatch>>
+        AsComponents<blueprint::archetypes::VisualBounds2D>::as_batches(
+            const blueprint::archetypes::VisualBounds2D& archetype
+        ) {
         using namespace blueprint::archetypes;
-        std::vector<DataCell> cells;
+        std::vector<ComponentBatch> cells;
         cells.reserve(2);
 
-        {
-            auto result = DataCell::from_loggable(archetype.range);
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.range.has_value()) {
+            cells.push_back(archetype.range.value());
         }
         {
-            auto indicator = VisualBounds2D::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<VisualBounds2D>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

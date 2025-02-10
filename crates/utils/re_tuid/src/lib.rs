@@ -18,15 +18,10 @@ pub struct Tuid {
 }
 
 impl Tuid {
-    /// Returns the total size of `self` on the heap, in bytes.
-    ///
-    /// NOTE: This crate cannot depend on `re_types_core`, therefore the actual implementation of
-    /// `SizeBytes for Tuid` lives in `re_types_core` and calls this method.
-    #[inline]
-    pub fn heap_size_bytes(&self) -> u64 {
-        let Self { time_ns: _, inc: _ } = self;
-        0
-    }
+    /// We give an actual name to [`Tuid`], and inject that name into the Arrow datatype extensions,
+    /// as a hack so that we can compactly format them when printing Arrow data to the terminal.
+    /// Check out `re_format_arrow` for context.
+    pub const ARROW_EXTENSION_NAME: &'static str = "rerun.datatypes.TUID";
 }
 
 impl std::fmt::Display for Tuid {
@@ -41,7 +36,7 @@ impl std::fmt::Debug for Tuid {
     }
 }
 
-impl<'a> From<Tuid> for std::borrow::Cow<'a, Tuid> {
+impl From<Tuid> for std::borrow::Cow<'_, Tuid> {
     #[inline]
     fn from(value: Tuid) -> Self {
         std::borrow::Cow::Owned(value)
@@ -215,6 +210,13 @@ fn random_u64() -> u64 {
     let mut bytes = [0_u8; 8];
     getrandom::getrandom(&mut bytes).expect("Couldn't get random bytes");
     u64::from_le_bytes(bytes)
+}
+
+impl re_byte_size::SizeBytes for Tuid {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        0
+    }
 }
 
 #[test]

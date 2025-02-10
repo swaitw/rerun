@@ -4,6 +4,7 @@
 #pragma once
 
 #include "../../blueprint/datatypes/tensor_dimension_index_slider.hpp"
+#include "../../component_descriptor.hpp"
 #include "../../result.hpp"
 
 #include <cstdint>
@@ -52,7 +53,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<blueprint::components::TensorDimensionIndexSlider> {
-        static constexpr const char Name[] =
+        static constexpr ComponentDescriptor Descriptor =
             "rerun.blueprint.components.TensorDimensionIndexSlider";
 
         /// Returns the arrow data type this type corresponds to.
@@ -65,10 +66,22 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const blueprint::components::TensorDimensionIndexSlider* instances, size_t num_instances
         ) {
-            return Loggable<rerun::blueprint::datatypes::TensorDimensionIndexSlider>::to_arrow(
-                &instances->selection,
-                num_instances
-            );
+            if (num_instances == 0) {
+                return Loggable<rerun::blueprint::datatypes::TensorDimensionIndexSlider>::to_arrow(
+                    nullptr,
+                    0
+                );
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::blueprint::datatypes::TensorDimensionIndexSlider>::to_arrow(
+                    &instances->selection,
+                    num_instances
+                );
+            }
         }
     };
 } // namespace rerun

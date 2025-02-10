@@ -1,12 +1,12 @@
-use std::{
-    collections::BTreeSet,
-    sync::{atomic::Ordering, Arc},
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 use itertools::Itertools;
+use nohash_hasher::IntSet;
+
 use re_chunk::{Chunk, LatestAtQuery, RangeQuery};
+use re_log_types::ResolvedTimeRange;
 use re_log_types::{EntityPath, TimeInt, Timeline};
-use re_types_core::{ComponentName, ComponentNameSet};
+use re_types_core::{ComponentName, ComponentNameSet, UnorderedComponentNameSet};
 
 use crate::{store::ChunkIdSetPerTime, ChunkStore};
 
@@ -16,36 +16,212 @@ use crate::RowId;
 
 // ---
 
+// These APIs often have `temporal` and `static` variants.
+// It is sometimes useful to be able to separately query either,
+// such as when we want to tell the user that they logged a component
+// as both static and temporal, which is probably wrong.
+
 impl ChunkStore {
+    /// Retrieve all [`Timeline`]s in the store.
+    #[inline]
+    pub fn all_timelines(&self) -> IntSet<Timeline> {
+        self.temporal_chunk_ids_per_entity
+            .values()
+            .flat_map(|per_timeline| per_timeline.keys().copied())
+            .collect()
+    }
+
+    /// Retrieve all [`Timeline`]s in the store.
+    #[inline]
+    pub fn all_timelines_sorted(&self) -> BTreeSet<Timeline> {
+        self.temporal_chunk_ids_per_entity
+            .values()
+            .flat_map(|per_timeline| per_timeline.keys().copied())
+            .collect()
+    }
+
+    /// Retrieve all [`EntityPath`]s in the store.
+    #[inline]
+    pub fn all_entities(&self) -> IntSet<EntityPath> {
+        self.static_chunk_ids_per_entity
+            .keys()
+            .cloned()
+            .chain(self.temporal_chunk_ids_per_entity.keys().cloned())
+            .collect()
+    }
+
+    /// Retrieve all [`EntityPath`]s in the store.
+    #[inline]
+    pub fn all_entities_sorted(&self) -> BTreeSet<EntityPath> {
+        self.static_chunk_ids_per_entity
+            .keys()
+            .cloned()
+            .chain(self.temporal_chunk_ids_per_entity.keys().cloned())
+            .collect()
+    }
+
+    /// Retrieve all [`ComponentName`]s in the store.
+    pub fn all_components(&self) -> IntSet<ComponentName> {
+        self.static_chunk_ids_per_entity
+            .values()
+            .flat_map(|static_chunks_per_component| static_chunks_per_component.keys())
+            .chain(
+                self.temporal_chunk_ids_per_entity_per_component
+                    .values()
+                    .flat_map(|temporal_chunk_ids_per_timeline| {
+                        temporal_chunk_ids_per_timeline.values().flat_map(
+                            |temporal_chunk_ids_per_component| {
+                                temporal_chunk_ids_per_component.keys()
+                            },
+                        )
+                    }),
+            )
+            .copied()
+            .collect()
+    }
+
+    /// Retrieve all [`ComponentName`]s in the store.
+    pub fn all_components_sorted(&self) -> ComponentNameSet {
+        self.static_chunk_ids_per_entity
+            .values()
+            .flat_map(|static_chunks_per_component| static_chunks_per_component.keys())
+            .chain(
+                self.temporal_chunk_ids_per_entity_per_component
+                    .values()
+                    .flat_map(|temporal_chunk_ids_per_timeline| {
+                        temporal_chunk_ids_per_timeline.values().flat_map(
+                            |temporal_chunk_ids_per_component| {
+                                temporal_chunk_ids_per_component.keys()
+                            },
+                        )
+                    }),
+            )
+            .copied()
+            .collect()
+    }
+
     /// Retrieve all the [`ComponentName`]s that have been written to for a given [`EntityPath`] on
     /// the specified [`Timeline`].
     ///
     /// Static components are always included in the results.
     ///
     /// Returns `None` if the entity doesn't exist at all on this `timeline`.
-    pub fn all_components(
+    pub fn all_components_on_timeline(
+        &self,
+        timeline: &Timeline,
+        entity_path: &EntityPath,
+    ) -> Option<UnorderedComponentNameSet> {
+        re_tracing::profile_function!();
+
+        let static_components: Option<UnorderedComponentNameSet> = self
+            .static_chunk_ids_per_entity
+            .get(entity_path)
+            .map(|static_chunks_per_component| {
+                static_chunks_per_component
+                    .keys()
+                    .copied()
+                    .collect::<UnorderedComponentNameSet>()
+            })
+            .filter(|names| !names.is_empty());
+
+        let temporal_components: Option<UnorderedComponentNameSet> = self
+            .temporal_chunk_ids_per_entity_per_component
+            .get(entity_path)
+            .map(|temporal_chunk_ids_per_timeline| {
+                temporal_chunk_ids_per_timeline
+                    .get(timeline)
+                    .map(|temporal_chunk_ids_per_component| {
+                        temporal_chunk_ids_per_component
+                            .keys()
+                            .copied()
+                            .collect::<UnorderedComponentNameSet>()
+                    })
+                    .unwrap_or_default()
+            })
+            .filter(|names| !names.is_empty());
+
+        match (static_components, temporal_components) {
+            (None, None) => None,
+            (None, Some(comps)) | (Some(comps), None) => Some(comps),
+            (Some(static_comps), Some(temporal_comps)) => {
+                Some(static_comps.into_iter().chain(temporal_comps).collect())
+            }
+        }
+    }
+
+    /// Retrieve all the [`ComponentName`]s that have been written to for a given [`EntityPath`] on
+    /// the specified [`Timeline`].
+    ///
+    /// Static components are always included in the results.
+    ///
+    /// Returns `None` if the entity doesn't exist at all on this `timeline`.
+    pub fn all_components_on_timeline_sorted(
         &self,
         timeline: &Timeline,
         entity_path: &EntityPath,
     ) -> Option<ComponentNameSet> {
         re_tracing::profile_function!();
 
-        self.query_id.fetch_add(1, Ordering::Relaxed);
-
         let static_components: Option<ComponentNameSet> = self
             .static_chunk_ids_per_entity
             .get(entity_path)
             .map(|static_chunks_per_component| {
-                static_chunks_per_component.keys().copied().collect()
-            });
+                static_chunks_per_component
+                    .keys()
+                    .copied()
+                    .collect::<ComponentNameSet>()
+            })
+            .filter(|names| !names.is_empty());
 
         let temporal_components: Option<ComponentNameSet> = self
             .temporal_chunk_ids_per_entity_per_component
             .get(entity_path)
             .map(|temporal_chunk_ids_per_timeline| {
                 temporal_chunk_ids_per_timeline
+                    .get(timeline)
+                    .map(|temporal_chunk_ids_per_component| {
+                        temporal_chunk_ids_per_component
+                            .keys()
+                            .copied()
+                            .collect::<ComponentNameSet>()
+                    })
+                    .unwrap_or_default()
+            })
+            .filter(|names| !names.is_empty());
+
+        match (static_components, temporal_components) {
+            (None, None) => None,
+            (None, Some(comps)) | (Some(comps), None) => Some(comps),
+            (Some(static_comps), Some(temporal_comps)) => {
+                Some(static_comps.into_iter().chain(temporal_comps).collect())
+            }
+        }
+    }
+
+    /// Retrieve all the [`ComponentName`]s that have been written to for a given [`EntityPath`].
+    ///
+    /// Static components are always included in the results.
+    ///
+    /// Returns `None` if the entity has never had any data logged to it.
+    pub fn all_components_for_entity(
+        &self,
+        entity_path: &EntityPath,
+    ) -> Option<UnorderedComponentNameSet> {
+        re_tracing::profile_function!();
+
+        let static_components: Option<UnorderedComponentNameSet> = self
+            .static_chunk_ids_per_entity
+            .get(entity_path)
+            .map(|static_chunks_per_component| {
+                static_chunks_per_component.keys().copied().collect()
+            });
+
+        let temporal_components: Option<UnorderedComponentNameSet> = self
+            .temporal_chunk_ids_per_entity_per_component
+            .get(entity_path)
+            .map(|temporal_chunk_ids_per_timeline| {
+                temporal_chunk_ids_per_timeline
                     .iter()
-                    .filter(|(cur_timeline, _)| *cur_timeline == timeline)
                     .flat_map(|(_, temporal_chunk_ids_per_component)| {
                         temporal_chunk_ids_per_component.keys().copied()
                     })
@@ -61,18 +237,224 @@ impl ChunkStore {
         }
     }
 
-    /// Check whether a given entity has a specific [`ComponentName`] either on the specified
-    /// timeline, or in its static data.
+    /// Retrieve all the [`ComponentName`]s that have been written to for a given [`EntityPath`].
+    ///
+    /// Static components are always included in the results.
+    ///
+    /// Returns `None` if the entity has never had any data logged to it.
+    pub fn all_components_for_entity_sorted(
+        &self,
+        entity_path: &EntityPath,
+    ) -> Option<ComponentNameSet> {
+        re_tracing::profile_function!();
+
+        let static_components: Option<ComponentNameSet> = self
+            .static_chunk_ids_per_entity
+            .get(entity_path)
+            .map(|static_chunks_per_component| {
+                static_chunks_per_component.keys().copied().collect()
+            });
+
+        let temporal_components: Option<ComponentNameSet> = self
+            .temporal_chunk_ids_per_entity_per_component
+            .get(entity_path)
+            .map(|temporal_chunk_ids_per_timeline| {
+                temporal_chunk_ids_per_timeline
+                    .iter()
+                    .flat_map(|(_, temporal_chunk_ids_per_component)| {
+                        temporal_chunk_ids_per_component.keys().copied()
+                    })
+                    .collect()
+            });
+
+        match (static_components, temporal_components) {
+            (None, None) => None,
+            (None, comps @ Some(_)) | (comps @ Some(_), None) => comps,
+            (Some(static_comps), Some(temporal_comps)) => {
+                Some(static_comps.into_iter().chain(temporal_comps).collect())
+            }
+        }
+    }
+
+    /// Check whether an entity has a static component or a temporal component on the specified timeline.
+    ///
+    /// This does _not_ check if the entity actually currently holds any data for that component.
     #[inline]
-    pub fn entity_has_component(
+    pub fn entity_has_component_on_timeline(
         &self,
         timeline: &Timeline,
         entity_path: &EntityPath,
         component_name: &ComponentName,
     ) -> bool {
-        re_tracing::profile_function!();
-        self.all_components(timeline, entity_path)
-            .map_or(false, |components| components.contains(component_name))
+        // re_tracing::profile_function!(); // This function is too fast; profiling will only add overhead
+
+        self.entity_has_static_component(entity_path, component_name)
+            || self.entity_has_temporal_component_on_timeline(timeline, entity_path, component_name)
+    }
+
+    /// Check whether an entity has a static component or a temporal component on any timeline.
+    ///
+    /// This does _not_ check if the entity actually currently holds any data for that component.
+    pub fn entity_has_component(
+        &self,
+        entity_path: &EntityPath,
+        component_name: &ComponentName,
+    ) -> bool {
+        // re_tracing::profile_function!(); // This function is too fast; profiling will only add overhead
+
+        self.entity_has_static_component(entity_path, component_name)
+            || self.entity_has_temporal_component(entity_path, component_name)
+    }
+
+    /// Check whether an entity has a specific static component.
+    ///
+    /// This does _not_ check if the entity actually currently holds any data for that component.
+    #[inline]
+    pub fn entity_has_static_component(
+        &self,
+        entity_path: &EntityPath,
+        component_name: &ComponentName,
+    ) -> bool {
+        // re_tracing::profile_function!(); // This function is too fast; profiling will only add overhead
+
+        self.static_chunk_ids_per_entity
+            .get(entity_path)
+            .is_some_and(|static_chunk_ids_per_component| {
+                static_chunk_ids_per_component.contains_key(component_name)
+            })
+    }
+
+    /// Check whether an entity has a temporal component on any timeline.
+    ///
+    /// This does _not_ check if the entity actually currently holds any data for that component.
+    #[inline]
+    pub fn entity_has_temporal_component(
+        &self,
+        entity_path: &EntityPath,
+        component_name: &ComponentName,
+    ) -> bool {
+        // re_tracing::profile_function!(); // This function is too fast; profiling will only add overhead
+
+        self.temporal_chunk_ids_per_entity_per_component
+            .get(entity_path)
+            .iter()
+            .flat_map(|temporal_chunk_ids_per_timeline| temporal_chunk_ids_per_timeline.values())
+            .any(|temporal_chunk_ids_per_component| {
+                temporal_chunk_ids_per_component.contains_key(component_name)
+            })
+    }
+
+    /// Check whether an entity has a temporal component on a specific timeline.
+    ///
+    /// This does _not_ check if the entity actually currently holds any data for that component.
+    #[inline]
+    pub fn entity_has_temporal_component_on_timeline(
+        &self,
+        timeline: &Timeline,
+        entity_path: &EntityPath,
+        component_name: &ComponentName,
+    ) -> bool {
+        // re_tracing::profile_function!(); // This function is too fast; profiling will only add overhead
+
+        self.temporal_chunk_ids_per_entity_per_component
+            .get(entity_path)
+            .iter()
+            .filter_map(|temporal_chunk_ids_per_timeline| {
+                temporal_chunk_ids_per_timeline.get(timeline)
+            })
+            .any(|temporal_chunk_ids_per_component| {
+                temporal_chunk_ids_per_component.contains_key(component_name)
+            })
+    }
+
+    /// Check whether an entity has any data on a specific timeline, or any static data.
+    ///
+    /// This is different from checking if the entity has any component, it also ensures
+    /// that some _data_ currently exists in the store for this entity.
+    #[inline]
+    pub fn entity_has_data_on_timeline(
+        &self,
+        timeline: &Timeline,
+        entity_path: &EntityPath,
+    ) -> bool {
+        // re_tracing::profile_function!(); // This function is too fast; profiling will only add overhead
+
+        self.entity_has_static_data(entity_path)
+            || self.entity_has_temporal_data_on_timeline(timeline, entity_path)
+    }
+
+    /// Check whether an entity has any static data or any temporal data on any timeline.
+    ///
+    /// This is different from checking if the entity has any component, it also ensures
+    /// that some _data_ currently exists in the store for this entity.
+    #[inline]
+    pub fn entity_has_data(&self, entity_path: &EntityPath) -> bool {
+        // re_tracing::profile_function!(); // This function is too fast; profiling will only add overhead
+
+        self.entity_has_static_data(entity_path) || self.entity_has_temporal_data(entity_path)
+    }
+
+    /// Check whether an entity has any static data.
+    ///
+    /// This is different from checking if the entity has any component, it also ensures
+    /// that some _data_ currently exists in the store for this entity.
+    #[inline]
+    pub fn entity_has_static_data(&self, entity_path: &EntityPath) -> bool {
+        // re_tracing::profile_function!(); // This function is too fast; profiling will only add overhead
+
+        self.static_chunk_ids_per_entity
+            .get(entity_path)
+            .is_some_and(|static_chunk_ids_per_component| {
+                static_chunk_ids_per_component
+                    .values()
+                    .any(|chunk_id| self.chunks_per_chunk_id.contains_key(chunk_id))
+            })
+    }
+
+    /// Check whether an entity has any temporal data.
+    ///
+    /// This is different from checking if the entity has any component, it also ensures
+    /// that some _data_ currently exists in the store for this entity.
+    #[inline]
+    pub fn entity_has_temporal_data(&self, entity_path: &EntityPath) -> bool {
+        // re_tracing::profile_function!(); // This function is too fast; profiling will only add overhead
+
+        self.temporal_chunk_ids_per_entity_per_component
+            .get(entity_path)
+            .is_some_and(|temporal_chunks_per_timeline| {
+                temporal_chunks_per_timeline
+                    .values()
+                    .flat_map(|temporal_chunks_per_component| {
+                        temporal_chunks_per_component.values()
+                    })
+                    .flat_map(|chunk_id_sets| chunk_id_sets.per_start_time.values())
+                    .flat_map(|chunk_id_set| chunk_id_set.iter())
+                    .any(|chunk_id| self.chunks_per_chunk_id.contains_key(chunk_id))
+            })
+    }
+
+    /// Check whether an entity has any temporal data.
+    ///
+    /// This is different from checking if the entity has any component, it also ensures
+    /// that some _data_ currently exists in the store for this entity.
+    #[inline]
+    pub fn entity_has_temporal_data_on_timeline(
+        &self,
+        timeline: &Timeline,
+        entity_path: &EntityPath,
+    ) -> bool {
+        // re_tracing::profile_function!(); // This function is too fast; profiling will only add overhead
+
+        self.temporal_chunk_ids_per_entity_per_component
+            .get(entity_path)
+            .and_then(|temporal_chunks_per_timeline| temporal_chunks_per_timeline.get(timeline))
+            .is_some_and(|temporal_chunks_per_component| {
+                temporal_chunks_per_component
+                    .values()
+                    .flat_map(|chunk_id_sets| chunk_id_sets.per_start_time.values())
+                    .flat_map(|chunk_id_set| chunk_id_set.iter())
+                    .any(|chunk_id| self.chunks_per_chunk_id.contains_key(chunk_id))
+            })
     }
 
     /// Find the earliest time at which something was logged for a given entity on the specified
@@ -104,6 +486,44 @@ impl ChunkStore {
 
         (time_min != TimeInt::MAX).then_some(time_min)
     }
+
+    /// Returns the min and max times at which data was logged for an entity on a specific timeline.
+    ///
+    /// This ignores static data.
+    pub fn entity_time_range(
+        &self,
+        timeline: &Timeline,
+        entity_path: &EntityPath,
+    ) -> Option<ResolvedTimeRange> {
+        re_tracing::profile_function!();
+
+        let temporal_chunk_ids_per_timeline =
+            self.temporal_chunk_ids_per_entity.get(entity_path)?;
+        let chunk_id_sets = temporal_chunk_ids_per_timeline.get(timeline)?;
+
+        let start = chunk_id_sets.per_start_time.first_key_value()?.0;
+        let end = chunk_id_sets.per_end_time.last_key_value()?.0;
+
+        Some(ResolvedTimeRange::new(*start, *end))
+    }
+
+    /// Returns the min and max times at which data was logged on a specific timeline, considering
+    /// all entities.
+    ///
+    /// This ignores static data.
+    pub fn time_range(&self, timeline: &Timeline) -> Option<ResolvedTimeRange> {
+        re_tracing::profile_function!();
+
+        self.temporal_chunk_ids_per_entity
+            .values()
+            .filter_map(|temporal_chunk_ids_per_timeline| {
+                let per_time = temporal_chunk_ids_per_timeline.get(timeline)?;
+                let start = per_time.per_start_time.first_key_value()?.0;
+                let end = per_time.per_end_time.last_key_value()?.0;
+                Some(ResolvedTimeRange::new(*start, *end))
+            })
+            .reduce(|r1, r2| r1.union(r2))
+    }
 }
 
 // LatestAt
@@ -128,9 +548,8 @@ impl ChunkStore {
         entity_path: &EntityPath,
         component_name: ComponentName,
     ) -> Vec<Arc<Chunk>> {
-        re_tracing::profile_function!(format!("{query:?}"));
-
-        self.query_id.fetch_add(1, Ordering::Relaxed);
+        // Don't do a profile scope here, this can have a lot of overhead when executing many small queries.
+        //re_tracing::profile_function!(format!("{query:?}"));
 
         // Reminder: if a chunk has been indexed for a given component, then it must contain at
         // least one non-null value for that column.
@@ -160,7 +579,10 @@ impl ChunkStore {
             })
             .unwrap_or_default();
 
-        debug_assert!(chunks.iter().map(|chunk| chunk.id()).all_unique());
+        debug_assert!(
+            chunks.iter().map(|chunk| chunk.id()).all_unique(),
+            "{entity_path}:{component_name} @ {query:?}",
+        );
 
         chunks
     }
@@ -185,8 +607,6 @@ impl ChunkStore {
     ) -> Vec<Arc<Chunk>> {
         re_tracing::profile_function!(format!("{query:?}"));
 
-        self.query_id.fetch_add(1, Ordering::Relaxed);
-
         let chunks = self
             .temporal_chunk_ids_per_entity
             .get(entity_path)
@@ -208,7 +628,8 @@ impl ChunkStore {
         query: &LatestAtQuery,
         temporal_chunk_ids_per_time: &ChunkIdSetPerTime,
     ) -> Option<Vec<Arc<Chunk>>> {
-        re_tracing::profile_function!();
+        // Don't do a profile scope here, this can have a lot of overhead when executing many small queries.
+        //re_tracing::profile_function!();
 
         let upper_bound = temporal_chunk_ids_per_time
             .per_start_time
@@ -242,7 +663,7 @@ impl ChunkStore {
             .take_while(|(time, _)| time.as_i64() >= lower_bound)
             .flat_map(|(_time, chunk_ids)| chunk_ids.iter())
             .copied()
-            .collect::<BTreeSet<_>>();
+            .collect_vec();
 
         Some(
             temporal_chunk_ids
@@ -274,8 +695,6 @@ impl ChunkStore {
         component_name: ComponentName,
     ) -> Vec<Arc<Chunk>> {
         re_tracing::profile_function!(format!("{query:?}"));
-
-        self.query_id.fetch_add(1, Ordering::Relaxed);
 
         if let Some(static_chunk) = self
             .static_chunk_ids_per_entity
@@ -309,11 +728,12 @@ impl ChunkStore {
                 chunk
                     .timelines()
                     .get(&query.timeline())
-                    .map_or(false, |time_chunk| {
-                        time_chunk
+                    .is_some_and(|time_column| {
+                        time_column
                             .time_range_per_component(chunk.components())
                             .get(&component_name)
-                            .map_or(false, |time_range| time_range.intersects(query.range()))
+                            .and_then(|per_desc| per_desc.values().next())
+                            .is_some_and(|time_range| time_range.intersects(query.range()))
                     })
             })
             .collect_vec();
@@ -341,8 +761,6 @@ impl ChunkStore {
     ) -> Vec<Arc<Chunk>> {
         re_tracing::profile_function!(format!("{query:?}"));
 
-        self.query_id.fetch_add(1, Ordering::Relaxed);
-
         let chunks = self
             .range(
                 query,
@@ -361,9 +779,7 @@ impl ChunkStore {
                 chunk
                     .timelines()
                     .get(&query.timeline())
-                    .map_or(false, |time_chunk| {
-                        time_chunk.time_range().intersects(query.range())
-                    })
+                    .is_some_and(|time_column| time_column.time_range().intersects(query.range()))
             })
             .collect_vec();
 
@@ -377,19 +793,57 @@ impl ChunkStore {
         query: &RangeQuery,
         temporal_chunk_ids_per_times: impl Iterator<Item = &'a ChunkIdSetPerTime>,
     ) -> Vec<Arc<Chunk>> {
-        re_tracing::profile_function!();
+        // Too small & frequent for profiling scopes.
+        //re_tracing::profile_function!();
 
         temporal_chunk_ids_per_times
             .map(|temporal_chunk_ids_per_time| {
+                // See `RangeQueryOptions::include_extended_bounds` for more information.
+                let query_min = if query.options().include_extended_bounds {
+                    re_log_types::TimeInt::new_temporal(
+                        query.range.min().as_i64().saturating_sub(1),
+                    )
+                } else {
+                    query.range.min()
+                };
+                let query_max = if query.options().include_extended_bounds {
+                    re_log_types::TimeInt::new_temporal(
+                        query.range.max().as_i64().saturating_add(1),
+                    )
+                } else {
+                    query.range.max()
+                };
+
+                // Overlapped chunks
+                // =================
+                //
+                // To deal with potentially overlapping chunks, we keep track of the longest
+                // interval in the entire map, which gives us an upper bound on how much we
+                // would need to walk backwards in order to find all potential overlaps.
+                //
+                // This is a fairly simple solution that scales much better than interval-tree
+                // based alternatives, both in terms of complexity and performance, in the normal
+                // case where most chunks in a collection have similar lengths.
+                //
+                // The most degenerate case -- a single chunk overlaps everything else -- results
+                // in `O(n)` performance, which gets amortized by the query cache.
+                // If that turns out to be a problem in practice, we can experiment with more
+                // complex solutions then.
+                let query_min = TimeInt::new_temporal(
+                    query_min
+                        .as_i64()
+                        .saturating_sub(temporal_chunk_ids_per_time.max_interval_length as _),
+                );
+
                 let start_time = temporal_chunk_ids_per_time
                     .per_start_time
-                    .range(..=query.range.min())
+                    .range(..=query_min)
                     .next_back()
                     .map_or(TimeInt::MIN, |(&time, _)| time);
 
                 let end_time = temporal_chunk_ids_per_time
                     .per_start_time
-                    .range(..=query.range.max())
+                    .range(..=query_max)
                     .next_back()
                     .map_or(start_time, |(&time, _)| time);
 

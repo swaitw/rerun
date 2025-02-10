@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import numpy as np
 from attrs import define, field
 
-from .. import components
+from .. import components, datatypes
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
+from ..error_utils import catch_and_log_exceptions
 from .mesh3d_ext import Mesh3DExt
 
 __all__ = ["Mesh3D"]
@@ -23,8 +26,11 @@ class Mesh3D(Mesh3DExt, Archetype):
 
     See also [`archetypes.Asset3D`][rerun.archetypes.Asset3D].
 
-    Example
-    -------
+    If there are multiple [`archetypes.InstancePoses3D`][rerun.archetypes.InstancePoses3D] instances logged to the same entity as a mesh,
+    an instance of the mesh will be drawn for each transform.
+
+    Examples
+    --------
     ### Simple indexed 3D mesh:
     ```python
     import rerun as rr
@@ -43,11 +49,52 @@ class Mesh3D(Mesh3DExt, Archetype):
     ```
     <center>
     <picture>
-      <source media="(max-width: 480px)" srcset="https://static.rerun.io/mesh3d_simple/e1e5fd97265daf0d0bc7b782d862f19086fd6975/480w.png">
-      <source media="(max-width: 768px)" srcset="https://static.rerun.io/mesh3d_simple/e1e5fd97265daf0d0bc7b782d862f19086fd6975/768w.png">
-      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/mesh3d_simple/e1e5fd97265daf0d0bc7b782d862f19086fd6975/1024w.png">
-      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/mesh3d_simple/e1e5fd97265daf0d0bc7b782d862f19086fd6975/1200w.png">
-      <img src="https://static.rerun.io/mesh3d_simple/e1e5fd97265daf0d0bc7b782d862f19086fd6975/full.png" width="640">
+      <source media="(max-width: 480px)" srcset="https://static.rerun.io/mesh3d_indexed/57c70dc992e6dc0bd9c5222ca084f5b6240cea75/480w.png">
+      <source media="(max-width: 768px)" srcset="https://static.rerun.io/mesh3d_indexed/57c70dc992e6dc0bd9c5222ca084f5b6240cea75/768w.png">
+      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/mesh3d_indexed/57c70dc992e6dc0bd9c5222ca084f5b6240cea75/1024w.png">
+      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/mesh3d_indexed/57c70dc992e6dc0bd9c5222ca084f5b6240cea75/1200w.png">
+      <img src="https://static.rerun.io/mesh3d_indexed/57c70dc992e6dc0bd9c5222ca084f5b6240cea75/full.png" width="640">
+    </picture>
+    </center>
+
+    ### 3D mesh with instancing:
+    ```python
+    import rerun as rr
+
+    rr.init("rerun_example_mesh3d_instancing", spawn=True)
+    rr.set_time_sequence("frame", 0)
+
+    rr.log(
+        "shape",
+        rr.Mesh3D(
+            vertex_positions=[[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]],
+            triangle_indices=[[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]],
+            vertex_colors=[[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0]],
+        ),
+    )
+    # This box will not be affected by its parent's instance poses!
+    rr.log(
+        "shape/box",
+        rr.Boxes3D(half_sizes=[[5.0, 5.0, 5.0]]),
+    )
+
+    for i in range(0, 100):
+        rr.set_time_sequence("frame", i)
+        rr.log(
+            "shape",
+            rr.InstancePoses3D(
+                translations=[[2, 0, 0], [0, 2, 0], [0, -2, 0], [-2, 0, 0]],
+                rotation_axis_angles=rr.RotationAxisAngle([0, 0, 1], rr.Angle(deg=i * 2)),
+            ),
+        )
+    ```
+    <center>
+    <picture>
+      <source media="(max-width: 480px)" srcset="https://static.rerun.io/mesh3d_leaf_transforms3d/c2d0ee033129da53168f5705625a9b033f3a3d61/480w.png">
+      <source media="(max-width: 768px)" srcset="https://static.rerun.io/mesh3d_leaf_transforms3d/c2d0ee033129da53168f5705625a9b033f3a3d61/768w.png">
+      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/mesh3d_leaf_transforms3d/c2d0ee033129da53168f5705625a9b033f3a3d61/1024w.png">
+      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/mesh3d_leaf_transforms3d/c2d0ee033129da53168f5705625a9b033f3a3d61/1200w.png">
+      <img src="https://static.rerun.io/mesh3d_leaf_transforms3d/c2d0ee033129da53168f5705625a9b033f3a3d61/full.png" width="640">
     </picture>
     </center>
 
@@ -58,14 +105,15 @@ class Mesh3D(Mesh3DExt, Archetype):
     def __attrs_clear__(self) -> None:
         """Convenience method for calling `__attrs_init__` with all `None`s."""
         self.__attrs_init__(
-            vertex_positions=None,  # type: ignore[arg-type]
-            triangle_indices=None,  # type: ignore[arg-type]
-            vertex_normals=None,  # type: ignore[arg-type]
-            vertex_colors=None,  # type: ignore[arg-type]
-            vertex_texcoords=None,  # type: ignore[arg-type]
-            albedo_factor=None,  # type: ignore[arg-type]
-            albedo_texture=None,  # type: ignore[arg-type]
-            class_ids=None,  # type: ignore[arg-type]
+            vertex_positions=None,
+            triangle_indices=None,
+            vertex_normals=None,
+            vertex_colors=None,
+            vertex_texcoords=None,
+            albedo_factor=None,
+            albedo_texture_buffer=None,
+            albedo_texture_format=None,
+            class_ids=None,
         )
 
     @classmethod
@@ -75,9 +123,169 @@ class Mesh3D(Mesh3DExt, Archetype):
         inst.__attrs_clear__()
         return inst
 
-    vertex_positions: components.Position3DBatch = field(
-        metadata={"component": "required"},
-        converter=components.Position3DBatch._required,  # type: ignore[misc]
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        clear_unset: bool = False,
+        vertex_positions: datatypes.Vec3DArrayLike | None = None,
+        triangle_indices: datatypes.UVec3DArrayLike | None = None,
+        vertex_normals: datatypes.Vec3DArrayLike | None = None,
+        vertex_colors: datatypes.Rgba32ArrayLike | None = None,
+        vertex_texcoords: datatypes.Vec2DArrayLike | None = None,
+        albedo_factor: datatypes.Rgba32Like | None = None,
+        albedo_texture_buffer: datatypes.BlobLike | None = None,
+        albedo_texture_format: datatypes.ImageFormatLike | None = None,
+        class_ids: datatypes.ClassIdArrayLike | None = None,
+    ) -> Mesh3D:
+        """
+        Update only some specific fields of a `Mesh3D`.
+
+        Parameters
+        ----------
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        vertex_positions:
+            The positions of each vertex.
+
+            If no `triangle_indices` are specified, then each triplet of positions is interpreted as a triangle.
+        triangle_indices:
+            Optional indices for the triangles that make up the mesh.
+        vertex_normals:
+            An optional normal for each vertex.
+        vertex_colors:
+            An optional color for each vertex.
+        vertex_texcoords:
+            An optional uv texture coordinate for each vertex.
+        albedo_factor:
+            A color multiplier applied to the whole mesh.
+        albedo_texture_buffer:
+            Optional albedo texture.
+
+            Used with the [`components.Texcoord2D`][rerun.components.Texcoord2D] of the mesh.
+
+            Currently supports only sRGB(A) textures, ignoring alpha.
+            (meaning that the tensor must have 3 or 4 channels and use the `u8` format)
+        albedo_texture_format:
+            The format of the `albedo_texture_buffer`, if any.
+        class_ids:
+            Optional class Ids for the vertices.
+
+            The [`components.ClassId`][rerun.components.ClassId] provides colors and labels if not specified explicitly.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "vertex_positions": vertex_positions,
+                "triangle_indices": triangle_indices,
+                "vertex_normals": vertex_normals,
+                "vertex_colors": vertex_colors,
+                "vertex_texcoords": vertex_texcoords,
+                "albedo_factor": albedo_factor,
+                "albedo_texture_buffer": albedo_texture_buffer,
+                "albedo_texture_format": albedo_texture_format,
+                "class_ids": class_ids,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def cleared(cls) -> Mesh3D:
+        """Clear all the fields of a `Mesh3D`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        vertex_positions: datatypes.Vec3DArrayLike | None = None,
+        triangle_indices: datatypes.UVec3DArrayLike | None = None,
+        vertex_normals: datatypes.Vec3DArrayLike | None = None,
+        vertex_colors: datatypes.Rgba32ArrayLike | None = None,
+        vertex_texcoords: datatypes.Vec2DArrayLike | None = None,
+        albedo_factor: datatypes.Rgba32ArrayLike | None = None,
+        albedo_texture_buffer: datatypes.BlobArrayLike | None = None,
+        albedo_texture_format: datatypes.ImageFormatArrayLike | None = None,
+        class_ids: datatypes.ClassIdArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        vertex_positions:
+            The positions of each vertex.
+
+            If no `triangle_indices` are specified, then each triplet of positions is interpreted as a triangle.
+        triangle_indices:
+            Optional indices for the triangles that make up the mesh.
+        vertex_normals:
+            An optional normal for each vertex.
+        vertex_colors:
+            An optional color for each vertex.
+        vertex_texcoords:
+            An optional uv texture coordinate for each vertex.
+        albedo_factor:
+            A color multiplier applied to the whole mesh.
+        albedo_texture_buffer:
+            Optional albedo texture.
+
+            Used with the [`components.Texcoord2D`][rerun.components.Texcoord2D] of the mesh.
+
+            Currently supports only sRGB(A) textures, ignoring alpha.
+            (meaning that the tensor must have 3 or 4 channels and use the `u8` format)
+        albedo_texture_format:
+            The format of the `albedo_texture_buffer`, if any.
+        class_ids:
+            Optional class Ids for the vertices.
+
+            The [`components.ClassId`][rerun.components.ClassId] provides colors and labels if not specified explicitly.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                vertex_positions=vertex_positions,
+                triangle_indices=triangle_indices,
+                vertex_normals=vertex_normals,
+                vertex_colors=vertex_colors,
+                vertex_texcoords=vertex_texcoords,
+                albedo_factor=albedo_factor,
+                albedo_texture_buffer=albedo_texture_buffer,
+                albedo_texture_format=albedo_texture_format,
+                class_ids=class_ids,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
+    vertex_positions: components.Position3DBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.Position3DBatch._converter,  # type: ignore[misc]
     )
     # The positions of each vertex.
     #
@@ -86,54 +294,54 @@ class Mesh3D(Mesh3DExt, Archetype):
     # (Docstring intentionally commented out to hide this field from the docs)
 
     triangle_indices: components.TriangleIndicesBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.TriangleIndicesBatch._optional,  # type: ignore[misc]
+        converter=components.TriangleIndicesBatch._converter,  # type: ignore[misc]
     )
     # Optional indices for the triangles that make up the mesh.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     vertex_normals: components.Vector3DBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.Vector3DBatch._optional,  # type: ignore[misc]
+        converter=components.Vector3DBatch._converter,  # type: ignore[misc]
     )
     # An optional normal for each vertex.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     vertex_colors: components.ColorBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.ColorBatch._optional,  # type: ignore[misc]
+        converter=components.ColorBatch._converter,  # type: ignore[misc]
     )
     # An optional color for each vertex.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     vertex_texcoords: components.Texcoord2DBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.Texcoord2DBatch._optional,  # type: ignore[misc]
+        converter=components.Texcoord2DBatch._converter,  # type: ignore[misc]
     )
     # An optional uv texture coordinate for each vertex.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     albedo_factor: components.AlbedoFactorBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.AlbedoFactorBatch._optional,  # type: ignore[misc]
+        converter=components.AlbedoFactorBatch._converter,  # type: ignore[misc]
     )
     # A color multiplier applied to the whole mesh.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
-    albedo_texture: components.TensorDataBatch | None = field(
-        metadata={"component": "optional"},
+    albedo_texture_buffer: components.ImageBufferBatch | None = field(
+        metadata={"component": True},
         default=None,
-        converter=components.TensorDataBatch._optional,  # type: ignore[misc]
+        converter=components.ImageBufferBatch._converter,  # type: ignore[misc]
     )
     # Optional albedo texture.
     #
@@ -144,10 +352,19 @@ class Mesh3D(Mesh3DExt, Archetype):
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
-    class_ids: components.ClassIdBatch | None = field(
-        metadata={"component": "optional"},
+    albedo_texture_format: components.ImageFormatBatch | None = field(
+        metadata={"component": True},
         default=None,
-        converter=components.ClassIdBatch._optional,  # type: ignore[misc]
+        converter=components.ImageFormatBatch._converter,  # type: ignore[misc]
+    )
+    # The format of the `albedo_texture_buffer`, if any.
+    #
+    # (Docstring intentionally commented out to hide this field from the docs)
+
+    class_ids: components.ClassIdBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.ClassIdBatch._converter,  # type: ignore[misc]
     )
     # Optional class Ids for the vertices.
     #

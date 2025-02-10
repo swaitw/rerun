@@ -1,4 +1,4 @@
-// TODO(#3408): remove unwrap()
+// TODO(#6330): remove unwrap()
 #![allow(clippy::unwrap_used)]
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +57,7 @@ mod python;
 mod rust;
 
 pub use self::cpp::CppCodeGenerator;
-pub use self::docs::DocsCodeGenerator;
+pub use self::docs::{DocsCodeGenerator, SnippetsRefCodeGenerator};
 pub use self::fbs::FbsCodeGenerator;
 pub use self::python::PythonCodeGenerator;
 pub use self::rust::RustCodeGenerator;

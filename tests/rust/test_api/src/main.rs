@@ -19,7 +19,7 @@ use rerun::{
     archetypes::{Clear, SegmentationImage, TextLog},
     datatypes::Quaternion,
     external::{re_log, re_types::components::TextLogLevel},
-    EntityPath, RecordingStream,
+    EntityPath, RecordingStream, TransformRelation,
 };
 
 // --- Rerun logging ---
@@ -32,7 +32,7 @@ fn test_bbox(rec: &RecordingStream) -> anyhow::Result<()> {
         "bbox_test/bbox",
         &Boxes3D::from_half_sizes([(1.0, 0.5, 0.25)])
             .with_colors([0x00FF00FF])
-            .with_rotations([Quaternion::from_xyzw([
+            .with_quaternions([Quaternion::from_xyzw([
                 0.0,
                 0.0,
                 (TAU / 8.0).sin(),
@@ -47,7 +47,7 @@ fn test_bbox(rec: &RecordingStream) -> anyhow::Result<()> {
         "bbox_test/bbox",
         &Boxes3D::from_centers_and_half_sizes([(1.0, 0.0, 0.0)], [(1.0, 0.5, 0.25)])
             .with_colors([Color::from_rgb(255, 255, 0)])
-            .with_rotations([Quaternion::from_xyzw([
+            .with_quaternions([Quaternion::from_xyzw([
                 0.0,
                 0.0,
                 (TAU / 8.0).sin(),
@@ -160,7 +160,7 @@ fn test_rects(rec: &RecordingStream) -> anyhow::Result<()> {
 
     use rerun::{
         archetypes::{Boxes2D, Tensor},
-        components::{Color, HalfSize2D},
+        components::Color,
     };
 
     // Add an image
@@ -191,11 +191,7 @@ fn test_rects(rec: &RecordingStream) -> anyhow::Result<()> {
 
     // Clear the rectangles by logging an empty set
     rec.set_time_seconds("sim_time", 3f64);
-    rec.log(
-        "rects_test/rects",
-        // TODO(#3381): Should be &Boxes2D::empty()
-        &Boxes2D::from_half_sizes(std::iter::empty::<HalfSize2D>()),
-    )?;
+    rec.log("rects_test/rects", &Boxes2D::clear_fields())?;
 
     Ok(())
 }
@@ -348,7 +344,7 @@ fn test_transforms_3d(rec: &RecordingStream) -> anyhow::Result<()> {
         rec: &RecordingStream,
         ent_path: impl Into<EntityPath>,
     ) -> anyhow::Result<()> {
-        rec.log_static(ent_path, &ViewCoordinates::RIGHT_HAND_Z_UP)
+        rec.log_static(ent_path, &ViewCoordinates::RIGHT_HAND_Z_UP())
             .map_err(Into::into)
     }
     log_coordinate_space(rec, "transforms3d")?;
@@ -440,7 +436,7 @@ fn test_transforms_3d(rec: &RecordingStream) -> anyhow::Result<()> {
                 (time * rotation_speed_moon).sin() * planet_to_moon_distance,
                 0.0,
             ])
-            .from_parent(),
+            .with_relation(TransformRelation::ChildFromParent),
         )?;
     }
 

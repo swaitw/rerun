@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../datatypes/vec3d.hpp"
 #include "../result.hpp"
 
@@ -19,9 +20,7 @@ namespace rerun::components {
     struct Scale3D {
         rerun::datatypes::Vec3D scale;
 
-      public:
-        // Extensions to generated type defined in 'scale3d_ext.cpp'
-
+      public: // START of extensions from scale3d_ext.cpp:
         /// Construct `Scale3D` from x/y/z values.
         Scale3D(float x, float y, float z) : scale{x, y, z} {}
 
@@ -41,6 +40,8 @@ namespace rerun::components {
         static Scale3D three_d(datatypes::Vec3D scale) {
             return Scale3D(scale);
         }
+
+        // END of extensions from scale3d_ext.cpp, start of generated code:
 
       public:
         Scale3D() = default;
@@ -72,7 +73,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::Scale3D> {
-        static constexpr const char Name[] = "rerun.components.Scale3D";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.Scale3D";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -83,7 +84,19 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const components::Scale3D* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::Vec3D>::to_arrow(&instances->scale, num_instances);
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::Vec3D>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::Vec3D>::to_arrow(
+                    &instances->scale,
+                    num_instances
+                );
+            }
         }
     };
 } // namespace rerun

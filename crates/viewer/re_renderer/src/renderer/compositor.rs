@@ -19,18 +19,21 @@ mod gpu_data {
     use crate::wgpu_buffer_types;
 
     /// Keep in sync with `composite.wgsl`
-    #[repr(C, align(256))]
+    #[repr(C)]
     #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct CompositeUniformBuffer {
         pub outline_color_layer_a: wgpu_buffer_types::Vec4,
         pub outline_color_layer_b: wgpu_buffer_types::Vec4,
-        pub outline_radius_pixel: wgpu_buffer_types::F32RowPadded,
+        pub outline_radius_pixel: f32,
+        pub blend_with_background: u32,
+        pub padding: [u32; 2],
         pub end_padding: [wgpu_buffer_types::PaddingRow; 16 - 3],
     }
 }
 
 pub struct Compositor {
-    render_pipeline_regular: GpuRenderPipelineHandle,
+    render_pipeline_opaque: GpuRenderPipelineHandle,
+    render_pipeline_blended: GpuRenderPipelineHandle,
     render_pipeline_screenshot: GpuRenderPipelineHandle,
     bind_group_layout: GpuBindGroupLayoutHandle,
 }
@@ -40,6 +43,9 @@ pub struct CompositorDrawData {
     /// [`GpuBindGroup`] pointing at the current image source and
     /// a uniform buffer for describing a tonemapper/compositor configuration.
     bind_group: GpuBindGroup,
+
+    /// If true, the compositor will blend with the image.
+    enable_blending: bool,
 }
 
 impl DrawData for CompositorDrawData {
@@ -52,6 +58,7 @@ impl CompositorDrawData {
         color_texture: &GpuTexture,
         outline_final_voronoi: Option<&GpuTexture>,
         outline_config: &Option<OutlineConfig>,
+        enable_blending: bool,
     ) -> Self {
         let compositor = ctx.renderer::<Compositor>();
 
@@ -67,7 +74,9 @@ impl CompositorDrawData {
             gpu_data::CompositeUniformBuffer {
                 outline_color_layer_a: outline_config.color_layer_a.into(),
                 outline_color_layer_b: outline_config.color_layer_b.into(),
-                outline_radius_pixel: outline_config.outline_radius_pixel.into(),
+                outline_radius_pixel: outline_config.outline_radius_pixel,
+                blend_with_background: enable_blending as u32,
+                padding: Default::default(),
                 end_padding: Default::default(),
             },
         );
@@ -91,6 +100,7 @@ impl CompositorDrawData {
                     layout: compositor.bind_group_layout,
                 },
             ),
+            enable_blending,
         }
     }
 }
@@ -161,15 +171,29 @@ impl Renderer for Compositor {
                 .shader_modules
                 .get_or_create(ctx, &include_shader_module!("../../shader/composite.wgsl")),
             vertex_buffers: smallvec![],
-            render_targets: smallvec![Some(ctx.config.output_format_color.into())],
+            render_targets: smallvec![Some(ctx.output_format_color().into())],
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
         };
-        let render_pipeline_regular = ctx
+
+        let render_pipeline_opaque = ctx
             .gpu_resources
             .render_pipelines
             .get_or_create(ctx, &render_pipeline_descriptor);
+
+        let render_pipeline_blended = ctx.gpu_resources.render_pipelines.get_or_create(
+            ctx,
+            &RenderPipelineDesc {
+                render_targets: smallvec![Some(wgpu::ColorTargetState {
+                    format: ctx.output_format_color(),
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                ..render_pipeline_descriptor.clone()
+            },
+        );
+
         let render_pipeline_screenshot = ctx.gpu_resources.render_pipelines.get_or_create(
             ctx,
             &RenderPipelineDesc {
@@ -180,21 +204,28 @@ impl Renderer for Compositor {
         );
 
         Self {
-            render_pipeline_regular,
+            render_pipeline_opaque,
+            render_pipeline_blended,
             render_pipeline_screenshot,
             bind_group_layout,
         }
     }
 
-    fn draw<'a>(
+    fn draw(
         &self,
-        render_pipelines: &'a GpuRenderPipelinePoolAccessor<'a>,
+        render_pipelines: &GpuRenderPipelinePoolAccessor<'_>,
         phase: DrawPhase,
-        pass: &mut wgpu::RenderPass<'a>,
-        draw_data: &'a CompositorDrawData,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw_data: &CompositorDrawData,
     ) -> Result<(), DrawError> {
         let pipeline_handle = match phase {
-            DrawPhase::Compositing => self.render_pipeline_regular,
+            DrawPhase::Compositing => {
+                if draw_data.enable_blending {
+                    self.render_pipeline_blended
+                } else {
+                    self.render_pipeline_opaque
+                }
+            }
             DrawPhase::CompositingScreenshot => self.render_pipeline_screenshot,
             _ => unreachable!("We were called on a phase we weren't subscribed to: {phase:?}"),
         };

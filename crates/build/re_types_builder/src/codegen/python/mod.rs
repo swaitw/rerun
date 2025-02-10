@@ -184,10 +184,10 @@ struct ExtensionClass {
     /// a default implementation.
     has_array: bool,
 
-    /// Whether the `ObjectExt` contains __native_to_pa_array__()
+    /// Whether the `ObjectExt` contains `__native_to_pa_array__()`
     has_native_to_pa_array: bool,
 
-    /// Whether the `ObjectExt` contains a deferred_patch_class() method
+    /// Whether the `ObjectExt` contains a `deferred_patch_class()` method
     has_deferred_patch_class: bool,
 }
 
@@ -239,11 +239,31 @@ impl ExtensionClass {
             let has_array = methods.contains(&ARRAY_METHOD);
             let has_native_to_pa_array = methods.contains(&NATIVE_TO_PA_ARRAY_METHOD);
             let has_deferred_patch_class = methods.contains(&DEFERRED_PATCH_CLASS_METHOD);
-            let field_converter_overrides = methods
+            let field_converter_overrides: Vec<String> = methods
                 .into_iter()
                 .filter(|l| l.ends_with(FIELD_CONVERTER_SUFFIX))
                 .map(|l| l.to_owned())
                 .collect();
+
+            let valid_converter_overrides = if obj.is_union() {
+                itertools::Either::Left(std::iter::once("inner"))
+            } else {
+                itertools::Either::Right(obj.fields.iter().map(|field| field.name.as_str()))
+            }
+            .map(|field| format!("{field}{FIELD_CONVERTER_SUFFIX}"))
+            .collect::<HashSet<_>>();
+
+            for converter in &field_converter_overrides {
+                if !valid_converter_overrides.contains(converter) {
+                    reporter.error(
+                        ext_filepath.as_str(),
+                        &obj.fqname,
+                        format!(
+                            "The field converter override `{converter}` is not a valid field name.",
+                        ),
+                    );
+                }
+            }
 
             Self {
                 found: true,
@@ -314,14 +334,13 @@ impl PythonCodeGenerator {
                     let name = &obj.name;
 
                     if obj.is_delegating_component() {
-                        vec![name.clone(), format!("{name}Batch"), format!("{name}Type")]
+                        vec![name.clone(), format!("{name}Batch")]
                     } else {
                         vec![
                             format!("{name}"),
                             format!("{name}ArrayLike"),
                             format!("{name}Batch"),
                             format!("{name}Like"),
-                            format!("{name}Type"),
                         ]
                     }
                 }
@@ -342,15 +361,15 @@ impl PythonCodeGenerator {
             .extend(names.iter().cloned());
 
             let mut code = String::new();
-            code.push_indented(0, &format!("# {}", autogen_warning!()), 1);
+            code.push_indented(0, format!("# {}", autogen_warning!()), 1);
             if let Some(source_path) = obj.relative_filepath() {
-                code.push_indented(0, &format!("# Based on {:?}.", format_path(source_path)), 2);
+                code.push_indented(0, format!("# Based on {:?}.", format_path(source_path)), 2);
 
                 if obj.kind != ObjectKind::View {
                     // View type extension isn't implemented yet (shouldn't be hard though to add if needed).
                     code.push_indented(
                         0,
-                        &format!(
+                        format!(
                             "# You can extend this class by creating a {:?} class in {:?}.",
                             ext_class.name, ext_class.file_name
                         ),
@@ -387,10 +406,13 @@ impl PythonCodeGenerator {
             from {rerun_path}error_utils import catch_and_log_exceptions
             from {rerun_path}_baseclasses import (
                 Archetype,
-                BaseExtensionType,
                 BaseBatch,
                 ComponentBatchMixin,
+                ComponentColumn,
+                ComponentColumnList,
+                ComponentDescriptor,
                 ComponentMixin,
+                DescribedComponentBatch,
             )
             from {rerun_path}_converters import (
                 int_or_none,
@@ -445,7 +467,7 @@ impl PythonCodeGenerator {
             let obj_code = match obj.class {
                 crate::objects::ObjectClass::Struct => {
                     if obj.kind == ObjectKind::View {
-                        code_for_view(reporter, objects, obj)
+                        code_for_view(reporter, objects, &ext_class, obj)
                     } else {
                         code_for_struct(reporter, arrow_registry, &ext_class, objects, obj)
                     }
@@ -470,7 +492,7 @@ impl PythonCodeGenerator {
             files_to_write.insert(filepath.clone(), code);
         }
 
-        // rerun/[{scope}]/{datatypes|components|archetypes|space_views}/__init__.py
+        // rerun/[{scope}]/{datatypes|components|archetypes|views}/__init__.py
         write_init_file(&kind_path, &mods, files_to_write);
         write_init_file(&test_kind_path, &test_mods, files_to_write);
         for (scope, mods) in scoped_mods {
@@ -495,7 +517,7 @@ fn write_init_file(
     let path = kind_path.join("__init__.py");
     let mut code = String::new();
     let manifest = quote_manifest(mods.iter().flat_map(|(_, names)| names.iter()));
-    code.push_indented(0, &format!("# {}", autogen_warning!()), 2);
+    code.push_indented(0, format!("# {}", autogen_warning!()), 2);
     code.push_unindented(
         "
             from __future__ import annotations
@@ -505,7 +527,7 @@ fn write_init_file(
     );
     for (module, names) in mods {
         let names = names.join(", ");
-        code.push_indented(0, &format!("from .{module} import {names}"), 1);
+        code.push_indented(0, format!("from .{module} import {names}"), 1);
     }
     if !manifest.is_empty() {
         code.push_unindented(format!("\n__all__ = [{manifest}]"), 0);
@@ -572,11 +594,7 @@ fn code_for_struct(
             } else if *kind == ObjectKind::Archetype {
                 // Archetypes use the ComponentBatch constructor for their fields
                 let (typ_unwrapped, _) = quote_field_type_from_field(objects, field, true);
-                if field.is_nullable {
-                    format!("converter={typ_unwrapped}Batch._optional, # type: ignore[misc]\n")
-                } else {
-                    format!("converter={typ_unwrapped}Batch._required, # type: ignore[misc]\n")
-                }
+                format!("converter={typ_unwrapped}Batch._converter,  # type: ignore[misc]\n")
             } else if !default_converter.is_empty() {
                 code.push_indented(0, &converter_function, 1);
                 format!("converter={default_converter}")
@@ -679,6 +697,10 @@ fn code_for_struct(
 
     if obj.kind == ObjectKind::Archetype {
         code.push_indented(1, quote_clear_methods(obj), 2);
+        code.push_indented(1, quote_partial_update_methods(reporter, obj, objects), 2);
+        if obj.scope().is_none() {
+            code.push_indented(1, quote_columnar_methods(reporter, obj, objects), 2);
+        }
     }
 
     if obj.is_delegating_component() {
@@ -719,10 +741,7 @@ fn code_for_struct(
             };
 
             let metadata = if *kind == ObjectKind::Archetype {
-                format!(
-                    "\nmetadata={{'component': '{}'}}, ",
-                    if *is_nullable { "optional" } else { "required" }
-                )
+                "\nmetadata={'component': True}, ".to_owned()
             } else {
                 String::new()
             };
@@ -736,7 +755,7 @@ fn code_for_struct(
                 String::new()
             };
             // Note: mypy gets confused using staticmethods for field-converters
-            let typ = if !*is_nullable {
+            let typ = if !obj.is_archetype() && !*is_nullable {
                 format!("{typ} = field(\n{metadata}{converter}{type_ignore}\n)")
             } else {
                 format!(
@@ -749,7 +768,7 @@ fn code_for_struct(
 
             // Generating docs for all the fields creates A LOT of visual noise in the API docs.
             let show_fields_in_docs = false;
-            let doc_lines = lines_from_docs(reporter, objects, &field.docs);
+            let doc_lines = lines_from_docs(reporter, objects, &field.docs, false);
             if !doc_lines.is_empty() {
                 if show_fields_in_docs {
                     code.push_indented(1, quote_doc_lines(doc_lines), 0);
@@ -827,7 +846,9 @@ fn code_for_enum(
         ObjectKind::Datatype | ObjectKind::Component
     ));
 
-    let Object { name, .. } = obj;
+    let Object {
+        name: enum_name, ..
+    } = obj;
 
     let mut code = String::new();
 
@@ -837,22 +858,33 @@ fn code_for_enum(
         code.push_unindented(format!(r#"@deprecated("""{deprecation_notice}""")"#), 1);
     }
 
-    code.push_str(&format!("class {name}(Enum):\n"));
+    let superclasses = {
+        let mut superclasses = vec![];
+        if ext_class.found {
+            // Extension class needs to come first, so its __init__ method is called if there is one.
+            superclasses.push(ext_class.name.clone());
+        }
+        superclasses.push("Enum".to_owned());
+        superclasses.join(",")
+    };
+    code.push_str(&format!("class {enum_name}({superclasses}):\n"));
     code.push_indented(1, quote_obj_docs(reporter, objects, obj), 0);
 
-    for (i, variant) in obj.fields.iter().enumerate() {
-        let arrow_type_index = 1 + i; // plus-one to leave room for zero == `_null_markers`
+    for variant in &obj.fields {
+        let enum_value = variant.enum_value.unwrap();
 
-        // NOTE: we use PascalCase for the enum variants for consistency across:
+        // NOTE: we keep the casing of the enum variants exactly as specified in the .fbs file,
+        // or else `RGBA` would become `Rgba` and so on.
+        // Note that we want consistency across:
         // * all languages (C++, Python, Rust)
         // * the arrow datatype
         // * the GUI
-        let variant_name = variant.pascal_case_name();
-        code.push_indented(1, format!("{variant_name} = {arrow_type_index}"), 1);
+        let variant_name = &variant.name;
+        code.push_indented(1, format!("{variant_name} = {enum_value}"), 1);
 
         // Generating docs for all the fields creates A LOT of visual noise in the API docs.
         let show_fields_in_docs = true;
-        let doc_lines = lines_from_docs(reporter, objects, &variant.docs);
+        let doc_lines = lines_from_docs(reporter, objects, &variant.docs, false);
         if !doc_lines.is_empty() {
             if show_fields_in_docs {
                 code.push_indented(1, quote_doc_lines(doc_lines), 0);
@@ -871,20 +903,66 @@ fn code_for_enum(
         }
     }
 
+    // -------------------------------------------------------
+
+    // Flexible constructor:
+    code.push_indented(
+        1,
+        format!(
+            r#"@classmethod
+def auto(cls, val: str | int | {enum_name}) -> {enum_name}:
+    '''Best-effort converter, including a case-insensitive string matcher.'''
+    if isinstance(val, {enum_name}):
+        return val
+    if isinstance(val, int):
+        return cls(val)
+    try:
+        return cls[val]
+    except KeyError:
+        val_lower = val.lower()
+        for variant in cls:
+            if variant.name.lower() == val_lower:
+                return variant
+    raise ValueError(f"Cannot convert {{val}} to {{cls.__name__}}")
+        "#
+        ),
+        1,
+    );
+
+    // Overload `__str__`:
+    code.push_indented(1, "def __str__(self) -> str:", 1);
+    code.push_indented(2, "'''Returns the variant name.'''", 1);
+
+    code.push_indented(2, "return self.name", 1);
+
+    // -------------------------------------------------------
+
+    // -------------------------------------------------------
+
     let variants = format!(
         "Literal[{}]",
-        obj.fields
-            .iter()
-            .map(|v| format!("{:?}", v.pascal_case_name().to_lowercase()))
-            .join(", ")
+        itertools::chain!(
+            // We always accept the original casing
+            obj.fields.iter().map(|v| format!("{:?}", v.name)),
+            // We also accept the lowercase variant, for historical reasons (and maybe others?)
+            obj.fields
+                .iter()
+                .map(|v| format!("{:?}", v.name.to_lowercase()))
+        )
+        .sorted()
+        .dedup()
+        .join(", ")
     );
-    code.push_unindented(format!("{name}Like = Union[{name}, {variants}]"), 1);
+    code.push_unindented(
+        format!("{enum_name}Like = Union[{enum_name}, {variants}, int]"),
+        1,
+    );
     code.push_unindented(
         format!(
             r#"
-            {name}ArrayLike = Union[
-                {name}Like,
-                Sequence[{name}Like]
+            {enum_name}ArrayLike = Union[
+                {enum_name}Like,
+                Sequence[{enum_name}Like]
             ]
             "#,
         ),
@@ -933,21 +1011,23 @@ fn code_for_union(
         String::new()
     };
 
-    let mut superclasses = vec![];
+    let superclass_decl = {
+        let mut superclasses = vec![];
 
-    // Extension class needs to come first, so its __init__ method is called if there is one.
-    if ext_class.found {
-        superclasses.push(ext_class.name.as_str());
-    }
+        // Extension class needs to come first, so its __init__ method is called if there is one.
+        if ext_class.found {
+            superclasses.push(ext_class.name.as_str());
+        }
 
-    if *kind == ObjectKind::Archetype {
-        superclasses.push("Archetype");
-    }
+        if *kind == ObjectKind::Archetype {
+            superclasses.push("Archetype");
+        }
 
-    let superclass_decl = if superclasses.is_empty() {
-        String::new()
-    } else {
-        format!("({})", superclasses.join(","))
+        if superclasses.is_empty() {
+            String::new()
+        } else {
+            format!("({})", superclasses.join(","))
+        }
     };
 
     if let Some(deprecation_notice) = obj.deprecation_notice() {
@@ -1029,7 +1109,7 @@ fn code_for_union(
         format!("inner: {inner_type} = field({converter} {type_ignore}\n)"),
         1,
     );
-    code.push_indented(1, quote_doc_from_fields(objects, fields), 0);
+    code.push_indented(1, quote_doc_from_fields(reporter, objects, fields), 0);
 
     // if there are duplicate types, we need to add a `kind` field to disambiguate the union
     if has_duplicate_types {
@@ -1045,7 +1125,11 @@ fn code_for_union(
             1,
         );
 
-        code.push_indented(1, quote_union_kind_from_fields(objects, fields), 0);
+        code.push_indented(
+            1,
+            quote_union_kind_from_fields(reporter, objects, fields),
+            0,
+        );
     }
 
     code.push_unindented(quote_union_aliases_from_object(obj, field_types.iter()), 1);
@@ -1093,24 +1177,7 @@ fn quote_examples(examples: Vec<Example<'_>>, lines: &mut Vec<String>) {
             ..
         } = &example.base;
 
-        let mut example_lines = example.lines.clone();
-
-        if let Some(first_line) = example_lines.first() {
-            if first_line.starts_with("\"\"\"")
-                && first_line.ends_with("\"\"\"")
-                && first_line.len() > 6
-            {
-                // Remove one-line docstring, otherwise we can't embed this.
-                example_lines.remove(0);
-            }
-        }
-
-        // Remove leading blank lines:
-        while example_lines.first() == Some(&String::default()) {
-            example_lines.remove(0);
-        }
-
-        for line in &example_lines {
+        for line in &example.lines {
             assert!(
                 !line.contains("```"),
                 "Example {path:?} contains ``` in it, so we can't embed it in the Python API docs."
@@ -1127,7 +1194,7 @@ fn quote_examples(examples: Vec<Example<'_>>, lines: &mut Vec<String>) {
             lines.push(format!("### `{name}`:"));
         }
         lines.push("```python".into());
-        lines.extend(example_lines.into_iter());
+        lines.extend(example.lines.into_iter());
         lines.push("```".into());
         if let Some(image) = &image {
             lines.extend(
@@ -1144,7 +1211,7 @@ fn quote_examples(examples: Vec<Example<'_>>, lines: &mut Vec<String>) {
 
 /// Ends with double newlines, unless empty.
 fn quote_obj_docs(reporter: &Reporter, objects: &Objects, obj: &Object) -> String {
-    let mut lines = lines_from_docs(reporter, objects, &obj.docs);
+    let mut lines = lines_from_docs(reporter, objects, &obj.docs, obj.is_experimental());
 
     if let Some(first_line) = lines.first_mut() {
         // Prefix with object kind:
@@ -1154,8 +1221,20 @@ fn quote_obj_docs(reporter: &Reporter, objects: &Objects, obj: &Object) -> Strin
     quote_doc_lines(lines)
 }
 
-fn lines_from_docs(reporter: &Reporter, objects: &Objects, docs: &Docs) -> Vec<String> {
-    let mut lines = docs.lines_for(objects, Target::Python);
+fn lines_from_docs(
+    reporter: &Reporter,
+    objects: &Objects,
+    docs: &Docs,
+    is_experimental: bool,
+) -> Vec<String> {
+    let mut lines = docs.lines_for(reporter, objects, Target::Python);
+
+    if is_experimental {
+        lines.push(String::new());
+        lines.push(
+            "⚠️ **This is an experimental API! It is not fully supported, and is likely to change significantly in future versions.**".to_owned(),
+        );
+    }
 
     let examples = collect_snippets_for_api_docs(docs, "py", true).unwrap_or_else(|err| {
         reporter.error_any(err);
@@ -1206,11 +1285,15 @@ fn quote_doc_lines(lines: Vec<String>) -> String {
     }
 }
 
-fn quote_doc_from_fields(objects: &Objects, fields: &Vec<ObjectField>) -> String {
+fn quote_doc_from_fields(
+    reporter: &Reporter,
+    objects: &Objects,
+    fields: &Vec<ObjectField>,
+) -> String {
     let mut lines = vec!["Must be one of:".to_owned(), String::new()];
 
     for field in fields {
-        let mut content = field.docs.lines_for(objects, Target::Python);
+        let mut content = field.docs.lines_for(reporter, objects, Target::Python);
         for line in &mut content {
             if line.starts_with(char::is_whitespace) {
                 line.remove(0);
@@ -1248,11 +1331,15 @@ fn quote_doc_from_fields(objects: &Objects, fields: &Vec<ObjectField>) -> String
     format!("\"\"\"\n{doc}\n\"\"\"\n\n")
 }
 
-fn quote_union_kind_from_fields(objects: &Objects, fields: &Vec<ObjectField>) -> String {
+fn quote_union_kind_from_fields(
+    reporter: &Reporter,
+    objects: &Objects,
+    fields: &Vec<ObjectField>,
+) -> String {
     let mut lines = vec!["Possible values:".to_owned(), String::new()];
 
     for field in fields {
-        let mut content = field.docs.lines_for(objects, Target::Python);
+        let mut content = field.docs.lines_for(reporter, objects, Target::Python);
         for line in &mut content {
             if line.starts_with(char::is_whitespace) {
                 line.remove(0);
@@ -1415,11 +1502,7 @@ fn quote_union_aliases_from_object<'a>(
     let name = &obj.name;
 
     let union_fields = field_types.join(",");
-    let aliases = if let Some(aliases) = aliases {
-        aliases
-    } else {
-        String::new()
-    };
+    let aliases = aliases.unwrap_or_default();
 
     unindent(&format!(
         r#"
@@ -1761,7 +1844,6 @@ fn quote_arrow_support_from_obj(
     };
 
     if obj.kind == ObjectKind::Datatype {
-        type_superclasses.push("BaseExtensionType".to_owned());
         batch_superclasses.push(format!("BaseBatch[{many_aliases}]"));
     } else if obj.kind == ObjectKind::Component {
         if let Some(data_type) = obj.delegate_datatype(objects) {
@@ -1774,7 +1856,6 @@ fn quote_arrow_support_from_obj(
             type_superclasses.push(data_extension_type);
             batch_superclasses.push(data_extension_array);
         } else {
-            type_superclasses.push("BaseExtensionType".to_owned());
             batch_superclasses.push(format!("BaseBatch[{many_aliases}]"));
         }
         batch_superclasses.push("ComponentBatchMixin".to_owned());
@@ -1782,7 +1863,6 @@ fn quote_arrow_support_from_obj(
 
     let datatype = quote_arrow_datatype(&arrow_registry.get(fqname));
     let extension_batch = format!("{name}Batch");
-    let extension_type = format!("{name}Type");
 
     let native_to_pa_array_impl = match quote_arrow_serialization(
         reporter,
@@ -1792,7 +1872,12 @@ fn quote_arrow_support_from_obj(
     ) {
         Ok(automatic_arrow_serialization) => {
             if ext_class.has_native_to_pa_array {
-                reporter.warn(&obj.virtpath, &obj.fqname, format!("No need to manually implement {NATIVE_TO_PA_ARRAY_METHOD} in {} - we can autogenerate the code for this", ext_class.file_name));
+                // There's usually a good reason why serialization is manually implemented,
+                // so warning about it is just spam.
+                // We could introduce an opt-in flag, but by having a custom method in the first place someone already made the choice.
+                if false {
+                    reporter.warn(&obj.virtpath, &obj.fqname, format!("No need to manually implement {NATIVE_TO_PA_ARRAY_METHOD} in {} - we can autogenerate the code for this", ext_class.file_name));
+                }
                 format!(
                     "return {}.{NATIVE_TO_PA_ARRAY_METHOD}(data, data_type)",
                     ext_class.name
@@ -1816,32 +1901,32 @@ fn quote_arrow_support_from_obj(
         }
     };
 
-    let type_superclass_decl = if type_superclasses.is_empty() {
-        String::new()
-    } else {
-        format!("({})", type_superclasses.join(","))
-    };
-
     let batch_superclass_decl = if batch_superclasses.is_empty() {
         String::new()
     } else {
         format!("({})", batch_superclasses.join(","))
     };
 
-    if obj.kind == ObjectKind::Datatype || obj.is_non_delegating_component() {
+    if obj.kind == ObjectKind::Datatype {
         // Datatypes and non-delegating components declare init
         let mut code = unindent(&format!(
             r#"
-            class {extension_type}{type_superclass_decl}:
-                _TYPE_NAME: str = "{fqname}"
-
-                def __init__(self) -> None:
-                    pa.ExtensionType.__init__(
-                        self, {datatype}, self._TYPE_NAME
-                    )
-
             class {extension_batch}{batch_superclass_decl}:
-                _ARROW_TYPE = {extension_type}()
+                _ARROW_DATATYPE = {datatype}
+
+                @staticmethod
+                def _native_to_pa_array(data: {many_aliases}, data_type: pa.DataType) -> pa.Array:
+            "#
+        ));
+        code.push_indented(2, native_to_pa_array_impl, 1);
+        code
+    } else if obj.is_non_delegating_component() {
+        // Datatypes and non-delegating components declare init
+        let mut code = unindent(&format!(
+            r#"
+            class {extension_batch}{batch_superclass_decl}:
+                _ARROW_DATATYPE = {datatype}
+                _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("{fqname}")
 
                 @staticmethod
                 def _native_to_pa_array(data: {many_aliases}, data_type: pa.DataType) -> pa.Array:
@@ -1853,11 +1938,8 @@ fn quote_arrow_support_from_obj(
         // Delegating components are already inheriting from their base type
         unindent(&format!(
             r#"
-            class {extension_type}{type_superclass_decl}:
-                _TYPE_NAME: str = "{fqname}"
-
             class {extension_batch}{batch_superclass_decl}:
-                _ARROW_TYPE = {extension_type}()
+                _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("{fqname}")
             "#
         ))
     }
@@ -1905,9 +1987,11 @@ fn quote_arrow_serialization(
                     return Ok(unindent(
                         r##"
                             if isinstance(data, str):
-                                array = [data]
+                                array: Union[list[str], npt.ArrayLike] = [data]
                             elif isinstance(data, Sequence):
                                 array = [str(datum) for datum in data]
+                            elif isinstance(data, np.ndarray):
+                                array = data
                             else:
                                 array = [str(data)]
 
@@ -1938,7 +2022,7 @@ fn quote_arrow_serialization(
 
             code.push_indented(0, "from typing import cast", 1);
             code.push_indented(0, quote_local_batch_type_imports(&obj.fields), 2);
-            code.push_indented(0, &format!("if isinstance(data, {name}):"), 1);
+            code.push_indented(0, format!("if isinstance(data, {name}):"), 1);
             code.push_indented(1, "data = [data]", 2);
 
             code.push_indented(0, "return pa.StructArray.from_arrays(", 1);
@@ -1980,7 +2064,7 @@ fn quote_arrow_serialization(
                         // Type checker struggles with this occasionally, exact pattern is unclear.
                         // Tried casting the array earlier via `cast(Sequence[{name}], data)` but to no avail.
                         let field_fwd =
-                            format!("{field_batch_type}({field_array}).as_arrow_array().storage,  # type: ignore[misc, arg-type]");
+                            format!("{field_batch_type}({field_array}).as_arrow_array(),  # type: ignore[misc, arg-type]");
                         code.push_indented(2, &field_fwd, 1);
                     }
                 }
@@ -1992,63 +2076,16 @@ fn quote_arrow_serialization(
             Ok(code)
         }
 
-        ObjectClass::Enum => {
-            // Generate case-insensitive string-to-enum conversion:
-            let match_names = obj
-                .fields
-                .iter()
-                .map(|f| {
-                    let newline = '\n';
-                    let variant = f.pascal_case_name();
-                    let lowercase_variant = variant.to_lowercase();
-                    format!(
-                        r#"elif value.lower() == "{lowercase_variant}":{newline}    types.append({name}.{variant}.value)"#
-                    )
-                })
-                .format("\n")
-                .to_string();
-
-            let match_names = indent::indent_all_by(8, match_names);
-            let num_variants = obj.fields.len();
-
-            Ok(unindent(&format!(
-                r##"
+        ObjectClass::Enum => Ok(unindent(&format!(
+            r##"
 if isinstance(data, ({name}, int, str)):
     data = [data]
 
-types: list[int] = []
+pa_data = [{name}.auto(v).value if v is not None else None for v in data] # type: ignore[redundant-expr]
 
-for value in data:
-    if value is None:
-        types.append(0)
-    elif isinstance(value, {name}):
-        types.append(value.value) # Actual enum value
-    elif isinstance(value, int):
-        types.append(value) # By number
-    elif isinstance(value, str):
-        if hasattr({name}, value):
-            types.append({name}[value].value) # fast path
-{match_names}
-        else:
-            raise ValueError(f"Unknown {name} kind: {{value}}")
-    else:
-        raise ValueError(f"Unknown {name} kind: {{value}}")
-
-buffers = [
-    None,
-    pa.array(types, type=pa.int8()).buffers()[1],
-]
-children = (1 + {num_variants}) * [pa.nulls(len(data))]
-
-return pa.UnionArray.from_buffers(
-    type=data_type,
-    length=len(data),
-    buffers=buffers,
-    children=children,
-)
+return pa.array(pa_data, type=data_type)
         "##
-            )))
-        }
+        ))),
 
         ObjectClass::Union => {
             let mut variant_list_decls = String::new();
@@ -2120,9 +2157,7 @@ return pa.UnionArray.from_buffers(
                 let variant_list_to_pa_array = match &field.typ {
                     Type::Object(fqname) => {
                         let field_type_name = &objects[fqname].name;
-                        format!(
-                            "{field_type_name}Batch({variant_kind_list}).as_arrow_array().storage"
-                        )
+                        format!("{field_type_name}Batch({variant_kind_list}).as_arrow_array()")
                     }
                     Type::Unit => {
                         format!("pa.nulls({variant_kind_list})")
@@ -2283,66 +2318,63 @@ fn quote_init_parameter_from_field(
     }
 }
 
-fn quote_init_method(
-    reporter: &Reporter,
-    obj: &Object,
-    ext_class: &ExtensionClass,
-    objects: &Objects,
-) -> String {
+fn compute_init_parameters(obj: &Object, objects: &Objects) -> Vec<String> {
     // If the type is fully transparent (single non-nullable field and not an archetype),
     // we have to use the "{obj.name}Like" type directly since the type of the field itself might be too narrow.
     // -> Whatever type aliases there are for this type, we need to pick them up.
-    let parameters: Vec<_> =
-        if obj.kind != ObjectKind::Archetype && obj.fields.len() == 1 && !obj.fields[0].is_nullable
-        {
-            vec![format!(
-                "{}: {}",
-                obj.fields[0].name,
-                quote_parameter_type_alias(&obj.fqname, &obj.fqname, objects, false)
-            )]
-        } else if obj.is_union() {
-            vec![format!(
-                "inner: {} | None = None",
-                quote_parameter_type_alias(&obj.fqname, &obj.fqname, objects, false)
-            )]
+    if obj.kind != ObjectKind::Archetype && obj.fields.len() == 1 && !obj.fields[0].is_nullable {
+        vec![format!(
+            "{}: {}",
+            obj.fields[0].name,
+            quote_parameter_type_alias(&obj.fqname, &obj.fqname, objects, false)
+        )]
+    } else if obj.is_union() {
+        vec![format!(
+            "inner: {} | None = None",
+            quote_parameter_type_alias(&obj.fqname, &obj.fqname, objects, false)
+        )]
+    } else {
+        let required = obj
+            .fields
+            .iter()
+            .filter(|field| !field.is_nullable)
+            .map(|field| quote_init_parameter_from_field(field, objects, &obj.fqname))
+            .collect_vec();
+
+        let optional = obj
+            .fields
+            .iter()
+            .filter(|field| field.is_nullable)
+            .map(|field| quote_init_parameter_from_field(field, objects, &obj.fqname))
+            .collect_vec();
+
+        if optional.is_empty() {
+            required
+        } else if obj.kind == ObjectKind::Archetype {
+            // Force kw-args for all optional arguments:
+            required
+                .into_iter()
+                .chain(std::iter::once("*".to_owned()))
+                .chain(optional)
+                .collect()
         } else {
-            let required = obj
-                .fields
-                .iter()
-                .filter(|field| !field.is_nullable)
-                .map(|field| quote_init_parameter_from_field(field, objects, &obj.fqname))
-                .collect_vec();
+            required.into_iter().chain(optional).collect()
+        }
+    }
+}
 
-            let optional = obj
-                .fields
-                .iter()
-                .filter(|field| field.is_nullable)
-                .map(|field| quote_init_parameter_from_field(field, objects, &obj.fqname))
-                .collect_vec();
-
-            if optional.is_empty() {
-                required
-            } else if obj.kind == ObjectKind::Archetype {
-                // Force kw-args for all optional arguments:
-                required
-                    .into_iter()
-                    .chain(std::iter::once("*".to_owned()))
-                    .chain(optional)
-                    .collect()
-            } else {
-                required.into_iter().chain(optional).collect()
-            }
-        };
-
-    let head = format!("def __init__(self: Any, {}):", parameters.join(", "));
-
-    let parameter_docs = if obj.is_union() {
+fn compute_init_parameter_docs(
+    reporter: &Reporter,
+    obj: &Object,
+    objects: &Objects,
+) -> Vec<String> {
+    if obj.is_union() {
         Vec::new()
     } else {
         obj.fields
             .iter()
             .filter_map(|field| {
-                let doc_content = field.docs.lines_for(objects, Target::Python);
+                let doc_content = field.docs.lines_for(reporter, objects, Target::Python);
                 if doc_content.is_empty() {
                     if !field.is_testing() && obj.fields.len() > 1 {
                         reporter.error(
@@ -2361,7 +2393,19 @@ fn quote_init_method(
                 }
             })
             .collect::<Vec<_>>()
-    };
+    }
+}
+
+fn quote_init_method(
+    reporter: &Reporter,
+    obj: &Object,
+    ext_class: &ExtensionClass,
+    objects: &Objects,
+) -> String {
+    let parameters = compute_init_parameters(obj, objects);
+    let head = format!("def __init__(self: Any, {}):", parameters.join(", "));
+
+    let parameter_docs = compute_init_parameter_docs(reporter, obj, objects);
     let mut doc_string_lines = vec![format!(
         "Create a new instance of the {} {}.",
         obj.name,
@@ -2421,7 +2465,7 @@ fn quote_clear_methods(obj: &Object) -> String {
     let param_nones = obj
         .fields
         .iter()
-        .map(|field| format!("{} = None, # type: ignore[arg-type]", field.name))
+        .map(|field| format!("{} = None,", field.name))
         .join("\n                ");
 
     let classname = &obj.name;
@@ -2440,6 +2484,160 @@ fn quote_clear_methods(obj: &Object) -> String {
             inst = cls.__new__(cls)
             inst.__attrs_clear__()
             return inst
+        "#
+    ))
+}
+
+fn quote_partial_update_methods(reporter: &Reporter, obj: &Object, objects: &Objects) -> String {
+    let name = &obj.name;
+
+    let parameters = obj
+        .fields
+        .iter()
+        .map(|field| {
+            let mut field = field.clone();
+            field.is_nullable = true;
+            quote_init_parameter_from_field(&field, objects, &obj.fqname)
+        })
+        .collect_vec()
+        .join(",\n");
+    let parameters = indent::indent_by(8, parameters);
+
+    let kwargs = obj
+        .fields
+        .iter()
+        .map(|field| {
+            let field_name = field.snake_case_name();
+            format!("'{field_name}': {field_name}")
+        })
+        .collect_vec()
+        .join(",\n");
+    let kwargs = indent::indent_by(12, kwargs);
+
+    let parameter_docs = compute_init_parameter_docs(reporter, obj, objects);
+    let mut doc_string_lines = vec![format!("Update only some specific fields of a `{name}`.")];
+    if !parameter_docs.is_empty() {
+        doc_string_lines.push("\n".to_owned());
+        doc_string_lines.push("Parameters".to_owned());
+        doc_string_lines.push("----------".to_owned());
+        doc_string_lines.push("clear_unset:".to_owned());
+        doc_string_lines
+            .push("    If true, all unspecified fields will be explicitly cleared.".to_owned());
+        for doc in parameter_docs {
+            doc_string_lines.push(doc);
+        }
+    };
+    let doc_block = indent::indent_by(12, quote_doc_lines(doc_string_lines));
+
+    unindent(&format!(
+        r#"
+        @classmethod
+        def from_fields(
+            cls,
+            *,
+            clear_unset: bool = False,
+            {parameters},
+        ) -> {name}:
+            {doc_block}
+            inst = cls.__new__(cls)
+            with catch_and_log_exceptions(context=cls.__name__):
+                kwargs = {{
+                    {kwargs},
+                }}
+
+                if clear_unset:
+                    kwargs = {{k: v if v is not None else [] for k, v in kwargs.items()}}  # type: ignore[misc]
+
+                inst.__attrs_init__(**kwargs)
+                return inst
+
+            inst.__attrs_clear__()
+            return inst
+
+        @classmethod
+        def cleared(cls) -> {name}:
+            """Clear all the fields of a `{name}`."""
+            return cls.from_fields(clear_unset=True)
+        "#
+    ))
+}
+
+fn quote_columnar_methods(reporter: &Reporter, obj: &Object, objects: &Objects) -> String {
+    let parameters = obj
+        .fields
+        .iter()
+        .filter_map(|field| {
+            let mut field = field.make_plural()?;
+            field.is_nullable = true;
+            Some(quote_init_parameter_from_field(
+                &field,
+                objects,
+                &obj.fqname,
+            ))
+        })
+        .collect_vec()
+        .join(",\n");
+    let parameters = indent::indent_by(8, parameters);
+
+    let init_args = obj
+        .fields
+        .iter()
+        .map(|field| {
+            let field_name = field.snake_case_name();
+            format!("{field_name}={field_name}")
+        })
+        .collect_vec()
+        .join(",\n");
+    let init_args = indent::indent_by(12, init_args);
+
+    let parameter_docs = compute_init_parameter_docs(reporter, obj, objects);
+    let doc = unindent(
+        "\
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+        ",
+    );
+    let mut doc_string_lines = doc.lines().map(|s| s.to_owned()).collect_vec();
+    if !parameter_docs.is_empty() {
+        doc_string_lines.push("Parameters".to_owned());
+        doc_string_lines.push("----------".to_owned());
+        for doc in parameter_docs {
+            doc_string_lines.push(doc);
+        }
+    };
+    let doc_block = indent::indent_by(12, quote_doc_lines(doc_string_lines));
+
+    // NOTE: Calling `update_fields` is not an option: we need to be able to pass
+    // plural data, even to singular fields (mono-components).
+    unindent(&format!(
+        r#"
+        @classmethod
+        def columns(
+            cls,
+            *,
+            {parameters},
+        ) -> ComponentColumnList:
+            {doc_block}
+            inst = cls.__new__(cls)
+            with catch_and_log_exceptions(context=cls.__name__):
+                inst.__attrs_init__(
+                    {init_args},
+                )
+
+            batches = inst.as_component_batches(include_indicators=False)
+            if len(batches) == 0:
+                return ComponentColumnList([])
+
+            lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+            columns = [batch.partition(lengths) for batch in batches]
+
+            indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+            return ComponentColumnList([indicator_column] + columns)
         "#
     ))
 }
@@ -2515,7 +2713,8 @@ fn quote_arrow_field(field: &Field) -> String {
     } = field;
 
     let datatype = quote_arrow_datatype(data_type);
-    let is_nullable = if *is_nullable { "True" } else { "False" };
+    let is_nullable = *is_nullable || matches!(data_type.to_logical_type(), DataType::Union { .. }); // Rerun unions always has a `_null_marker: null` variant, so they are always nullable
+    let is_nullable = if is_nullable { "True" } else { "False" };
     let metadata = quote_metadata_map(metadata);
 
     format!(r#"pa.field("{name}", {datatype}, nullable={is_nullable}, metadata={metadata})"#)

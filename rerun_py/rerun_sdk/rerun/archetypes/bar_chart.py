@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from attrs import define, field
 
 from .. import components, datatypes
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
 from ..error_utils import catch_and_log_exceptions
 from .bar_chart_ext import BarChartExt
@@ -69,8 +71,8 @@ class BarChart(BarChartExt, Archetype):
     def __attrs_clear__(self) -> None:
         """Convenience method for calling `__attrs_init__` with all `None`s."""
         self.__attrs_init__(
-            values=None,  # type: ignore[arg-type]
-            color=None,  # type: ignore[arg-type]
+            values=None,
+            color=None,
         )
 
     @classmethod
@@ -80,8 +82,94 @@ class BarChart(BarChartExt, Archetype):
         inst.__attrs_clear__()
         return inst
 
-    values: components.TensorDataBatch = field(
-        metadata={"component": "required"},
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        clear_unset: bool = False,
+        values: datatypes.TensorDataLike | None = None,
+        color: datatypes.Rgba32Like | None = None,
+    ) -> BarChart:
+        """
+        Update only some specific fields of a `BarChart`.
+
+        Parameters
+        ----------
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        values:
+            The values. Should always be a 1-dimensional tensor (i.e. a vector).
+        color:
+            The color of the bar chart
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "values": values,
+                "color": color,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def cleared(cls) -> BarChart:
+        """Clear all the fields of a `BarChart`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        values: datatypes.TensorDataArrayLike | None = None,
+        color: datatypes.Rgba32ArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        values:
+            The values. Should always be a 1-dimensional tensor (i.e. a vector).
+        color:
+            The color of the bar chart
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                values=values,
+                color=color,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
+    values: components.TensorDataBatch | None = field(
+        metadata={"component": True},
+        default=None,
         converter=BarChartExt.values__field_converter_override,  # type: ignore[misc]
     )
     # The values. Should always be a 1-dimensional tensor (i.e. a vector).
@@ -89,9 +177,9 @@ class BarChart(BarChartExt, Archetype):
     # (Docstring intentionally commented out to hide this field from the docs)
 
     color: components.ColorBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.ColorBatch._optional,  # type: ignore[misc]
+        converter=components.ColorBatch._converter,  # type: ignore[misc]
     )
     # The color of the bar chart
     #

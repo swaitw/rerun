@@ -3,17 +3,20 @@
 use once_cell::sync::OnceCell;
 
 use re_entity_db::InstancePath;
-use re_viewer_context::{ContainerId, Contents, Item, ItemCollection, SpaceViewId, ViewerContext};
+use re_viewer_context::{
+    ContainerId, Contents, Item, ItemCollection, ItemContext, ViewId, ViewerContext,
+};
 use re_viewport_blueprint::{ContainerBlueprint, ViewportBlueprint};
 
 mod actions;
+pub mod collapse_expand;
 mod sub_menu;
 
 use actions::{
     add_container::AddContainerAction,
-    add_entities_to_new_space_view::AddEntitiesToNewSpaceViewAction,
-    add_space_view::AddSpaceViewAction,
-    clone_space_view::CloneSpaceViewAction,
+    add_entities_to_new_view::AddEntitiesToNewViewAction,
+    add_view::AddViewAction,
+    clone_view::CloneViewAction,
     collapse_expand_all::CollapseExpandAllAction,
     move_contents_to_new_container::MoveContentsToNewContainerAction,
     remove::RemoveAction,
@@ -42,8 +45,45 @@ pub fn context_menu_ui_for_item(
     item_response: &egui::Response,
     selection_update_behavior: SelectionUpdateBehavior,
 ) {
+    context_menu_ui_for_item_with_context_impl(
+        ctx,
+        viewport_blueprint,
+        item,
+        None,
+        item_response,
+        selection_update_behavior,
+    );
+}
+
+/// Display a context menu for the provided [`Item`]
+pub fn context_menu_ui_for_item_with_context(
+    ctx: &ViewerContext<'_>,
+    viewport_blueprint: &ViewportBlueprint,
+    item: &Item,
+    item_context: ItemContext,
+    item_response: &egui::Response,
+    selection_update_behavior: SelectionUpdateBehavior,
+) {
+    context_menu_ui_for_item_with_context_impl(
+        ctx,
+        viewport_blueprint,
+        item,
+        Some(item_context),
+        item_response,
+        selection_update_behavior,
+    );
+}
+
+fn context_menu_ui_for_item_with_context_impl(
+    ctx: &ViewerContext<'_>,
+    viewport_blueprint: &ViewportBlueprint,
+    item: &Item,
+    item_context: Option<ItemContext>,
+    item_response: &egui::Response,
+    selection_update_behavior: SelectionUpdateBehavior,
+) {
     item_response.context_menu(|ui| {
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             ui.close_menu();
             return;
         }
@@ -52,12 +92,13 @@ pub fn context_menu_ui_for_item(
             let context_menu_ctx = ContextMenuContext {
                 viewer_context: ctx,
                 viewport_blueprint,
-                egui_context: ui.ctx().clone(),
                 selection,
                 clicked_item: item,
             };
             show_context_menu_for_selection(&context_menu_ctx, ui);
         };
+
+        let item_collection = ItemCollection::from(std::iter::once((item.clone(), item_context)));
 
         // handle selection
         match selection_update_behavior {
@@ -66,9 +107,8 @@ pub fn context_menu_ui_for_item(
                     // When the context menu is triggered open, we check if we're part of the selection,
                     // and, if not, we update the selection to include only the item that was clicked.
                     if item_response.hovered() && item_response.secondary_clicked() {
-                        ctx.selection_state().set_selection(item.clone());
-
-                        show_context_menu(&ItemCollection::from(item.clone()));
+                        show_context_menu(&item_collection);
+                        ctx.selection_state().set_selection(item_collection);
                     } else {
                         show_context_menu(ctx.selection());
                     }
@@ -78,15 +118,15 @@ pub fn context_menu_ui_for_item(
             }
 
             SelectionUpdateBehavior::OverrideSelection => {
-                if item_response.secondary_clicked() {
-                    ctx.selection_state().set_selection(item.clone());
-                }
+                show_context_menu(&item_collection);
 
-                show_context_menu(&ItemCollection::from(item.clone()));
+                if item_response.secondary_clicked() {
+                    ctx.selection_state().set_selection(item_collection);
+                }
             }
 
             SelectionUpdateBehavior::Ignore => {
-                show_context_menu(&ItemCollection::from(item.clone()));
+                show_context_menu(&item_collection);
             }
         };
     });
@@ -114,10 +154,14 @@ fn action_list(
                 Box::new(RemoveAction),
             ],
             vec![
+                Box::new(actions::ScreenshotAction::CopyScreenshot),
+                Box::new(actions::ScreenshotAction::SaveScreenshot),
+            ],
+            vec![
                 Box::new(CollapseExpandAllAction::ExpandAll),
                 Box::new(CollapseExpandAllAction::CollapseAll),
             ],
-            vec![Box::new(CloneSpaceViewAction)],
+            vec![Box::new(CloneViewAction)],
             vec![
                 Box::new(SubMenu {
                     label: "Add container".to_owned(),
@@ -129,12 +173,12 @@ fn action_list(
                     ],
                 }),
                 Box::new(SubMenu {
-                    label: "Add space view".to_owned(),
+                    label: "Add view".to_owned(),
                     actions: ctx
-                        .space_view_class_registry
+                        .view_class_registry
                         .iter_registry()
                         .map(|entry| {
-                            Box::new(AddSpaceViewAction {
+                            Box::new(AddViewAction {
                                 icon: entry.class.icon(),
                                 id: entry.identifier,
                             })
@@ -152,7 +196,7 @@ fn action_list(
                     Box::new(MoveContentsToNewContainerAction(ContainerKind::Grid)),
                 ],
             })],
-            vec![Box::new(AddEntitiesToNewSpaceViewAction)],
+            vec![Box::new(AddEntitiesToNewViewAction)],
         ]
     })
 }
@@ -197,7 +241,6 @@ fn show_context_menu_for_selection(ctx: &ContextMenuContext<'_>, ui: &mut egui::
 struct ContextMenuContext<'a> {
     viewer_context: &'a ViewerContext<'a>,
     viewport_blueprint: &'a ViewportBlueprint,
-    egui_context: egui::Context,
     selection: &'a ItemCollection,
     clicked_item: &'a Item,
 }
@@ -205,13 +248,11 @@ struct ContextMenuContext<'a> {
 impl<'a> ContextMenuContext<'a> {
     /// Return the clicked item's parent container id and position within it.
     ///
-    /// Valid only for space views, containers, and data results. For data results, the parent and
-    /// position of the enclosing space view is considered.
+    /// Valid only for views, containers, and data results. For data results, the parent and
+    /// position of the enclosing view is considered.
     pub fn clicked_item_enclosing_container_id_and_position(&self) -> Option<(ContainerId, usize)> {
         match self.clicked_item {
-            Item::SpaceView(space_view_id) | Item::DataResult(space_view_id, _) => {
-                Some(Contents::SpaceView(*space_view_id))
-            }
+            Item::View(view_id) | Item::DataResult(view_id, _) => Some(Contents::View(*view_id)),
             Item::Container(container_id) => Some(Contents::Container(*container_id)),
             _ => None,
         }
@@ -220,8 +261,8 @@ impl<'a> ContextMenuContext<'a> {
 
     /// Return the clicked item's parent container and position within it.
     ///
-    /// Valid only for space views, containers, and data results. For data results, the parent and
-    /// position of the enclosing space view is considered.
+    /// Valid only for views, containers, and data results. For data results, the parent and
+    /// position of the enclosing view is considered.
     pub fn clicked_item_enclosing_container_and_position(
         &self,
     ) -> Option<(&'a ContainerBlueprint, usize)> {
@@ -231,6 +272,10 @@ impl<'a> ContextMenuContext<'a> {
                     .container(&container_id)
                     .map(|container| (container, pos))
             })
+    }
+
+    pub fn egui_context(&self) -> &egui::Context {
+        self.viewer_context.egui_ctx
     }
 }
 
@@ -316,10 +361,10 @@ trait ContextMenuAction {
                 Item::ComponentPath(component_path) => {
                     self.process_component_path(ctx, component_path);
                 }
-                Item::SpaceView(space_view_id) => self.process_space_view(ctx, space_view_id),
+                Item::View(view_id) => self.process_view(ctx, view_id),
                 Item::InstancePath(instance_path) => self.process_instance_path(ctx, instance_path),
-                Item::DataResult(space_view_id, instance_path) => {
-                    self.process_data_result(ctx, space_view_id, instance_path);
+                Item::DataResult(view_id, instance_path) => {
+                    self.process_data_result(ctx, view_id, instance_path);
                 }
                 Item::Container(container_id) => self.process_container(ctx, container_id),
             }
@@ -342,14 +387,14 @@ trait ContextMenuAction {
     /// Process a single container.
     fn process_container(&self, _ctx: &ContextMenuContext<'_>, _container_id: &ContainerId) {}
 
-    /// Process a single space view.
-    fn process_space_view(&self, _ctx: &ContextMenuContext<'_>, _space_view_id: &SpaceViewId) {}
+    /// Process a single view.
+    fn process_view(&self, _ctx: &ContextMenuContext<'_>, _view_id: &ViewId) {}
 
     /// Process a single data result.
     fn process_data_result(
         &self,
         _ctx: &ContextMenuContext<'_>,
-        _space_view_id: &SpaceViewId,
+        _view_id: &ViewId,
         _instance_path: &InstancePath,
     ) {
     }

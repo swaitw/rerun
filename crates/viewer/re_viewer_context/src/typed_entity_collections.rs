@@ -5,13 +5,17 @@ use re_log_types::EntityPath;
 
 use crate::ViewSystemIdentifier;
 
-/// List of entities that are *applicable* to a given visualizer.
+/// List of entities that are *maybe* visualizable with a given visualizer.
 ///
-/// An entity is applicable if it at any point in time on any timeline has all required components.
-#[derive(Default, Clone)]
-pub struct ApplicableEntities(pub IntSet<EntityPath>);
+/// Note that this filter latches:
+/// An entity is "maybe visualizable" if it at any point in time on any timeline has all required components.
+///
+/// We evaluate this filtering step entirely by store subscriber.
+/// This in turn implies that this can *not* be influenced by individual view setups.
+#[derive(Default, Clone, Debug)]
+pub struct MaybeVisualizableEntities(pub IntSet<EntityPath>);
 
-impl std::ops::Deref for ApplicableEntities {
+impl std::ops::Deref for MaybeVisualizableEntities {
     type Target = IntSet<EntityPath>;
 
     #[inline]
@@ -24,7 +28,7 @@ impl std::ops::Deref for ApplicableEntities {
 ///
 /// In order to be a match the entity must have at some point in time on any timeline had any of
 /// the indicator components specified by the respective visualizer system.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct IndicatedEntities(pub IntSet<EntityPath>);
 
 impl std::ops::Deref for IndicatedEntities {
@@ -37,15 +41,14 @@ impl std::ops::Deref for IndicatedEntities {
 }
 
 /// List of entities that can be visualized at some point in time on any timeline
-/// by a concrete visualizer in the context of a specific instantiated space view.
+/// by a concrete visualizer in the context of a specific instantiated view.
 ///
-/// It gets invalidated whenever any properties of the respective space view instance
+/// It gets invalidated whenever any properties of the respective view instance
 /// change, e.g. its origin.
-/// TODO(andreas): Unclear if any of the space view's configuring blueprint entities are included in this!
+/// TODO(andreas): Unclear if any of the view's configuring blueprint entities are included in this.
 ///
-/// This is a subset of [`ApplicableEntities`] and differs on a
-/// per space view instance base.
-#[derive(Default, Clone)]
+/// This is a subset of [`MaybeVisualizableEntities`] and may differs on a per view instance base!
+#[derive(Default, Clone, Debug)]
 pub struct VisualizableEntities(pub IntSet<EntityPath>);
 
 impl std::ops::Deref for VisualizableEntities {
@@ -57,7 +60,7 @@ impl std::ops::Deref for VisualizableEntities {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct PerVisualizer<T: Default>(pub IntMap<ViewSystemIdentifier, T>);
 
 impl<T: Default> std::ops::Deref for PerVisualizer<T> {

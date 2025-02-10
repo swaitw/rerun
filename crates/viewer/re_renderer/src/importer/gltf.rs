@@ -1,27 +1,18 @@
-use std::sync::Arc;
-
 use ahash::{HashMap, HashMapExt};
 use gltf::texture::WrappingMode;
 use itertools::Itertools;
 use smallvec::SmallVec;
 
 use crate::{
-    mesh::{Material, Mesh, MeshError},
-    renderer::MeshInstance,
-    resource_managers::{
-        GpuMeshHandle, GpuTexture2D, ResourceLifeTime, ResourceManagerError, Texture2DCreationDesc,
-        TextureManager2D,
-    },
-    RenderContext, Rgba32Unmul,
+    mesh::{CpuMesh, Material, MeshError},
+    resource_managers::{GpuTexture2D, ImageDataDesc, TextureManager2D},
+    CpuMeshInstance, CpuModel, CpuModelMeshKey, RenderContext, Rgba32Unmul,
 };
 
 #[derive(thiserror::Error, Debug)]
 pub enum GltfImportError {
     #[error(transparent)]
     GltfLoading(#[from] gltf::Error),
-
-    #[error(transparent)]
-    ResourceManager(#[from] ResourceManagerError),
 
     #[error(transparent)]
     MeshError(#[from] MeshError),
@@ -46,9 +37,8 @@ pub enum GltfImportError {
 pub fn load_gltf_from_buffer(
     mesh_name: &str,
     buffer: &[u8],
-    lifetime: ResourceLifeTime,
     ctx: &RenderContext,
-) -> Result<Vec<MeshInstance>, GltfImportError> {
+) -> Result<CpuModel, GltfImportError> {
     re_tracing::profile_function!();
 
     let (doc, buffers, images) = {
@@ -67,7 +57,9 @@ pub fn load_gltf_from_buffer(
             if image.format == gltf::image::Format::R8G8B8 {
                 re_log::debug!("Converting Rgb8 to Rgba8");
                 (
-                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    // Don't use `Rgba8UnormSrgb`, Mesh shader assumes it has to do the conversion itself!
+                    // This is done so we can handle non-premultiplied alpha.
+                    wgpu::TextureFormat::Rgba8Unorm,
                     crate::pad_rgb_to_rgba(&image.pixels, 255),
                 )
             } else {
@@ -89,7 +81,7 @@ pub fn load_gltf_from_buffer(
         #[cfg(not(debug_assertions))]
         let texture_names = "";
 
-        let texture = Texture2DCreationDesc {
+        let texture = ImageDataDesc {
             label: if texture_names.is_empty() {
                 format!("unnamed gltf image in {mesh_name}")
             } else {
@@ -97,47 +89,41 @@ pub fn load_gltf_from_buffer(
             }
             .into(),
             data: data.into(),
-            format,
-            width: image.width,
-            height: image.height,
+            format: format.into(),
+            width_height: [image.width, image.height],
         };
 
-        images_as_textures.push(
-            match ctx
-                .texture_manager_2d
-                .create(&ctx.gpu_resources.textures, &texture)
-            {
-                Ok(texture) => texture,
-                Err(err) => {
-                    re_log::error!("Failed to create texture: {err}");
-                    ctx.texture_manager_2d.white_texture_unorm_handle().clone()
-                }
-            },
-        );
+        images_as_textures.push(match ctx.texture_manager_2d.create(ctx, texture) {
+            Ok(texture) => texture,
+            Err(err) => {
+                re_log::error!("Failed to create texture: {err}");
+                ctx.texture_manager_2d.white_texture_unorm_handle().clone()
+            }
+        });
     }
 
-    let mut meshes = HashMap::with_capacity(doc.meshes().len());
+    let mut re_model = CpuModel::default();
+    let mut mesh_keys = HashMap::with_capacity(doc.meshes().len());
     for ref mesh in doc.meshes() {
         re_tracing::profile_scope!("mesh");
 
         let re_mesh = import_mesh(mesh, &buffers, &images_as_textures, &ctx.texture_manager_2d)?;
-        meshes.insert(
-            mesh.index(),
-            (
-                ctx.mesh_manager.write().create(ctx, &re_mesh, lifetime)?,
-                Arc::new(re_mesh),
-            ),
-        );
+        let re_mesh_key = re_model.meshes.insert(re_mesh);
+        mesh_keys.insert(mesh.index(), re_mesh_key);
     }
 
-    let mut instances = Vec::new();
     for scene in doc.scenes() {
         for node in scene.nodes() {
-            gather_instances_recursive(&mut instances, &node, &glam::Affine3A::IDENTITY, &meshes);
+            gather_instances_recursive(
+                &mut re_model.instances,
+                &node,
+                &glam::Affine3A::IDENTITY,
+                &mesh_keys,
+            );
         }
     }
 
-    Ok(instances)
+    Ok(re_model)
 }
 
 fn map_format(format: gltf::image::Format) -> Option<wgpu::TextureFormat> {
@@ -149,7 +135,9 @@ fn map_format(format: gltf::image::Format) -> Option<wgpu::TextureFormat> {
         Format::R8 => Some(TextureFormat::R8Unorm),
         Format::R8G8 => Some(TextureFormat::Rg8Unorm),
         Format::R8G8B8 => None,
-        Format::R8G8B8A8 => Some(TextureFormat::Rgba8UnormSrgb),
+        // Don't use `Rgba8UnormSrgb`, Mesh shader assumes it has to do the conversion itself!
+        // This is done so we can handle non-premultiplied alpha.
+        Format::R8G8B8A8 => Some(TextureFormat::Rgba8Unorm),
 
         Format::R16 => Some(TextureFormat::R16Unorm),
         Format::R16G16 => Some(TextureFormat::Rg16Unorm),
@@ -166,7 +154,7 @@ fn import_mesh(
     buffers: &[gltf::buffer::Data],
     gpu_image_handles: &[GpuTexture2D],
     texture_manager: &TextureManager2D, //imported_materials: HashMap<usize, Material>,
-) -> Result<Mesh, GltfImportError> {
+) -> Result<CpuMesh, GltfImportError> {
     re_tracing::profile_function!();
 
     let mesh_name = mesh.name().map_or("<unknown", |f| f).to_owned();
@@ -289,7 +277,7 @@ fn import_mesh(
         return Err(GltfImportError::NoTrianglePrimitives { mesh_name });
     }
 
-    let mesh = Mesh {
+    let mesh = CpuMesh {
         label: mesh.name().into(),
         triangle_indices,
         vertex_positions,
@@ -305,10 +293,10 @@ fn import_mesh(
 }
 
 fn gather_instances_recursive(
-    instances: &mut Vec<MeshInstance>,
+    instances: &mut Vec<CpuMeshInstance>,
     node: &gltf::Node<'_>,
     transform: &glam::Affine3A,
-    meshes: &HashMap<usize, (GpuMeshHandle, Arc<Mesh>)>,
+    meshes: &HashMap<usize, CpuModelMeshKey>,
 ) {
     let (scale, rotation, translation) = match node.transform() {
         gltf::scene::Transform::Matrix { matrix } => {
@@ -336,12 +324,10 @@ fn gather_instances_recursive(
     }
 
     if let Some(mesh) = node.mesh() {
-        if let Some((gpu_mesh, mesh)) = meshes.get(&mesh.index()) {
-            instances.push(MeshInstance {
-                gpu_mesh: gpu_mesh.clone(),
-                mesh: Some(mesh.clone()),
+        if let Some(mesh_key) = meshes.get(&mesh.index()) {
+            instances.push(CpuMeshInstance {
+                mesh: *mesh_key,
                 world_from_mesh: transform,
-                ..Default::default()
             });
         }
     }

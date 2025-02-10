@@ -3,15 +3,21 @@
 
 #pragma once
 
+#include "../../component_descriptor.hpp"
 #include "../../result.hpp"
 
 #include <cstdint>
 #include <memory>
 
 namespace arrow {
+    /// \private
+    template <typename T>
+    class NumericBuilder;
+
     class Array;
     class DataType;
-    class SparseUnionBuilder;
+    class UInt8Type;
+    using UInt8Builder = NumericBuilder<UInt8Type>;
 } // namespace arrow
 
 namespace rerun::blueprint::components {
@@ -39,7 +45,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<blueprint::components::Corner2D> {
-        static constexpr const char Name[] = "rerun.blueprint.components.Corner2D";
+        static constexpr ComponentDescriptor Descriptor = "rerun.blueprint.components.Corner2D";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();
@@ -51,7 +57,7 @@ namespace rerun {
 
         /// Fills an arrow array builder with an array of this type.
         static rerun::Error fill_arrow_array_builder(
-            arrow::SparseUnionBuilder* builder, const blueprint::components::Corner2D* elements,
+            arrow::UInt8Builder* builder, const blueprint::components::Corner2D* elements,
             size_t num_elements
         );
     };

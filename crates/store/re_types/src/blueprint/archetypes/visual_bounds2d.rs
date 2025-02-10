@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Archetype**: Controls the visual bounds of a 2D view.
@@ -25,40 +25,50 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 ///
 /// If no visual bounds are set, it will be determined automatically,
 /// based on the bounding-box of the data or other camera information present in the view.
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Default)]
 pub struct VisualBounds2D {
     /// Controls the visible range of a 2D view.
     ///
     /// Use this to control pan & zoom of the view.
-    pub range: crate::blueprint::components::VisualBounds2D,
+    pub range: Option<SerializedComponentBatch>,
 }
 
-impl ::re_types_core::SizeBytes for VisualBounds2D {
+impl VisualBounds2D {
+    /// Returns the [`ComponentDescriptor`] for [`Self::range`].
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.range.heap_size_bytes()
+    pub fn descriptor_range() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.blueprint.archetypes.VisualBounds2D".into()),
+            component_name: "rerun.blueprint.components.VisualBounds2D".into(),
+            archetype_field_name: Some("range".into()),
+        }
     }
 
+    /// Returns the [`ComponentDescriptor`] for the associated indicator component.
     #[inline]
-    fn is_pod() -> bool {
-        <crate::blueprint::components::VisualBounds2D>::is_pod()
+    pub fn descriptor_indicator() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.blueprint.archetypes.VisualBounds2D".into()),
+            component_name: "rerun.blueprint.components.VisualBounds2DIndicator".into(),
+            archetype_field_name: None,
+        }
     }
 }
 
-static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.blueprint.components.VisualBounds2D".into()]);
+static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [VisualBounds2D::descriptor_range()]);
 
-static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.blueprint.components.VisualBounds2DIndicator".into()]);
+static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [VisualBounds2D::descriptor_indicator()]);
 
-static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 0usize]> =
+static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 0usize]> =
     once_cell::sync::Lazy::new(|| []);
 
-static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 2usize]> =
+static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 2usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.blueprint.components.VisualBounds2D".into(),
-            "rerun.blueprint.components.VisualBounds2DIndicator".into(),
+            VisualBounds2D::descriptor_range(),
+            VisualBounds2D::descriptor_indicator(),
         ]
     });
 
@@ -84,69 +94,53 @@ impl ::re_types_core::Archetype for VisualBounds2D {
     }
 
     #[inline]
-    fn indicator() -> MaybeOwnedComponentBatch<'static> {
-        static INDICATOR: VisualBounds2DIndicator = VisualBounds2DIndicator::DEFAULT;
-        MaybeOwnedComponentBatch::Ref(&INDICATOR)
+    fn indicator() -> SerializedComponentBatch {
+        #[allow(clippy::unwrap_used)]
+        VisualBounds2DIndicator::DEFAULT.serialized().unwrap()
     }
 
     #[inline]
-    fn required_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn required_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         REQUIRED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         RECOMMENDED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         OPTIONAL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn all_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn all_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         ALL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
     fn from_arrow_components(
-        arrow_data: impl IntoIterator<Item = (ComponentName, Box<dyn arrow2::array::Array>)>,
+        arrow_data: impl IntoIterator<Item = (ComponentDescriptor, arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self> {
         re_tracing::profile_function!();
         use ::re_types_core::{Loggable as _, ResultExt as _};
-        let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data
-            .into_iter()
-            .map(|(name, array)| (name.full_name(), array))
-            .collect();
-        let range = {
-            let array = arrays_by_name
-                .get("rerun.blueprint.components.VisualBounds2D")
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.blueprint.archetypes.VisualBounds2D#range")?;
-            <crate::blueprint::components::VisualBounds2D>::from_arrow_opt(&**array)
-                .with_context("rerun.blueprint.archetypes.VisualBounds2D#range")?
-                .into_iter()
-                .next()
-                .flatten()
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.blueprint.archetypes.VisualBounds2D#range")?
-        };
+        let arrays_by_descr: ::nohash_hasher::IntMap<_, _> = arrow_data.into_iter().collect();
+        let range = arrays_by_descr
+            .get(&Self::descriptor_range())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_range()));
         Ok(Self { range })
     }
 }
 
 impl ::re_types_core::AsComponents for VisualBounds2D {
-    fn as_component_batches(&self) -> Vec<MaybeOwnedComponentBatch<'_>> {
-        re_tracing::profile_function!();
+    #[inline]
+    fn as_serialized_batches(&self) -> Vec<SerializedComponentBatch> {
         use ::re_types_core::Archetype as _;
-        [
-            Some(Self::indicator()),
-            Some((&self.range as &dyn ComponentBatch).into()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
+        [Some(Self::indicator()), self.range.clone()]
+            .into_iter()
+            .flatten()
+            .collect()
     }
 }
 
@@ -157,7 +151,44 @@ impl VisualBounds2D {
     #[inline]
     pub fn new(range: impl Into<crate::blueprint::components::VisualBounds2D>) -> Self {
         Self {
-            range: range.into(),
+            range: try_serialize_field(Self::descriptor_range(), [range]),
         }
+    }
+
+    /// Update only some specific fields of a `VisualBounds2D`.
+    #[inline]
+    pub fn update_fields() -> Self {
+        Self::default()
+    }
+
+    /// Clear all the fields of a `VisualBounds2D`.
+    #[inline]
+    pub fn clear_fields() -> Self {
+        use ::re_types_core::Loggable as _;
+        Self {
+            range: Some(SerializedComponentBatch::new(
+                crate::blueprint::components::VisualBounds2D::arrow_empty(),
+                Self::descriptor_range(),
+            )),
+        }
+    }
+
+    /// Controls the visible range of a 2D view.
+    ///
+    /// Use this to control pan & zoom of the view.
+    #[inline]
+    pub fn with_range(
+        mut self,
+        range: impl Into<crate::blueprint::components::VisualBounds2D>,
+    ) -> Self {
+        self.range = try_serialize_field(Self::descriptor_range(), [range]);
+        self
+    }
+}
+
+impl ::re_byte_size::SizeBytes for VisualBounds2D {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.range.heap_size_bytes()
     }
 }

@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["TensorData", "TensorDataBatch", "TensorDataType"]
+__all__ = ["TensorData", "TensorDataBatch"]
 
 
 class TensorData(datatypes.TensorData, ComponentMixin):
@@ -24,9 +25,6 @@ class TensorData(datatypes.TensorData, ComponentMixin):
 
     These dimensions are combined with an index to look up values from the `buffer` field,
     which stores a contiguous array of typed values.
-
-    Note that the buffer may in a format with downsampled chroma, such as NV12 or YUY2.
-    For chroma downsampled formats the shape has to be the shape of the decoded image.
     """
 
     _BATCH_TYPE = None
@@ -36,12 +34,8 @@ class TensorData(datatypes.TensorData, ComponentMixin):
     pass
 
 
-class TensorDataType(datatypes.TensorDataType):
-    _TYPE_NAME: str = "rerun.components.TensorData"
-
-
 class TensorDataBatch(datatypes.TensorDataBatch, ComponentBatchMixin):
-    _ARROW_TYPE = TensorDataType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.TensorData")
 
 
 # This is patched in late to avoid circular dependencies.

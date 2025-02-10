@@ -12,10 +12,10 @@ from ... import datatypes
 from ..._baseclasses import AsComponents, ComponentBatchLike
 from ...datatypes import EntityPathLike, Utf8Like
 from .. import archetypes as blueprint_archetypes, components as blueprint_components
-from ..api import SpaceView, SpaceViewContentsLike
+from ..api import View, ViewContentsLike
 
 
-class Spatial3DView(SpaceView):
+class Spatial3DView(View):
     """
     **View**: For viewing spatial 3D data.
 
@@ -45,6 +45,15 @@ class Spatial3DView(SpaceView):
             name="3D Scene",
             # Set the background color to light blue.
             background=[100, 149, 237],
+            # Configure the line grid.
+            line_grid=rrb.archetypes.LineGrid3D(
+                visible=True,  # The grid is enabled by default, but you can hide it with this property.
+                spacing=0.1,  # Makes the grid more fine-grained.
+                # By default, the plane is inferred from view coordinates setup, but you can set arbitrary planes.
+                plane=rr.components.Plane3D.XY.with_distance(-5.0),
+                stroke_width=2.0,  # Makes the grid lines twice as thick as usual.
+                color=[255, 255, 255, 128],  # Colors the grid a half-transparent white.
+            ),
         ),
         collapse_panels=True,
     )
@@ -67,7 +76,7 @@ class Spatial3DView(SpaceView):
         self,
         *,
         origin: EntityPathLike = "/",
-        contents: SpaceViewContentsLike = "$origin/**",
+        contents: ViewContentsLike = "$origin/**",
         name: Utf8Like | None = None,
         visible: datatypes.BoolLike | None = None,
         defaults: list[Union[AsComponents, ComponentBatchLike]] = [],
@@ -76,6 +85,7 @@ class Spatial3DView(SpaceView):
         | datatypes.Rgba32Like
         | blueprint_components.BackgroundKindLike
         | None = None,
+        line_grid: blueprint_archetypes.LineGrid3D | None = None,
         time_ranges: blueprint_archetypes.VisibleTimeRanges
         | datatypes.VisibleTimeRangeLike
         | Sequence[datatypes.VisibleTimeRangeLike]
@@ -92,7 +102,7 @@ class Spatial3DView(SpaceView):
         contents:
             The contents of the view specified as a query expression.
             This is either a single expression, or a list of multiple expressions.
-            See [rerun.blueprint.archetypes.SpaceViewContents][].
+            See [rerun.blueprint.archetypes.ViewContents][].
         name:
             The display name of the view.
         visible:
@@ -100,18 +110,20 @@ class Spatial3DView(SpaceView):
 
             Defaults to true if not specified.
         defaults:
-            List of default components or component batches to add to the space view. When an archetype
+            List of default components or component batches to add to the view. When an archetype
             in the view is missing a component included in this set, the value of default will be used
             instead of the normal fallback for the visualizer.
         overrides:
-            Dictionary of overrides to apply to the space view. The key is the path to the entity where the override
+            Dictionary of overrides to apply to the view. The key is the path to the entity where the override
             should be applied. The value is a list of component or component batches to apply to the entity.
 
             Important note: the path must be a fully qualified entity path starting at the root. The override paths
             do not yet support `$origin` relative paths or glob expressions.
-            This will be addressed in: [https://github.com/rerun-io/rerun/issues/6673][].
+            This will be addressed in <https://github.com/rerun-io/rerun/issues/6673>.
         background:
             Configuration for the background of the view.
+        line_grid:
+            Configuration for the 3D line grid.
         time_ranges:
             Configures which range on each timeline is shown by this view (unless specified differently per entity).
 
@@ -125,6 +137,11 @@ class Spatial3DView(SpaceView):
             if not isinstance(background, blueprint_archetypes.Background):
                 background = blueprint_archetypes.Background(background)
             properties["Background"] = background
+
+        if line_grid is not None:
+            if not isinstance(line_grid, blueprint_archetypes.LineGrid3D):
+                line_grid = blueprint_archetypes.LineGrid3D(line_grid)
+            properties["LineGrid3D"] = line_grid
 
         if time_ranges is not None:
             if not isinstance(time_ranges, blueprint_archetypes.VisibleTimeRanges):

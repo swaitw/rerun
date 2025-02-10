@@ -23,8 +23,8 @@ import yfinance as yf
 
 
 def auto_blueprint() -> rrb.BlueprintLike:
-    """A blueprint enabling auto space views, which matches the application default."""
-    return rrb.Blueprint(auto_space_views=True, auto_layout=True)
+    """A blueprint enabling auto views, which matches the application default."""
+    return rrb.Blueprint(auto_views=True, auto_layout=True)
 
 
 def one_stock(symbol: str) -> rrb.ContainerLike:
@@ -173,8 +173,8 @@ def main() -> None:
     # In a future blueprint release, this can move into the blueprint as well
     for symbol in symbols:
         for day in dates:
-            rr.log(f"stocks/{symbol}/{day}", style_plot(symbol), timeless=True)
-            rr.log(f"stocks/{symbol}/peaks/{day}", style_peak(symbol), timeless=True)
+            rr.log(f"stocks/{symbol}/{day}", style_plot(symbol), static=True)
+            rr.log(f"stocks/{symbol}/peaks/{day}", style_peak(symbol), static=True)
 
     for symbol in symbols:
         stock = yf.Ticker(symbol)
@@ -194,7 +194,7 @@ def main() -> None:
         rr.log(
             f"stocks/{symbol}/info",
             rr.TextDocument(info_md, media_type=rr.MediaType.MARKDOWN),
-            timeless=True,
+            static=True,
         )
 
         for day in dates:

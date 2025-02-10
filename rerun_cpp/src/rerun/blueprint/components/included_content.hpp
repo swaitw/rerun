@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../../component_descriptor.hpp"
 #include "../../datatypes/entity_path.hpp"
 #include "../../result.hpp"
 
@@ -14,7 +15,7 @@
 namespace rerun::blueprint::components {
     /// **Component**: All the contents in the container.
     struct IncludedContent {
-        /// List of the contents by EntityPath.
+        /// List of the contents by `datatypes::EntityPath`.
         ///
         /// This must be a path in the blueprint store.
         /// Typically structure as `<blueprint_registry>/<uuid>`.
@@ -52,7 +53,8 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<blueprint::components::IncludedContent> {
-        static constexpr const char Name[] = "rerun.blueprint.components.IncludedContent";
+        static constexpr ComponentDescriptor Descriptor =
+            "rerun.blueprint.components.IncludedContent";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -63,10 +65,19 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const blueprint::components::IncludedContent* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::EntityPath>::to_arrow(
-                &instances->contents,
-                num_instances
-            );
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::EntityPath>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::EntityPath>::to_arrow(
+                    &instances->contents,
+                    num_instances
+                );
+            }
         }
     };
 } // namespace rerun

@@ -18,7 +18,7 @@
 //! * Extract a contour from the mask texture, for each contour pixel write the position in the (to-be) voronoi texture.
 //!     * in our case we extract all pixels at which the mask changes (details below)
 //! * Jump-flooding iterations: For each pixel in the voronoi texture,
-//!  sample the current pixel and an 8-neighborhood at a certain, for each pass decreasing, distance and write out the closest position seen so far.
+//!   sample the current pixel and an 8-neighborhood at a certain, for each pass decreasing, distance and write out the closest position seen so far.
 //!     * This is repeated for `log2(outline_width)` iterations.
 //! * During composition, extract an outline by checking the distance to the closest contour using the voronoi texture
 //!
@@ -45,7 +45,7 @@
 
 use crate::{
     allocator::create_and_fill_uniform_buffer_batch,
-    config::DeviceCaps,
+    device_caps::DeviceCapabilityTier,
     include_shader_module,
     renderer::screen_triangle_vertex_shader,
     view_builder::ViewBuilder,
@@ -138,12 +138,12 @@ mod gpu_data {
     use crate::wgpu_buffer_types;
 
     /// Keep in sync with `jumpflooding_step.wgsl`
-    #[repr(C, align(256))]
+    #[repr(C)]
     #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct JumpfloodingStepUniformBuffer {
         pub step_width: wgpu_buffer_types::U32RowPadded,
 
-        /// All this padding hurts. `step_width` be a PushConstant but they are not widely supported enough!
+        /// All this padding hurts. `step_width` be a `PushConstant` but they are not widely supported enough!
         pub end_padding: [wgpu_buffer_types::PaddingRow; 16 - 1],
     }
 }
@@ -177,7 +177,7 @@ impl OutlineMaskProcessor {
     const VORONOI_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
     /// Default MSAA state for the outline mask target.
-    pub fn mask_default_msaa_state(tier: &DeviceCaps) -> wgpu::MultisampleState {
+    pub fn mask_default_msaa_state(tier: DeviceCapabilityTier) -> wgpu::MultisampleState {
         wgpu::MultisampleState {
             count: Self::mask_sample_count(tier),
             mask: !0,
@@ -186,7 +186,7 @@ impl OutlineMaskProcessor {
     }
 
     /// Number of MSAA samples used for the outline mask target.
-    pub fn mask_sample_count(tier: &DeviceCaps) -> u32 {
+    pub fn mask_sample_count(tier: DeviceCapabilityTier) -> u32 {
         if tier.support_sampling_msaa_texture() {
             // The MSAA shader variant deals with *exactly* 4 samples.
             // See `jumpflooding_step_msaa.wgsl`.
@@ -208,7 +208,7 @@ impl OutlineMaskProcessor {
         // ------------- Textures -------------
         let texture_pool = &ctx.gpu_resources.textures;
 
-        let mask_sample_count = Self::mask_sample_count(&ctx.config.device_caps);
+        let mask_sample_count = Self::mask_sample_count(ctx.device_caps().tier);
         let mask_texture_desc = crate::wgpu_resources::TextureDesc {
             label: format!("{instance_label}::mask_texture").into(),
             size: wgpu::Extent3d {

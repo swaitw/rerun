@@ -17,7 +17,7 @@ Visualize object detection and segmentation using the [Huggingface's Transformer
 </picture>
 
 ## Used Rerun types
-[`Image`](https://www.rerun.io/docs/reference/types/archetypes/image), [`SegmentationImage`](https://www.rerun.io/docs/reference/types/archetypes/segmentation_image), [`AnnotationContext`](https://www.rerun.io/docs/reference/types/archetypes/annotation_context), [`Boxes2D`](https://www.rerun.io/docs/reference/types/archetypes/boxes2d), [`TextLog`](https://www.rerun.io/docs/reference/types/archetypes/text_log)
+[`Image`](https://www.rerun.io/docs/reference/types/archetypes/image), [`AssetVideo`](https://www.rerun.io/docs/reference/types/archetypes/asset_video), [`VideoFrameReference`](https://rerun.io/docs/reference/types/archetypes/video_frame_reference), [`SegmentationImage`](https://www.rerun.io/docs/reference/types/archetypes/segmentation_image), [`AnnotationContext`](https://www.rerun.io/docs/reference/types/archetypes/annotation_context), [`Boxes2D`](https://www.rerun.io/docs/reference/types/archetypes/boxes2d), [`TextLog`](https://www.rerun.io/docs/reference/types/archetypes/text_log)
 
 ## Background
 In this example, CSRT (Channel and Spatial Reliability Tracker), a tracking API introduced in OpenCV, is employed for object detection and tracking across frames.
@@ -36,12 +36,21 @@ rr.set_time_sequence("frame", frame_idx)
 ```
 
 ### Video
-The input video is logged as a sequence of [`Image`](https://www.rerun.io/docs/reference/types/archetypes/image) to the `image` entity.
+The input video is logged as a static [`AssetVideo`](https://www.rerun.io/docs/reference/types/archetypes/asset_video) to the `video` entity.
+
+```python
+video_asset = rr.AssetVideo(path=video_path)
+frame_timestamps_ns = video_asset.read_frame_timestamps_ns()
+
+rr.log("video", video_asset, static=True)
+```
+
+Each frame is processed and the timestamp is logged to the `frame` timeline using a [`VideoFrameReference`](https://www.rerun.io/docs/reference/types/archetypes/video_frame_reference).
 
 ```python
 rr.log(
-    "image",
-    rr.Image(rgb).compress(jpeg_quality=85)
+    "video",
+    rr.VideoFrameReference(nanoseconds=frame_timestamps_ns[frame_idx])
 )
 ```
 
@@ -71,7 +80,7 @@ rr.log(
 
 The color and label for each class is determined by the
 [`AnnotationContext`](https://www.rerun.io/docs/reference/types/archetypes/annotation_context) which is
-logged to the root entity using `rr.log("/", …, timeless=True)` as it should apply to the whole sequence and all
+logged to the root entity using `rr.log("/", …, static=True)` as it should apply to the whole sequence and all
 entities that have a class id.
 
 ```python
@@ -79,7 +88,7 @@ class_descriptions = [ rr.AnnotationInfo(id=cat["id"], color=cat["color"], label
 rr.log(
      "/",
      rr.AnnotationContext(class_descriptions),
-     timeless=True
+     static=True
 )
 ```
 

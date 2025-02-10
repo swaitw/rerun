@@ -1,5 +1,5 @@
 ---
-title: Blueprint
+title: Blueprints
 order: 600
 ---
 
@@ -82,8 +82,8 @@ Viewer to be a deterministic function of the blueprint and the recording.
 
 Every frame, the Viewer starts with a minimal context of an "active" blueprint,
 and an "active" recording. The Viewer then uses the current revision on the
-blueprint timeline to query the container and space-view archetypes from the
-blueprint store. The space-view archetypes, in turn, specify the paths types
+blueprint timeline to query the container and view archetypes from the
+blueprint store. The view archetypes, in turn, specify the paths types
 that need to be queried from the recording store in order to render the views.
 
 Any user interactions that modify the blueprint are queued and written back to
@@ -100,7 +100,7 @@ blueprint data-store has several advantages:
     a dependency on the Viewer libraries.
 -   The blueprint is capable of representing any data that a recording can
     represent. This means that blueprint-sourced data
-    [overrides](visualizers-and-overrides.md#per-entity-component-override) are
+    [overrides](visualizers-and-overrides.md#Per-entity-component-override) are
     just as expressive as any logged data.
 -   The blueprint is actually stored as a full time-series, simplifying future
     implementations of things like snapshots and undo/redo mechanisms.

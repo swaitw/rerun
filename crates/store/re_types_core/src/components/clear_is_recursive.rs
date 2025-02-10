@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use crate::external::arrow2;
-use crate::ComponentName;
+use crate::try_serialize_field;
 use crate::SerializationResult;
-use crate::{ComponentBatch, MaybeOwnedComponentBatch};
+use crate::{ComponentBatch, SerializedComponentBatch};
+use crate::{ComponentDescriptor, ComponentName};
 use crate::{DeserializationError, DeserializationResult};
 
 /// **Component**: Configures how a clear operation should behave - recursive or not.
@@ -25,15 +25,43 @@ pub struct ClearIsRecursive(
     pub crate::datatypes::Bool,
 );
 
-impl crate::SizeBytes for ClearIsRecursive {
+impl crate::Component for ClearIsRecursive {
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.0.heap_size_bytes()
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("rerun.components.ClearIsRecursive")
+    }
+}
+
+crate::macros::impl_into_cow!(ClearIsRecursive);
+
+impl crate::Loggable for ClearIsRecursive {
+    #[inline]
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        crate::datatypes::Bool::arrow_datatype()
     }
 
-    #[inline]
-    fn is_pod() -> bool {
-        <crate::datatypes::Bool>::is_pod()
+    fn to_arrow_opt<'a>(
+        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+    ) -> SerializationResult<arrow::array::ArrayRef>
+    where
+        Self: Clone + 'a,
+    {
+        crate::datatypes::Bool::to_arrow_opt(data.into_iter().map(|datum| {
+            datum.map(|datum| match datum.into() {
+                ::std::borrow::Cow::Borrowed(datum) => ::std::borrow::Cow::Borrowed(&datum.0),
+                ::std::borrow::Cow::Owned(datum) => ::std::borrow::Cow::Owned(datum.0),
+            })
+        }))
+    }
+
+    fn from_arrow_opt(
+        arrow_data: &dyn arrow::array::Array,
+    ) -> DeserializationResult<Vec<Option<Self>>>
+    where
+        Self: Sized,
+    {
+        crate::datatypes::Bool::from_arrow_opt(arrow_data)
+            .map(|v| v.into_iter().map(|v| v.map(Self)).collect())
     }
 }
 
@@ -66,42 +94,14 @@ impl std::ops::DerefMut for ClearIsRecursive {
     }
 }
 
-crate::macros::impl_into_cow!(ClearIsRecursive);
-
-impl crate::Loggable for ClearIsRecursive {
-    type Name = crate::ComponentName;
-
+impl ::re_byte_size::SizeBytes for ClearIsRecursive {
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.components.ClearIsRecursive".into()
+    fn heap_size_bytes(&self) -> u64 {
+        self.0.heap_size_bytes()
     }
 
     #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        crate::datatypes::Bool::arrow_datatype()
-    }
-
-    fn to_arrow_opt<'a>(
-        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
-    where
-        Self: Clone + 'a,
-    {
-        crate::datatypes::Bool::to_arrow_opt(data.into_iter().map(|datum| {
-            datum.map(|datum| match datum.into() {
-                ::std::borrow::Cow::Borrowed(datum) => ::std::borrow::Cow::Borrowed(&datum.0),
-                ::std::borrow::Cow::Owned(datum) => ::std::borrow::Cow::Owned(datum.0),
-            })
-        }))
-    }
-
-    fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
-    ) -> DeserializationResult<Vec<Option<Self>>>
-    where
-        Self: Sized,
-    {
-        crate::datatypes::Bool::from_arrow_opt(arrow_data)
-            .map(|v| v.into_iter().map(|v| v.map(Self)).collect())
+    fn is_pod() -> bool {
+        <crate::datatypes::Bool>::is_pod()
     }
 }

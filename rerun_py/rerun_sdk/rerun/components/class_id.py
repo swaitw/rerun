@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["ClassId", "ClassIdBatch", "ClassIdType"]
+__all__ = ["ClassId", "ClassIdBatch"]
 
 
 class ClassId(datatypes.ClassId, ComponentMixin):
@@ -24,12 +25,8 @@ class ClassId(datatypes.ClassId, ComponentMixin):
     pass
 
 
-class ClassIdType(datatypes.ClassIdType):
-    _TYPE_NAME: str = "rerun.components.ClassId"
-
-
 class ClassIdBatch(datatypes.ClassIdBatch, ComponentBatchMixin):
-    _ARROW_TYPE = ClassIdType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.ClassId")
 
 
 # This is patched in late to avoid circular dependencies.

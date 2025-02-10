@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Component**: A 16-bit ID representing a type of semantic class.
@@ -28,15 +28,51 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 #[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))]
 pub struct ClassId(pub crate::datatypes::ClassId);
 
-impl ::re_types_core::SizeBytes for ClassId {
+impl ::re_types_core::Component for ClassId {
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.0.heap_size_bytes()
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("rerun.components.ClassId")
+    }
+}
+
+::re_types_core::macros::impl_into_cow!(ClassId);
+
+impl ::re_types_core::Loggable for ClassId {
+    #[inline]
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        crate::datatypes::ClassId::arrow_datatype()
+    }
+
+    fn to_arrow_opt<'a>(
+        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+    ) -> SerializationResult<arrow::array::ArrayRef>
+    where
+        Self: Clone + 'a,
+    {
+        crate::datatypes::ClassId::to_arrow_opt(data.into_iter().map(|datum| {
+            datum.map(|datum| match datum.into() {
+                ::std::borrow::Cow::Borrowed(datum) => ::std::borrow::Cow::Borrowed(&datum.0),
+                ::std::borrow::Cow::Owned(datum) => ::std::borrow::Cow::Owned(datum.0),
+            })
+        }))
+    }
+
+    fn from_arrow_opt(
+        arrow_data: &dyn arrow::array::Array,
+    ) -> DeserializationResult<Vec<Option<Self>>>
+    where
+        Self: Sized,
+    {
+        crate::datatypes::ClassId::from_arrow_opt(arrow_data)
+            .map(|v| v.into_iter().map(|v| v.map(Self)).collect())
     }
 
     #[inline]
-    fn is_pod() -> bool {
-        <crate::datatypes::ClassId>::is_pod()
+    fn from_arrow(arrow_data: &dyn arrow::array::Array) -> DeserializationResult<Vec<Self>>
+    where
+        Self: Sized,
+    {
+        crate::datatypes::ClassId::from_arrow(arrow_data).map(bytemuck::cast_vec)
     }
 }
 
@@ -69,50 +105,14 @@ impl std::ops::DerefMut for ClassId {
     }
 }
 
-::re_types_core::macros::impl_into_cow!(ClassId);
-
-impl ::re_types_core::Loggable for ClassId {
-    type Name = ::re_types_core::ComponentName;
-
+impl ::re_byte_size::SizeBytes for ClassId {
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.components.ClassId".into()
+    fn heap_size_bytes(&self) -> u64 {
+        self.0.heap_size_bytes()
     }
 
     #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        crate::datatypes::ClassId::arrow_datatype()
-    }
-
-    fn to_arrow_opt<'a>(
-        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
-    where
-        Self: Clone + 'a,
-    {
-        crate::datatypes::ClassId::to_arrow_opt(data.into_iter().map(|datum| {
-            datum.map(|datum| match datum.into() {
-                ::std::borrow::Cow::Borrowed(datum) => ::std::borrow::Cow::Borrowed(&datum.0),
-                ::std::borrow::Cow::Owned(datum) => ::std::borrow::Cow::Owned(datum.0),
-            })
-        }))
-    }
-
-    fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
-    ) -> DeserializationResult<Vec<Option<Self>>>
-    where
-        Self: Sized,
-    {
-        crate::datatypes::ClassId::from_arrow_opt(arrow_data)
-            .map(|v| v.into_iter().map(|v| v.map(Self)).collect())
-    }
-
-    #[inline]
-    fn from_arrow(arrow_data: &dyn arrow2::array::Array) -> DeserializationResult<Vec<Self>>
-    where
-        Self: Sized,
-    {
-        crate::datatypes::ClassId::from_arrow(arrow_data).map(bytemuck::cast_vec)
+    fn is_pod() -> bool {
+        <crate::datatypes::ClassId>::is_pod()
     }
 }

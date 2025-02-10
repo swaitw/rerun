@@ -3,7 +3,6 @@
 //! The data density is the number of data points per unit of time.
 //! We collect this into a histogram, blur it, and then paint it.
 
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use egui::emath::Rangef;
@@ -11,16 +10,11 @@ use egui::{epaint::Vertex, lerp, pos2, remap, Color32, NumExt as _, Rect, Shape}
 
 use re_chunk_store::Chunk;
 use re_chunk_store::RangeQuery;
-use re_data_ui::item_ui;
-use re_entity_db::TimeHistogram;
-use re_log_types::EntityPath;
-use re_log_types::TimeInt;
-use re_log_types::Timeline;
-use re_log_types::{ComponentPath, ResolvedTimeRange, TimeReal};
-use re_types::ComponentName;
+use re_log_types::{ComponentPath, ResolvedTimeRange, TimeInt, Timeline};
 use re_viewer_context::{Item, TimeControl, UiLayout, ViewerContext};
 
-use crate::TimePanelItem;
+use crate::recursive_chunks_per_timeline_subscriber::PathRecursiveChunksPerTimelineStoreSubscriber;
+use crate::time_panel::TimePanelItem;
 
 use super::time_ranges_ui::TimeRangesUi;
 
@@ -31,6 +25,8 @@ const MARGIN_X: f32 = 2.0;
 
 /// Higher = slower, but more accurate.
 const DENSITIES_PER_UI_PIXEL: f32 = 1.0;
+
+const DEBUG_PAINT: bool = false;
 
 // ----------------------------------------------------------------------------
 
@@ -90,7 +86,7 @@ impl DataDensityGraphPainter {
 
 pub struct DensityGraph {
     /// Number of datapoints per bucket.
-    /// 0 == min_x, n-1 == max_x.
+    /// `0 == min_x, n-1 == max_x`.
     buckets: Vec<f32>,
     min_x: f32,
     max_x: f32,
@@ -150,6 +146,10 @@ impl DensityGraph {
     pub fn add_range(&mut self, (min_x, max_x): (f32, f32), count: f32) {
         debug_assert!(min_x <= max_x);
 
+        if max_x < self.min_x || self.max_x < min_x {
+            return;
+        }
+
         if min_x == max_x {
             let center_x = lerp(min_x..=max_x, 0.5);
             self.add_point(center_x, count);
@@ -165,30 +165,39 @@ impl DensityGraph {
         // We then want to add to the buckets [3, 4, 5, 6],
         // but not in equal amounts.
 
-        let first_bucket_factor = 1.0 - (min_bucket - min_bucket.floor());
-        let num_full_buckets = 1.0 + max_bucket.floor() - min_bucket.ceil();
-        let last_bucket_factor = 1.0 - (max_bucket.ceil() - max_bucket);
+        let min_full_bucket = min_bucket.ceil();
+        let first_bucket = min_bucket.floor();
+        let max_full_bucket = max_bucket.floor();
+        let last_bucket = max_bucket.ceil();
+        let first_bucket_factor = 1.0 - (min_bucket - first_bucket);
+        let num_full_buckets = 1.0 + max_full_bucket - min_full_bucket;
+        let last_bucket_factor = 1.0 - (last_bucket - max_bucket);
         let count_per_bucket =
             count / (first_bucket_factor + num_full_buckets + last_bucket_factor);
 
+        // For filling self.buckets, we need to account for min_bucket/max_bucket being out of range!
+        // (everything before & beyond can be seen as a "virtual" bucket that we can't fill)
+
         // first bucket, partially filled:
-        if let Ok(i) = usize::try_from(min_bucket.floor() as i64) {
+        if let Ok(i) = usize::try_from(first_bucket as i64) {
             if let Some(bucket) = self.buckets.get_mut(i) {
                 *bucket += first_bucket_factor * count_per_bucket;
             }
         }
 
         // full buckets:
-        for i in (min_bucket.ceil() as i64)..=(max_bucket.floor() as i64) {
-            if let Ok(i) = usize::try_from(i) {
-                if let Some(bucket) = self.buckets.get_mut(i) {
-                    *bucket += count_per_bucket;
-                }
+        if min_full_bucket != max_full_bucket {
+            let min_full_bucket_idx =
+                (min_full_bucket as i64).clamp(0, self.buckets.len() as i64 - 1) as usize;
+            let max_full_bucket_idx =
+                (max_full_bucket as i64).clamp(0, self.buckets.len() as i64 - 1) as usize;
+            for bucket in &mut self.buckets[min_full_bucket_idx..=max_full_bucket_idx] {
+                *bucket += count_per_bucket;
             }
         }
 
         // last bucket, partially filled:
-        if let Ok(i) = usize::try_from(max_bucket.ceil() as i64) {
+        if let Ok(i) = usize::try_from(last_bucket as i64) {
             if let Some(bucket) = self.buckets.get_mut(i) {
                 *bucket += last_bucket_factor * count_per_bucket;
             }
@@ -201,7 +210,6 @@ impl DensityGraph {
         y_range: Rangef,
         painter: &egui::Painter,
         full_color: Color32,
-        hovered_x_range: RangeInclusive<f32>,
     ) {
         re_tracing::profile_function!();
 
@@ -260,11 +268,8 @@ impl DensityGraph {
                 let inner_radius =
                     (max_radius * normalized_density).at_least(MIN_RADIUS) - feather_radius;
 
-                let inner_color = if hovered_x_range.contains(&x) {
-                    Color32::WHITE
-                } else {
-                    full_color.gamma_multiply(lerp(0.5..=1.0, normalized_density))
-                };
+                let inner_color = full_color.gamma_multiply(lerp(0.5..=1.0, normalized_density));
+
                 (inner_radius, inner_color)
             };
             let outer_radius = inner_radius + feather_radius;
@@ -329,7 +334,7 @@ impl DensityGraph {
             }
         }
 
-        painter.add(Shape::Mesh(mesh));
+        painter.add(Shape::Mesh(Arc::new(mesh)));
     }
 }
 
@@ -374,7 +379,7 @@ fn smooth(density: &[f32]) -> Vec<f32> {
 // ----------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
-pub fn data_density_graph_ui2(
+pub fn data_density_graph_ui(
     data_density_graph_painter: &mut DataDensityGraphPainter,
     ctx: &ViewerContext<'_>,
     time_ctrl: &TimeControl,
@@ -384,6 +389,7 @@ pub fn data_density_graph_ui2(
     time_ranges_ui: &TimeRangesUi,
     row_rect: Rect,
     item: &TimePanelItem,
+    tooltips_enabled: bool,
 ) {
     re_tracing::profile_function!();
 
@@ -406,24 +412,24 @@ pub fn data_density_graph_ui2(
         row_rect.y_range(),
         time_area_painter,
         graph_color(ctx, &item.to_item(), ui),
-        // TODO(jprochazk): completely remove `hovered_x_range` and associated code from painter
-        0f32..=0f32,
     );
 
-    if let Some(hovered_time) = data.hovered_time {
-        ctx.selection_state().set_hovered(item.to_item());
+    if tooltips_enabled {
+        if let Some(hovered_time) = data.hovered_time {
+            ctx.selection_state().set_hovered(item.to_item());
 
-        if ui.ctx().dragged_id().is_none() {
-            // TODO(jprochazk): check chunk.num_rows() and chunk.timeline.is_sorted()
-            //                  if too many rows and unsorted, show some generic error tooltip (=too much data)
-            egui::show_tooltip_at_pointer(
-                ui.ctx(),
-                ui.layer_id(),
-                egui::Id::new("data_tooltip"),
-                |ui| {
-                    show_row_ids_tooltip2(ctx, ui, time_ctrl, db, item, hovered_time);
-                },
-            );
+            if ui.ctx().dragged_id().is_none() {
+                // TODO(jprochazk): check chunk.num_rows() and chunk.timeline.is_sorted()
+                //                  if too many rows and unsorted, show some generic error tooltip (=too much data)
+                egui::show_tooltip_at_pointer(
+                    ui.ctx(),
+                    ui.layer_id(),
+                    egui::Id::new("data_tooltip"),
+                    |ui| {
+                        show_row_ids_tooltip(ctx, ui, time_ctrl, db, item, hovered_time);
+                    },
+                );
+            }
         }
     }
 }
@@ -447,22 +453,62 @@ pub fn build_density_graph<'a>(
         .time_range_from_x_range((row_rect.left() - MARGIN_X)..=(row_rect.right() + MARGIN_X));
 
     // NOTE: These chunks are guaranteed to have data on the current timeline
-    let mut chunk_ranges: Vec<(Arc<Chunk>, ResolvedTimeRange, usize)> = vec![];
-    let mut total_events = 0;
+    let (chunk_ranges, total_events): (Vec<(Arc<Chunk>, ResolvedTimeRange, u64)>, u64) = {
+        re_tracing::profile_scope!("collect chunks");
 
-    {
-        visit_relevant_chunks(
-            db,
-            &item.entity_path,
-            item.component_name,
-            timeline,
-            visible_time_range,
-            |chunk, time_range, num_events| {
-                chunk_ranges.push((chunk, time_range, num_events));
-                total_events += num_events;
-            },
-        );
-    }
+        let engine = db.storage_engine();
+        let store = engine.store();
+        let query = RangeQuery::new(timeline, visible_time_range);
+
+        if let Some(component_name) = item.component_name {
+            let mut total_num_events = 0;
+            (
+                store
+                    .range_relevant_chunks(&query, &item.entity_path, component_name)
+                    .into_iter()
+                    .filter_map(|chunk| {
+                        let time_range = chunk.timelines().get(&timeline)?.time_range();
+                        chunk
+                            .num_events_for_component(component_name)
+                            .map(|num_events| {
+                                total_num_events += num_events;
+                                (chunk, time_range, num_events)
+                            })
+                    })
+                    .collect(),
+                total_num_events,
+            )
+        } else {
+            PathRecursiveChunksPerTimelineStoreSubscriber::access(
+                &store.id(),
+                |chunks_per_timeline| {
+                    let Some(info) = chunks_per_timeline
+                        .path_recursive_chunks_for_entity_and_timeline(
+                            &item.entity_path,
+                            &timeline,
+                        )
+                    else {
+                        return Default::default();
+                    };
+
+                    (
+                        info.recursive_chunks_info
+                            .values()
+                            .map(|info| {
+                                (
+                                    info.chunk.clone(),
+                                    info.resolved_time_range,
+                                    info.num_events,
+                                )
+                            })
+                            .collect(),
+                        info.total_num_events,
+                    )
+                },
+            )
+            .unwrap_or_default()
+        }
+    };
 
     // Small chunk heuristics:
     // We want to render chunks as individual events, but it may be prohibitively expensive
@@ -479,9 +525,20 @@ pub fn build_density_graph<'a>(
 
         let can_render_individual_events = total_events < config.max_total_chunk_events;
 
+        if DEBUG_PAINT {
+            ui.ctx().debug_painter().debug_rect(
+                row_rect,
+                egui::Color32::LIGHT_BLUE,
+                format!(
+                    "{} chunks, {total_events} events, render individual: {can_render_individual_events}",
+                    chunk_ranges.len()
+                ),
+            );
+        }
+
         for (chunk, time_range, num_events_in_chunk) in chunk_ranges {
             let should_render_individual_events = can_render_individual_events
-                && if chunk.is_time_sorted() {
+                && if chunk.is_timeline_sorted(&timeline) {
                     num_events_in_chunk < config.max_events_in_sorted_chunk
                 } else {
                     num_events_in_chunk < config.max_events_in_unsorted_chunk
@@ -503,13 +560,13 @@ pub fn build_density_graph<'a>(
 #[derive(Clone, Copy)]
 pub struct DensityGraphBuilderConfig {
     /// If there are more chunks than this then we NEVER show individual events of any chunk.
-    pub max_total_chunk_events: usize,
+    pub max_total_chunk_events: u64,
 
     /// If a sorted chunk has fewer events than this we show its individual events.
-    pub max_events_in_sorted_chunk: usize,
+    pub max_events_in_sorted_chunk: u64,
 
     /// If an unsorted chunk has fewer events than this we show its individual events.
-    pub max_events_in_unsorted_chunk: usize,
+    pub max_events_in_unsorted_chunk: u64,
 }
 
 impl DensityGraphBuilderConfig {
@@ -523,16 +580,16 @@ impl DensityGraphBuilderConfig {
     /// All sorted chunks will be rendered as individual events,
     /// and all unsorted chunks will be rendered whole.
     pub const ALWAYS_SPLIT_SORTED_CHUNKS: Self = Self {
-        max_total_chunk_events: usize::MAX,
+        max_total_chunk_events: u64::MAX,
         max_events_in_unsorted_chunk: 0,
-        max_events_in_sorted_chunk: usize::MAX,
+        max_events_in_sorted_chunk: u64::MAX,
     };
 
     /// All chunks will be rendered as individual events.
     pub const ALWAYS_SPLIT_ALL_CHUNKS: Self = Self {
-        max_total_chunk_events: usize::MAX,
-        max_events_in_unsorted_chunk: usize::MAX,
-        max_events_in_sorted_chunk: usize::MAX,
+        max_total_chunk_events: u64::MAX,
+        max_events_in_unsorted_chunk: u64::MAX,
+        max_events_in_sorted_chunk: u64::MAX,
     };
 }
 
@@ -546,8 +603,8 @@ impl Default for DensityGraphBuilderConfig {
             // It does not seem to matter how many chunks there are, only how many total events we're showing.
             //
             // We want to stay around 1ms if possible, preferring to instead spend our frame budget on actually
-            // visualizing the data, so we undershoot the limit here by a good amount:
-            max_total_chunk_events: 50_000,
+            // visualizing the data, and we also want to support multiple data density graphs on the screen at once.
+            max_total_chunk_events: 10_000,
 
             // For individual chunks, the limits are completely arbitrary, and help preserve visual clarity of the data
             // when there are too many events in a given chunk.
@@ -559,7 +616,7 @@ impl Default for DensityGraphBuilderConfig {
     }
 }
 
-fn show_row_ids_tooltip2(
+fn show_row_ids_tooltip(
     ctx: &ViewerContext<'_>,
     ui: &mut egui::Ui,
     time_ctrl: &TimeControl,
@@ -578,15 +635,11 @@ fn show_row_ids_tooltip2(
     } = item;
 
     if let Some(component_name) = component_name {
-        let component_path = ComponentPath::new(entity_path.clone(), *component_name);
-        item_ui::component_path_button(ctx, ui, &component_path, db);
-        ui.add_space(8.0);
-        component_path.data_ui(ctx, ui, ui_layout, &query, db);
+        ComponentPath::new(entity_path.clone(), *component_name)
+            .data_ui(ctx, ui, ui_layout, &query, db);
     } else {
-        let instance_path = re_entity_db::InstancePath::entity_all(entity_path.clone());
-        item_ui::instance_path_button(ctx, &query, db, ui, None, &instance_path);
-        ui.add_space(8.0);
-        instance_path.data_ui(ctx, ui, ui_layout, &query, db);
+        re_entity_db::InstancePath::entity_all(entity_path.clone())
+            .data_ui(ctx, ui, ui_layout, &query, db);
     }
 }
 
@@ -639,7 +692,7 @@ impl<'a> DensityGraphBuilder<'a> {
         }
     }
 
-    fn add_chunk_range(&mut self, time_range: ResolvedTimeRange, num_events: usize) {
+    fn add_chunk_range(&mut self, time_range: ResolvedTimeRange, num_events: u64) {
         if num_events == 0 {
             return;
         }
@@ -680,204 +733,6 @@ impl<'a> DensityGraphBuilder<'a> {
     }
 }
 
-/// This is a wrapper over `range_relevant_chunks` which also supports querying the entire entity.
-/// Relevant chunks are those which:
-/// - Contain data for `entity_path`
-/// - Contain a `component_name` column (if provided)
-/// - Have data on the given `timeline`
-/// - Have data in the given `time_range`
-///
-/// The does not deduplicates chunks when no `component_name` is provided.
-fn visit_relevant_chunks(
-    db: &re_entity_db::EntityDb,
-    entity_path: &EntityPath,
-    component_name: Option<ComponentName>,
-    timeline: Timeline,
-    time_range: ResolvedTimeRange,
-    mut visitor: impl FnMut(Arc<Chunk>, ResolvedTimeRange, usize),
-) {
-    re_tracing::profile_function!();
-
-    let query = RangeQuery::new(timeline, time_range);
-
-    if let Some(component_name) = component_name {
-        let chunks = db
-            .store()
-            .range_relevant_chunks(&query, entity_path, component_name);
-
-        for chunk in chunks {
-            let Some(num_events) = chunk.num_events_for_component(component_name) else {
-                continue;
-            };
-
-            let Some(chunk_timeline) = chunk.timelines().get(&timeline) else {
-                continue;
-            };
-
-            visitor(Arc::clone(&chunk), chunk_timeline.time_range(), num_events);
-        }
-    } else if let Some(subtree) = db.tree().subtree(entity_path) {
-        subtree.visit_children_recursively(&mut |entity_path, _| {
-            for chunk in db
-                .store()
-                .range_relevant_chunks_for_all_components(&query, entity_path)
-            {
-                let Some(chunk_timeline) = chunk.timelines().get(&timeline) else {
-                    continue;
-                };
-
-                visitor(
-                    Arc::clone(&chunk),
-                    chunk_timeline.time_range(),
-                    chunk.num_events_cumulative(),
-                );
-            }
-        });
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn data_density_graph_ui(
-    data_density_graph_painter: &mut DataDensityGraphPainter,
-    ctx: &ViewerContext<'_>,
-    time_ctrl: &mut TimeControl,
-    db: &re_entity_db::EntityDb,
-    time_area_response: &egui::Response,
-    time_area_painter: &egui::Painter,
-    ui: &egui::Ui,
-    time_histogram: &TimeHistogram,
-    row_rect: Rect,
-    time_ranges_ui: &TimeRangesUi,
-    item: &TimePanelItem,
-) {
-    re_tracing::profile_function!();
-
-    let pointer_pos = ui.input(|i| i.pointer.hover_pos());
-    let interact_radius_sq = ui.style().interaction.resize_grab_radius_side.powi(2);
-    let center_y = row_rect.center().y;
-
-    // Density over x-axis in UI points.
-    let mut density_graph = DensityGraph::new(row_rect.x_range());
-
-    let mut num_hovered_messages = 0;
-    let mut hovered_time_range = ResolvedTimeRange::EMPTY;
-
-    {
-        let mut add_data_point = |time_range: ResolvedTimeRange, count: usize| {
-            if count == 0 {
-                return;
-            }
-
-            if let (Some(min_x), Some(max_x)) = (
-                time_ranges_ui.x_from_time_f32(time_range.min().into()),
-                time_ranges_ui.x_from_time_f32(time_range.max().into()),
-            ) {
-                density_graph.add_range((min_x, max_x), count as _);
-
-                // Hover:
-                if let Some(pointer_pos) = pointer_pos {
-                    let center_x = (min_x + max_x) / 2.0;
-                    let distance_sq = pos2(center_x, center_y).distance_sq(pointer_pos);
-                    let is_hovered = distance_sq < interact_radius_sq;
-
-                    if is_hovered {
-                        hovered_time_range = hovered_time_range.union(time_range);
-                        num_hovered_messages += count;
-                    }
-                }
-            } else {
-                // We (correctly) assume the time range is narrow, and can be approximated with its center:
-                let time_real = TimeReal::from(time_range.center());
-                if let Some(x) = time_ranges_ui.x_from_time_f32(time_real) {
-                    density_graph.add_point(x, count as _);
-
-                    if let Some(pointer_pos) = pointer_pos {
-                        let distance_sq = pos2(x, center_y).distance_sq(pointer_pos);
-                        let is_hovered = distance_sq < interact_radius_sq;
-
-                        if is_hovered {
-                            hovered_time_range = hovered_time_range.union(time_range);
-                            num_hovered_messages += count;
-                        }
-                    }
-                }
-            }
-        };
-
-        let visible_time_range = time_ranges_ui
-            .time_range_from_x_range((row_rect.left() - MARGIN_X)..=(row_rect.right() + MARGIN_X));
-
-        // The more zoomed out we are, the bigger chunks of time_histogram we can process at a time.
-        // Larger chunks is faster.
-        let chunk_size_in_ui_points = 4.0;
-        let time_chunk_size =
-            (chunk_size_in_ui_points / time_ranges_ui.points_per_time).round() as _;
-        let ranges: Vec<_> = {
-            re_tracing::profile_scope!("time_histogram.range");
-            time_histogram
-                .range(
-                    visible_time_range.min().as_i64()..=visible_time_range.max().as_i64(),
-                    time_chunk_size,
-                )
-                .collect()
-        };
-
-        re_tracing::profile_scope!("add_data_point");
-        for (time_range, num_messages_at_time) in ranges {
-            add_data_point(
-                ResolvedTimeRange::new(time_range.min, time_range.max),
-                num_messages_at_time as _,
-            );
-        }
-    }
-
-    let hovered_x_range = (time_ranges_ui
-        .x_from_time_f32(hovered_time_range.min().into())
-        .unwrap_or(f32::MAX)
-        - MARGIN_X)
-        ..=(time_ranges_ui
-            .x_from_time_f32(hovered_time_range.max().into())
-            .unwrap_or(f32::MIN)
-            + MARGIN_X);
-
-    density_graph.buckets = smooth(&density_graph.buckets);
-
-    density_graph.paint(
-        data_density_graph_painter,
-        row_rect.y_range(),
-        time_area_painter,
-        graph_color(ctx, &item.to_item(), ui),
-        hovered_x_range,
-    );
-
-    if 0 < num_hovered_messages {
-        ctx.selection_state().set_hovered(item.to_item());
-
-        if time_area_response.clicked_by(egui::PointerButton::Primary) {
-            ctx.selection_state().set_selection(item.to_item());
-            time_ctrl.set_time(hovered_time_range.min());
-            time_ctrl.pause();
-        } else if ui.ctx().dragged_id().is_none() && 0 < num_hovered_messages {
-            egui::show_tooltip_at_pointer(
-                ui.ctx(),
-                ui.layer_id(),
-                egui::Id::new("data_tooltip"),
-                |ui| {
-                    show_row_ids_tooltip(
-                        ctx,
-                        ui,
-                        time_ctrl,
-                        db,
-                        item,
-                        hovered_time_range,
-                        num_hovered_messages,
-                    );
-                },
-            );
-        }
-    }
-}
-
 fn graph_color(ctx: &ViewerContext<'_>, item: &Item, ui: &egui::Ui) -> Color32 {
     let is_selected = ctx.selection().contains_item(item);
     if is_selected {
@@ -895,42 +750,4 @@ fn make_brighter(color: Color32) -> Color32 {
         g.saturating_add(64),
         b.saturating_add(64),
     )
-}
-
-fn show_row_ids_tooltip(
-    ctx: &ViewerContext<'_>,
-    ui: &mut egui::Ui,
-    time_ctrl: &TimeControl,
-    db: &re_entity_db::EntityDb,
-    item: &TimePanelItem,
-    time_range: ResolvedTimeRange,
-    num_events: usize,
-) {
-    use re_data_ui::DataUi as _;
-
-    if num_events == 1 {
-        ui.label(format!("{num_events} event"));
-    } else {
-        ui.label(format!("{num_events} events"));
-    }
-
-    let ui_layout = UiLayout::Tooltip;
-    let query = re_chunk_store::LatestAtQuery::new(*time_ctrl.timeline(), time_range.center());
-
-    let TimePanelItem {
-        entity_path,
-        component_name,
-    } = item;
-
-    if let Some(component_name) = component_name {
-        let component_path = ComponentPath::new(entity_path.clone(), *component_name);
-        item_ui::component_path_button(ctx, ui, &component_path, db);
-        ui.add_space(8.0);
-        component_path.data_ui(ctx, ui, ui_layout, &query, db);
-    } else {
-        let instance_path = re_entity_db::InstancePath::entity_all(entity_path.clone());
-        item_ui::instance_path_button(ctx, &query, db, ui, None, &instance_path);
-        ui.add_space(8.0);
-        instance_path.data_ui(ctx, ui, ui_layout, &query, db);
-    }
 }

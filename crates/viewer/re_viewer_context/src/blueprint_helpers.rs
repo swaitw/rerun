@@ -1,7 +1,8 @@
-use re_chunk::{ArrowArray, RowId};
+use arrow::array::ArrayRef;
+use re_chunk::RowId;
 use re_chunk_store::external::re_chunk::Chunk;
 use re_log_types::{EntityPath, TimeInt, TimePoint, Timeline};
-use re_types::{AsComponents, ComponentBatch, ComponentName};
+use re_types::{AsComponents, ComponentBatch, ComponentDescriptor, ComponentName};
 
 use crate::{StoreContext, SystemCommand, SystemCommandSender as _, ViewerContext};
 
@@ -15,10 +16,9 @@ pub fn blueprint_timepoint_for_writes(blueprint: &re_entity_db::EntityDb) -> Tim
     let timeline = blueprint_timeline();
 
     let max_time = blueprint
-        .times_per_timeline()
-        .get(&timeline)
-        .and_then(|times| times.last_key_value())
-        .map_or(0, |(time, _)| time.as_i64())
+        .time_histogram(&timeline)
+        .and_then(|times| times.max_key())
+        .unwrap_or(0)
         .saturating_add(1);
 
     TimePoint::from([(timeline, TimeInt::new_temporal(max_time))])
@@ -87,12 +87,16 @@ impl ViewerContext<'_> {
         &self,
         entity_path: &EntityPath,
         component_name: ComponentName,
-        array: Box<dyn ArrowArray>,
+        array: ArrayRef,
     ) {
         let timepoint = self.store_context.blueprint_timepoint_for_writes();
 
         let chunk = match Chunk::builder(entity_path.clone())
-            .with_row(RowId::new(), timepoint.clone(), [(component_name, array)])
+            .with_row(
+                RowId::new(),
+                timepoint.clone(),
+                [(ComponentDescriptor::new(component_name), array)],
+            )
             .build()
         {
             Ok(chunk) => chunk,
@@ -123,16 +127,14 @@ impl ViewerContext<'_> {
         &self,
         entity_path: &EntityPath,
         component_name: ComponentName,
-    ) -> Option<Box<dyn ArrowArray>> {
+    ) -> Option<ArrayRef> {
         self.store_context
             .default_blueprint
             .and_then(|default_blueprint| {
                 default_blueprint
                     .latest_at(self.blueprint_query, entity_path, [component_name])
-                    .get(component_name)
-                    .and_then(|default_value| {
-                        default_value.raw(default_blueprint.resolver(), component_name)
-                    })
+                    .get(&component_name)
+                    .and_then(|default_value| default_value.component_batch_raw(&component_name))
             })
     }
 
@@ -147,12 +149,12 @@ impl ViewerContext<'_> {
         {
             self.save_blueprint_array(entity_path, component_name, default_value);
         } else {
-            self.save_empty_blueprint_component_by_name(entity_path, component_name);
+            self.clear_blueprint_component_by_name(entity_path, component_name);
         }
     }
 
-    /// Helper to save a component to the blueprint store.
-    pub fn save_empty_blueprint_component_by_name(
+    /// Clears a component in the blueprint store by logging an empty array if it exists.
+    pub fn clear_blueprint_component_by_name(
         &self,
         entity_path: &EntityPath,
         component_name: ComponentName,
@@ -161,18 +163,13 @@ impl ViewerContext<'_> {
 
         let Some(datatype) = blueprint
             .latest_at(self.blueprint_query, entity_path, [component_name])
-            .get(component_name)
-            .and_then(|result| {
-                result
-                    .resolved(blueprint.resolver())
+            .get(&component_name)
+            .and_then(|unit| {
+                unit.component_batch_raw(&component_name)
                     .map(|array| array.data_type().clone())
-                    .ok()
             })
         else {
-            re_log::error!(
-                "Tried to clear a component with unknown type: {}",
-                component_name
-            );
+            // There's no component at this path yet, so there's nothing to clear.
             return;
         };
 
@@ -182,8 +179,8 @@ impl ViewerContext<'_> {
                 RowId::new(),
                 timepoint,
                 [(
-                    component_name,
-                    re_chunk::external::arrow2::array::new_empty_array(datatype),
+                    ComponentDescriptor::new(component_name),
+                    re_chunk::external::arrow::array::new_empty_array(&datatype),
                 )],
             )
             .build();

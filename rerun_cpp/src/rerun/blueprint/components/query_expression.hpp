@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../../component_descriptor.hpp"
 #include "../../datatypes/utf8.hpp"
 #include "../../result.hpp"
 
@@ -17,7 +18,7 @@ namespace rerun::blueprint::components {
     /// Each expression is either an inclusion or an exclusion expression.
     /// Inclusions start with an optional `+` and exclusions must start with a `-`.
     ///
-    /// Multiple expressions are combined together as part of `SpaceViewContents`.
+    /// Multiple expressions are combined together as part of `archetypes::ViewContents`.
     ///
     /// The `/**` suffix matches the whole subtree, i.e. self and any child, recursively
     /// (`/world/**` matches both `/world` and `/world/car/driver`).
@@ -55,7 +56,8 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<blueprint::components::QueryExpression> {
-        static constexpr const char Name[] = "rerun.blueprint.components.QueryExpression";
+        static constexpr ComponentDescriptor Descriptor =
+            "rerun.blueprint.components.QueryExpression";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -66,7 +68,19 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const blueprint::components::QueryExpression* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::Utf8>::to_arrow(&instances->filter, num_instances);
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::Utf8>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::Utf8>::to_arrow(
+                    &instances->filter,
+                    num_instances
+                );
+            }
         }
     };
 } // namespace rerun

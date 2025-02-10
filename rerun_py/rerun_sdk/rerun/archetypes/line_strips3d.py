@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from attrs import define, field
 
 from .. import components, datatypes
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
 from ..error_utils import catch_and_log_exceptions
 
@@ -60,11 +62,11 @@ class LineStrips3D(Archetype):
     ```
     <center>
     <picture>
-      <source media="(max-width: 480px)" srcset="https://static.rerun.io/line_strip3d_batch/102e5ec5271475657fbc76b469267e4ec8e84337/480w.png">
-      <source media="(max-width: 768px)" srcset="https://static.rerun.io/line_strip3d_batch/102e5ec5271475657fbc76b469267e4ec8e84337/768w.png">
-      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/line_strip3d_batch/102e5ec5271475657fbc76b469267e4ec8e84337/1024w.png">
-      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/line_strip3d_batch/102e5ec5271475657fbc76b469267e4ec8e84337/1200w.png">
-      <img src="https://static.rerun.io/line_strip3d_batch/102e5ec5271475657fbc76b469267e4ec8e84337/full.png" width="640">
+      <source media="(max-width: 480px)" srcset="https://static.rerun.io/line_strip3d_batch/15e8ff18a6c95a3191acb0eae6eb04adea3b4874/480w.png">
+      <source media="(max-width: 768px)" srcset="https://static.rerun.io/line_strip3d_batch/15e8ff18a6c95a3191acb0eae6eb04adea3b4874/768w.png">
+      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/line_strip3d_batch/15e8ff18a6c95a3191acb0eae6eb04adea3b4874/1024w.png">
+      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/line_strip3d_batch/15e8ff18a6c95a3191acb0eae6eb04adea3b4874/1200w.png">
+      <img src="https://static.rerun.io/line_strip3d_batch/15e8ff18a6c95a3191acb0eae6eb04adea3b4874/full.png" width="640">
     </picture>
     </center>
 
@@ -102,11 +104,11 @@ class LineStrips3D(Archetype):
     ```
     <center>
     <picture>
-      <source media="(max-width: 480px)" srcset="https://static.rerun.io/line_strip3d_ui_radius/99ed4d16eef710f6ee3e97ddf457ea4f0bc48133/480w.png">
-      <source media="(max-width: 768px)" srcset="https://static.rerun.io/line_strip3d_ui_radius/99ed4d16eef710f6ee3e97ddf457ea4f0bc48133/768w.png">
-      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/line_strip3d_ui_radius/99ed4d16eef710f6ee3e97ddf457ea4f0bc48133/1024w.png">
-      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/line_strip3d_ui_radius/99ed4d16eef710f6ee3e97ddf457ea4f0bc48133/1200w.png">
-      <img src="https://static.rerun.io/line_strip3d_ui_radius/99ed4d16eef710f6ee3e97ddf457ea4f0bc48133/full.png" width="640">
+      <source media="(max-width: 480px)" srcset="https://static.rerun.io/line_strip3d_ui_radius/36b98f47e45747b5a3601511ff39b8d74c61d120/480w.png">
+      <source media="(max-width: 768px)" srcset="https://static.rerun.io/line_strip3d_ui_radius/36b98f47e45747b5a3601511ff39b8d74c61d120/768w.png">
+      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/line_strip3d_ui_radius/36b98f47e45747b5a3601511ff39b8d74c61d120/1024w.png">
+      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/line_strip3d_ui_radius/36b98f47e45747b5a3601511ff39b8d74c61d120/1200w.png">
+      <img src="https://static.rerun.io/line_strip3d_ui_radius/36b98f47e45747b5a3601511ff39b8d74c61d120/full.png" width="640">
     </picture>
     </center>
 
@@ -119,6 +121,7 @@ class LineStrips3D(Archetype):
         radii: datatypes.Float32ArrayLike | None = None,
         colors: datatypes.Rgba32ArrayLike | None = None,
         labels: datatypes.Utf8ArrayLike | None = None,
+        show_labels: datatypes.BoolLike | None = None,
         class_ids: datatypes.ClassIdArrayLike | None = None,
     ):
         """
@@ -137,6 +140,8 @@ class LineStrips3D(Archetype):
 
             If there's a single label present, it will be placed at the center of the entity.
             Otherwise, each instance will have its own label.
+        show_labels:
+            Optional choice of whether the text labels should be shown by default.
         class_ids:
             Optional [`components.ClassId`][rerun.components.ClassId]s for the lines.
 
@@ -146,18 +151,21 @@ class LineStrips3D(Archetype):
 
         # You can define your own __init__ function as a member of LineStrips3DExt in line_strips3d_ext.py
         with catch_and_log_exceptions(context=self.__class__.__name__):
-            self.__attrs_init__(strips=strips, radii=radii, colors=colors, labels=labels, class_ids=class_ids)
+            self.__attrs_init__(
+                strips=strips, radii=radii, colors=colors, labels=labels, show_labels=show_labels, class_ids=class_ids
+            )
             return
         self.__attrs_clear__()
 
     def __attrs_clear__(self) -> None:
         """Convenience method for calling `__attrs_init__` with all `None`s."""
         self.__attrs_init__(
-            strips=None,  # type: ignore[arg-type]
-            radii=None,  # type: ignore[arg-type]
-            colors=None,  # type: ignore[arg-type]
-            labels=None,  # type: ignore[arg-type]
-            class_ids=None,  # type: ignore[arg-type]
+            strips=None,
+            radii=None,
+            colors=None,
+            labels=None,
+            show_labels=None,
+            class_ids=None,
         )
 
     @classmethod
@@ -167,36 +175,164 @@ class LineStrips3D(Archetype):
         inst.__attrs_clear__()
         return inst
 
-    strips: components.LineStrip3DBatch = field(
-        metadata={"component": "required"},
-        converter=components.LineStrip3DBatch._required,  # type: ignore[misc]
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        clear_unset: bool = False,
+        strips: components.LineStrip3DArrayLike | None = None,
+        radii: datatypes.Float32ArrayLike | None = None,
+        colors: datatypes.Rgba32ArrayLike | None = None,
+        labels: datatypes.Utf8ArrayLike | None = None,
+        show_labels: datatypes.BoolLike | None = None,
+        class_ids: datatypes.ClassIdArrayLike | None = None,
+    ) -> LineStrips3D:
+        """
+        Update only some specific fields of a `LineStrips3D`.
+
+        Parameters
+        ----------
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        strips:
+            All the actual 3D line strips that make up the batch.
+        radii:
+            Optional radii for the line strips.
+        colors:
+            Optional colors for the line strips.
+        labels:
+            Optional text labels for the line strips.
+
+            If there's a single label present, it will be placed at the center of the entity.
+            Otherwise, each instance will have its own label.
+        show_labels:
+            Optional choice of whether the text labels should be shown by default.
+        class_ids:
+            Optional [`components.ClassId`][rerun.components.ClassId]s for the lines.
+
+            The [`components.ClassId`][rerun.components.ClassId] provides colors and labels if not specified explicitly.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "strips": strips,
+                "radii": radii,
+                "colors": colors,
+                "labels": labels,
+                "show_labels": show_labels,
+                "class_ids": class_ids,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def cleared(cls) -> LineStrips3D:
+        """Clear all the fields of a `LineStrips3D`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        strips: components.LineStrip3DArrayLike | None = None,
+        radii: datatypes.Float32ArrayLike | None = None,
+        colors: datatypes.Rgba32ArrayLike | None = None,
+        labels: datatypes.Utf8ArrayLike | None = None,
+        show_labels: datatypes.BoolArrayLike | None = None,
+        class_ids: datatypes.ClassIdArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        strips:
+            All the actual 3D line strips that make up the batch.
+        radii:
+            Optional radii for the line strips.
+        colors:
+            Optional colors for the line strips.
+        labels:
+            Optional text labels for the line strips.
+
+            If there's a single label present, it will be placed at the center of the entity.
+            Otherwise, each instance will have its own label.
+        show_labels:
+            Optional choice of whether the text labels should be shown by default.
+        class_ids:
+            Optional [`components.ClassId`][rerun.components.ClassId]s for the lines.
+
+            The [`components.ClassId`][rerun.components.ClassId] provides colors and labels if not specified explicitly.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                strips=strips,
+                radii=radii,
+                colors=colors,
+                labels=labels,
+                show_labels=show_labels,
+                class_ids=class_ids,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
+    strips: components.LineStrip3DBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.LineStrip3DBatch._converter,  # type: ignore[misc]
     )
     # All the actual 3D line strips that make up the batch.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     radii: components.RadiusBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.RadiusBatch._optional,  # type: ignore[misc]
+        converter=components.RadiusBatch._converter,  # type: ignore[misc]
     )
     # Optional radii for the line strips.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     colors: components.ColorBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.ColorBatch._optional,  # type: ignore[misc]
+        converter=components.ColorBatch._converter,  # type: ignore[misc]
     )
     # Optional colors for the line strips.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     labels: components.TextBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.TextBatch._optional,  # type: ignore[misc]
+        converter=components.TextBatch._converter,  # type: ignore[misc]
     )
     # Optional text labels for the line strips.
     #
@@ -205,10 +341,19 @@ class LineStrips3D(Archetype):
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
-    class_ids: components.ClassIdBatch | None = field(
-        metadata={"component": "optional"},
+    show_labels: components.ShowLabelsBatch | None = field(
+        metadata={"component": True},
         default=None,
-        converter=components.ClassIdBatch._optional,  # type: ignore[misc]
+        converter=components.ShowLabelsBatch._converter,  # type: ignore[misc]
+    )
+    # Optional choice of whether the text labels should be shown by default.
+    #
+    # (Docstring intentionally commented out to hide this field from the docs)
+
+    class_ids: components.ClassIdBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.ClassIdBatch._converter,  # type: ignore[misc]
     )
     # Optional [`components.ClassId`][rerun.components.ClassId]s for the lines.
     #

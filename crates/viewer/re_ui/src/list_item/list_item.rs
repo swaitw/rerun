@@ -1,11 +1,9 @@
 //! Core list item functionality.
 
+use egui::emath::GuiRounding;
 use egui::{NumExt, Response, Shape, Ui};
 
-use crate::{
-    list_item::{ContentContext, DesiredWidth, LayoutInfoStack, ListItemContent},
-    ContextExt as _,
-};
+use crate::list_item::{ContentContext, DesiredWidth, LayoutInfoStack, ListItemContent};
 use crate::{DesignTokens, UiExt as _};
 
 struct ListItemResponse {
@@ -51,6 +49,7 @@ pub struct ListItem {
     force_background: Option<egui::Color32>,
     pub collapse_openness: Option<f32>,
     height: f32,
+    render_offscreen: bool,
 }
 
 impl Default for ListItem {
@@ -64,6 +63,7 @@ impl Default for ListItem {
             force_background: None,
             collapse_openness: None,
             height: DesignTokens::list_item_height(),
+            render_offscreen: true,
         }
     }
 }
@@ -103,7 +103,7 @@ impl ListItem {
     /// Highlight the item as the current drop target.
     ///
     /// Use this while dragging, to highlight which container will receive the drop at any given time.
-    /// **Note**: this flag has otherwise no behavioural effect. It's up to the caller to set it when the item is
+    /// **Note**: this flag has otherwise no behavioral effect. It's up to the caller to set it when the item is
     /// being hovered (or otherwise selected as drop target) while a drag is in progress.
     #[inline]
     pub fn drop_target_style(mut self, drag_target: bool) -> Self {
@@ -139,6 +139,18 @@ impl ListItem {
     #[inline]
     pub fn with_height(mut self, height: f32) -> Self {
         self.height = height;
+        self
+    }
+
+    /// Controls whether [`Self`] calls [`ListItemContent::ui`] when the item is not currently
+    /// visible.
+    ///
+    /// Skipping rendering can increase performances for long lists that are mostly out of view, but
+    /// this will prevent any side effects from [`ListItemContent::ui`] from occurring. For this
+    /// reason, this is an opt-in optimization.
+    #[inline]
+    pub fn render_offscreen(mut self, render_offscreen: bool) -> Self {
+        self.render_offscreen = render_offscreen;
         self
     }
 
@@ -276,6 +288,7 @@ impl ListItem {
             force_background,
             collapse_openness,
             height,
+            render_offscreen,
         } = self;
 
         let collapse_extra = if collapse_openness.is_some() {
@@ -331,11 +344,19 @@ impl ListItem {
         // allocate past the available width.
         response.rect = rect;
 
+        let should_render = render_offscreen || ui.is_rect_visible(rect);
+        if !should_render {
+            return ListItemResponse {
+                response,
+                collapse_response: None,
+            };
+        }
+
         // override_hover should not affect the returned response
         let mut style_response = response.clone();
         if force_hovered {
-            style_response.contains_pointer = true;
-            style_response.hovered = true;
+            style_response.flags |= egui::response::Flags::CONTAINS_POINTER;
+            style_response.flags |= egui::response::Flags::HOVERED;
         }
 
         let mut collapse_response = None;
@@ -346,10 +367,11 @@ impl ListItem {
 
         // Draw collapsing triangle
         if let Some(openness) = collapse_openness {
-            let triangle_pos = ui.painter().round_pos_to_pixels(egui::pos2(
+            let triangle_pos = egui::pos2(
                 rect.min.x,
                 rect.center().y - 0.5 * DesignTokens::collapsing_triangle_area().y,
-            ));
+            )
+            .round_to_pixels(ui.pixels_per_point());
             let triangle_rect =
                 egui::Rect::from_min_size(triangle_pos, DesignTokens::collapsing_triangle_area());
             let triangle_response = ui.interact(
@@ -384,18 +406,27 @@ impl ListItem {
             // Ensure the background highlight is drawn over round pixel coordinates. Otherwise,
             // there could be artifact between consecutive highlighted items when drawn on
             // fractional pixels.
-            let bg_rect_to_paint = ui.painter().round_rect_to_pixels(bg_rect);
+            let bg_rect_to_paint = bg_rect.round_to_pixels(ui.pixels_per_point());
 
             if drag_target {
+                let stroke = crate::design_tokens().drop_target_container_stroke();
                 ui.painter().set(
                     background_frame,
-                    Shape::rect_stroke(bg_rect_to_paint, 0.0, ui.ctx().hover_stroke()),
+                    Shape::rect_stroke(
+                        bg_rect_to_paint.shrink(stroke.width),
+                        0.0,
+                        stroke,
+                        egui::StrokeKind::Inside,
+                    ),
                 );
             }
 
             let bg_fill = force_background.or_else(|| {
                 if !drag_target && interactive {
-                    if !response.hovered() && ui.rect_contains_pointer(bg_rect) {
+                    if !response.hovered()
+                        && ui.rect_contains_pointer(bg_rect)
+                        && !egui::DragAndDrop::has_any_payload(ui.ctx())
+                    {
                         // if some part of the content is active and hovered, our background should
                         // become dimmer
                         Some(visuals.bg_fill)
@@ -408,6 +439,8 @@ impl ListItem {
                     } else {
                         None
                     }
+                } else if selected {
+                    Some(visuals.weak_bg_fill)
                 } else {
                     None
                 }

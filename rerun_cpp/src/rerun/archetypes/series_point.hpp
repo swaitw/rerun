@@ -4,12 +4,12 @@
 #pragma once
 
 #include "../collection.hpp"
-#include "../compiler_utils.hpp"
+#include "../component_batch.hpp"
+#include "../component_column.hpp"
 #include "../components/color.hpp"
 #include "../components/marker_shape.hpp"
 #include "../components/marker_size.hpp"
 #include "../components/name.hpp"
-#include "../data_cell.hpp"
 #include "../indicator_component.hpp"
 #include "../result.hpp"
 
@@ -66,24 +66,24 @@ namespace rerun::archetypes {
     ///         rec.set_time_sequence("step", t);
     ///
     ///         rec.log("trig/sin", rerun::Scalar(sin(static_cast<double>(t) / 10.0)));
-    ///         rec.log("trig/cos", rerun::Scalar(cos(static_cast<double>(t) / 10.0f)));
+    ///         rec.log("trig/cos", rerun::Scalar(cos(static_cast<double>(t) / 10.0)));
     ///     }
     /// }
     /// ```
     struct SeriesPoint {
         /// Color for the corresponding series.
-        std::optional<rerun::components::Color> color;
+        std::optional<ComponentBatch> color;
 
         /// What shape to use to represent the point
-        std::optional<rerun::components::MarkerShape> marker;
+        std::optional<ComponentBatch> marker;
 
         /// Display name of the series.
         ///
         /// Used in the legend.
-        std::optional<rerun::components::Name> name;
+        std::optional<ComponentBatch> name;
 
         /// Size of the marker.
-        std::optional<rerun::components::MarkerSize> marker_size;
+        std::optional<ComponentBatch> marker_size;
 
       public:
         static constexpr const char IndicatorComponentName[] =
@@ -91,40 +91,124 @@ namespace rerun::archetypes {
 
         /// Indicator component, used to identify the archetype when converting to a list of components.
         using IndicatorComponent = rerun::components::IndicatorComponent<IndicatorComponentName>;
+        /// The name of the archetype as used in `ComponentDescriptor`s.
+        static constexpr const char ArchetypeName[] = "rerun.archetypes.SeriesPoint";
+
+        /// `ComponentDescriptor` for the `color` field.
+        static constexpr auto Descriptor_color = ComponentDescriptor(
+            ArchetypeName, "color", Loggable<rerun::components::Color>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `marker` field.
+        static constexpr auto Descriptor_marker = ComponentDescriptor(
+            ArchetypeName, "marker",
+            Loggable<rerun::components::MarkerShape>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `name` field.
+        static constexpr auto Descriptor_name = ComponentDescriptor(
+            ArchetypeName, "name", Loggable<rerun::components::Name>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `marker_size` field.
+        static constexpr auto Descriptor_marker_size = ComponentDescriptor(
+            ArchetypeName, "marker_size",
+            Loggable<rerun::components::MarkerSize>::Descriptor.component_name
+        );
 
       public:
         SeriesPoint() = default;
         SeriesPoint(SeriesPoint&& other) = default;
+        SeriesPoint(const SeriesPoint& other) = default;
+        SeriesPoint& operator=(const SeriesPoint& other) = default;
+        SeriesPoint& operator=(SeriesPoint&& other) = default;
+
+        /// Update only some specific fields of a `SeriesPoint`.
+        static SeriesPoint update_fields() {
+            return SeriesPoint();
+        }
+
+        /// Clear all the fields of a `SeriesPoint`.
+        static SeriesPoint clear_fields();
 
         /// Color for the corresponding series.
-        SeriesPoint with_color(rerun::components::Color _color) && {
-            color = std::move(_color);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        SeriesPoint with_color(const rerun::components::Color& _color) && {
+            color = ComponentBatch::from_loggable(_color, Descriptor_color).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `color` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_color` should
+        /// be used when logging a single row's worth of data.
+        SeriesPoint with_many_color(const Collection<rerun::components::Color>& _color) && {
+            color = ComponentBatch::from_loggable(_color, Descriptor_color).value_or_throw();
+            return std::move(*this);
         }
 
         /// What shape to use to represent the point
-        SeriesPoint with_marker(rerun::components::MarkerShape _marker) && {
-            marker = std::move(_marker);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        SeriesPoint with_marker(const rerun::components::MarkerShape& _marker) && {
+            marker = ComponentBatch::from_loggable(_marker, Descriptor_marker).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `marker` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_marker` should
+        /// be used when logging a single row's worth of data.
+        SeriesPoint with_many_marker(const Collection<rerun::components::MarkerShape>& _marker) && {
+            marker = ComponentBatch::from_loggable(_marker, Descriptor_marker).value_or_throw();
+            return std::move(*this);
         }
 
         /// Display name of the series.
         ///
         /// Used in the legend.
-        SeriesPoint with_name(rerun::components::Name _name) && {
-            name = std::move(_name);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        SeriesPoint with_name(const rerun::components::Name& _name) && {
+            name = ComponentBatch::from_loggable(_name, Descriptor_name).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `name` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_name` should
+        /// be used when logging a single row's worth of data.
+        SeriesPoint with_many_name(const Collection<rerun::components::Name>& _name) && {
+            name = ComponentBatch::from_loggable(_name, Descriptor_name).value_or_throw();
+            return std::move(*this);
         }
 
         /// Size of the marker.
-        SeriesPoint with_marker_size(rerun::components::MarkerSize _marker_size) && {
-            marker_size = std::move(_marker_size);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        SeriesPoint with_marker_size(const rerun::components::MarkerSize& _marker_size) && {
+            marker_size = ComponentBatch::from_loggable(_marker_size, Descriptor_marker_size)
+                              .value_or_throw();
+            return std::move(*this);
         }
+
+        /// This method makes it possible to pack multiple `marker_size` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_marker_size` should
+        /// be used when logging a single row's worth of data.
+        SeriesPoint with_many_marker_size(
+            const Collection<rerun::components::MarkerSize>& _marker_size
+        ) && {
+            marker_size = ComponentBatch::from_loggable(_marker_size, Descriptor_marker_size)
+                              .value_or_throw();
+            return std::move(*this);
+        }
+
+        /// Partitions the component data into multiple sub-batches.
+        ///
+        /// Specifically, this transforms the existing `ComponentBatch` data into `ComponentColumn`s
+        /// instead, via `ComponentBatch::partitioned`.
+        ///
+        /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+        ///
+        /// The specified `lengths` must sum to the total length of the component batch.
+        Collection<ComponentColumn> columns(const Collection<uint32_t>& lengths_);
+
+        /// Partitions the component data into unit-length sub-batches.
+        ///
+        /// This is semantically similar to calling `columns` with `std::vector<uint32_t>(n, 1)`,
+        /// where `n` is automatically guessed.
+        Collection<ComponentColumn> columns();
     };
 
 } // namespace rerun::archetypes
@@ -138,6 +222,8 @@ namespace rerun {
     template <>
     struct AsComponents<archetypes::SeriesPoint> {
         /// Serialize all set component batches.
-        static Result<std::vector<DataCell>> serialize(const archetypes::SeriesPoint& archetype);
+        static Result<Collection<ComponentBatch>> as_batches(
+            const archetypes::SeriesPoint& archetype
+        );
     };
 } // namespace rerun

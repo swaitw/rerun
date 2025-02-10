@@ -10,6 +10,7 @@
 #include <memory>
 #include <new>
 #include <rerun/collection.hpp>
+#include <rerun/component_descriptor.hpp>
 #include <rerun/result.hpp>
 #include <utility>
 
@@ -69,6 +70,8 @@ namespace rerun::datatypes {
                 } break;
                 case detail::AffixFuzzer4Tag::None: {
                 } break;
+                default:
+                    assert(false && "unreachable");
             }
         }
 
@@ -100,6 +103,8 @@ namespace rerun::datatypes {
                     using TypeAlias = rerun::Collection<rerun::datatypes::AffixFuzzer3>;
                     _data.many_required.~TypeAlias();
                 } break;
+                default:
+                    assert(false && "unreachable");
             }
         }
 
@@ -176,7 +181,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::AffixFuzzer4> {
-        static constexpr const char Name[] = "rerun.testing.datatypes.AffixFuzzer4";
+        static constexpr ComponentDescriptor Descriptor = "rerun.testing.datatypes.AffixFuzzer4";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

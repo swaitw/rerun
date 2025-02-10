@@ -10,7 +10,7 @@ readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
-include = ["../../LICENSE-APACHE", "../../LICENSE-MIT", "**/*.rs", "Cargo.toml"]
+include.workspace = true
 
 [lints]
 workspace = true
@@ -24,15 +24,13 @@ re_entity_db.workspace = true
 re_log_types.workspace = true
 re_log.workspace = true
 re_renderer = { workspace = true, default-features = false, features = [
-  "arrow",
   "import-gltf",
   "import-obj",
   "serde",
 ] }
-re_space_view.workspace = true
+re_view.workspace = true
 re_tracing.workspace = true
 re_types.workspace = true
-re_types_blueprint.workspace = true
 re_ui.workspace = true
 re_viewer_context.workspace = true
 re_viewport_blueprint.workspace = true
@@ -40,8 +38,5 @@ re_viewport_blueprint.workspace = true
 ahash.workspace = true
 egui_tiles.workspace = true
 egui.workspace = true
-glam.workspace = true
-image = { workspace = true, default-features = false, features = ["png"] }
-itertools.workspace = true
 nohash-hasher.workspace = true
 rayon.workspace = true

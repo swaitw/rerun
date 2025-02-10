@@ -8,10 +8,11 @@ from __future__ import annotations
 from ... import datatypes
 from ..._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["QueryExpression", "QueryExpressionBatch", "QueryExpressionType"]
+__all__ = ["QueryExpression", "QueryExpressionBatch"]
 
 
 class QueryExpression(datatypes.Utf8, ComponentMixin):
@@ -21,7 +22,7 @@ class QueryExpression(datatypes.Utf8, ComponentMixin):
     Each expression is either an inclusion or an exclusion expression.
     Inclusions start with an optional `+` and exclusions must start with a `-`.
 
-    Multiple expressions are combined together as part of `SpaceViewContents`.
+    Multiple expressions are combined together as part of [`archetypes.ViewContents`][rerun.blueprint.archetypes.ViewContents].
 
     The `/**` suffix matches the whole subtree, i.e. self and any child, recursively
     (`/world/**` matches both `/world` and `/world/car/driver`).
@@ -35,12 +36,8 @@ class QueryExpression(datatypes.Utf8, ComponentMixin):
     pass
 
 
-class QueryExpressionType(datatypes.Utf8Type):
-    _TYPE_NAME: str = "rerun.blueprint.components.QueryExpression"
-
-
 class QueryExpressionBatch(datatypes.Utf8Batch, ComponentBatchMixin):
-    _ARROW_TYPE = QueryExpressionType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.blueprint.components.QueryExpression")
 
 
 # This is patched in late to avoid circular dependencies.

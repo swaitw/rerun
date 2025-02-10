@@ -7,15 +7,16 @@
 #![doc = document_features::document_features!()]
 //!
 
-// TODO(#3408): remove unwrap()
+// TODO(#6330): remove unwrap()
 #![allow(clippy::unwrap_used)]
 
-pub mod config;
+pub mod device_caps;
 pub mod importer;
 pub mod mesh;
 pub mod renderer;
 pub mod resource_managers;
 pub mod texture_info;
+pub mod video;
 pub mod view_builder;
 
 mod allocator;
@@ -39,6 +40,9 @@ mod transform;
 mod wgpu_buffer_types;
 mod wgpu_resources;
 
+#[cfg(test)]
+mod context_test;
+
 #[cfg(not(load_shaders_from_disk))]
 #[rustfmt::skip] // it's auto-generated
 mod workspace_shaders;
@@ -51,17 +55,21 @@ use allocator::GpuReadbackBuffer;
 pub use allocator::{CpuWriteGpuReadError, GpuReadbackIdentifier};
 pub use color::Rgba32Unmul;
 pub use colormap::{
-    colormap_inferno_srgb, colormap_magma_srgb, colormap_plasma_srgb, colormap_srgb,
-    colormap_turbo_srgb, colormap_viridis_srgb, grayscale_srgb, Colormap,
+    colormap_cyan_to_yellow_srgb, colormap_inferno_srgb, colormap_magma_srgb, colormap_plasma_srgb,
+    colormap_srgb, colormap_turbo_srgb, colormap_viridis_srgb, grayscale_srgb, Colormap,
 };
-pub use context::{adapter_info_summary, RenderContext, RenderContextError};
+pub use context::{
+    adapter_info_summary, MsaaMode, RenderConfig, RenderContext, RenderContextError,
+};
 pub use debug_label::DebugLabel;
 pub use depth_offset::DepthOffset;
+pub use importer::{CpuMeshInstance, CpuModel, CpuModelMeshKey};
 pub use line_drawable_builder::{LineDrawableBuilder, LineStripBuilder};
 pub use point_cloud_builder::{PointCloudBatchBuilder, PointCloudBuilder};
 pub use queueable_draw_data::QueueableDrawData;
 pub use rect::{RectF32, RectInt};
 pub use size::Size;
+pub use texture_info::Texture2DBufferInfo;
 pub use transform::RectTransform;
 pub use view_builder::ViewBuilder;
 pub use wgpu_resources::WgpuResourcePoolStatistics;
@@ -86,18 +94,9 @@ pub use self::file_server::FileServer;
 pub use ecolor::{Color32, Hsva, Rgba};
 
 pub mod external {
+    pub use re_video;
     pub use wgpu;
 }
-
-// ---------------------------------------------------------------------------
-
-// Make Arrow integration as transparent as possible.
-
-#[cfg(feature = "arrow")]
-pub type Buffer<T> = arrow2::buffer::Buffer<T>;
-
-#[cfg(not(feature = "arrow"))]
-pub type Buffer<T> = Vec<T>;
 
 // ---------------------------------------------------------------------------
 

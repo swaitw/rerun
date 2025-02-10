@@ -11,15 +11,17 @@
 #![allow(clippy::redundant_closure)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
+#![allow(non_camel_case_types)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Component**: The visual appearance of a point in e.g. a 2D plot.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Default)]
+#[repr(u8)]
 pub enum MarkerShape {
     /// `⏺`
     #[default]
@@ -51,6 +53,117 @@ pub enum MarkerShape {
 
     /// `*`
     Asterisk = 10,
+}
+
+impl ::re_types_core::Component for MarkerShape {
+    #[inline]
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("rerun.components.MarkerShape")
+    }
+}
+
+::re_types_core::macros::impl_into_cow!(MarkerShape);
+
+impl ::re_types_core::Loggable for MarkerShape {
+    #[inline]
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        #![allow(clippy::wildcard_imports)]
+        use arrow::datatypes::*;
+        DataType::UInt8
+    }
+
+    fn to_arrow_opt<'a>(
+        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+    ) -> SerializationResult<arrow::array::ArrayRef>
+    where
+        Self: Clone + 'a,
+    {
+        #![allow(clippy::wildcard_imports)]
+        #![allow(clippy::manual_is_variant_and)]
+        use ::re_types_core::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
+        Ok({
+            let (somes, data0): (Vec<_>, Vec<_>) = data
+                .into_iter()
+                .map(|datum| {
+                    let datum: Option<::std::borrow::Cow<'a, Self>> = datum.map(Into::into);
+                    let datum = datum.map(|datum| *datum as u8);
+                    (datum.is_some(), datum)
+                })
+                .unzip();
+            let data0_validity: Option<arrow::buffer::NullBuffer> = {
+                let any_nones = somes.iter().any(|some| !*some);
+                any_nones.then(|| somes.into())
+            };
+            as_array_ref(PrimitiveArray::<UInt8Type>::new(
+                ScalarBuffer::from(
+                    data0
+                        .into_iter()
+                        .map(|v| v.unwrap_or_default())
+                        .collect::<Vec<_>>(),
+                ),
+                data0_validity,
+            ))
+        })
+    }
+
+    fn from_arrow_opt(
+        arrow_data: &dyn arrow::array::Array,
+    ) -> DeserializationResult<Vec<Option<Self>>>
+    where
+        Self: Sized,
+    {
+        #![allow(clippy::wildcard_imports)]
+        use ::re_types_core::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
+        Ok(arrow_data
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .ok_or_else(|| {
+                let expected = Self::arrow_datatype();
+                let actual = arrow_data.data_type().clone();
+                DeserializationError::datatype_mismatch(expected, actual)
+            })
+            .with_context("rerun.components.MarkerShape#enum")?
+            .into_iter()
+            .map(|typ| match typ {
+                Some(1) => Ok(Some(Self::Circle)),
+                Some(2) => Ok(Some(Self::Diamond)),
+                Some(3) => Ok(Some(Self::Square)),
+                Some(4) => Ok(Some(Self::Cross)),
+                Some(5) => Ok(Some(Self::Plus)),
+                Some(6) => Ok(Some(Self::Up)),
+                Some(7) => Ok(Some(Self::Down)),
+                Some(8) => Ok(Some(Self::Left)),
+                Some(9) => Ok(Some(Self::Right)),
+                Some(10) => Ok(Some(Self::Asterisk)),
+                None => Ok(None),
+                Some(invalid) => Err(DeserializationError::missing_union_arm(
+                    Self::arrow_datatype(),
+                    "<invalid>",
+                    invalid as _,
+                )),
+            })
+            .collect::<DeserializationResult<Vec<Option<_>>>>()
+            .with_context("rerun.components.MarkerShape")?)
+    }
+}
+
+impl std::fmt::Display for MarkerShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Circle => write!(f, "Circle"),
+            Self::Diamond => write!(f, "Diamond"),
+            Self::Square => write!(f, "Square"),
+            Self::Cross => write!(f, "Cross"),
+            Self::Plus => write!(f, "Plus"),
+            Self::Up => write!(f, "Up"),
+            Self::Down => write!(f, "Down"),
+            Self::Left => write!(f, "Left"),
+            Self::Right => write!(f, "Right"),
+            Self::Asterisk => write!(f, "Asterisk"),
+        }
+    }
 }
 
 impl ::re_types_core::reflection::Enum for MarkerShape {
@@ -87,7 +200,7 @@ impl ::re_types_core::reflection::Enum for MarkerShape {
     }
 }
 
-impl ::re_types_core::SizeBytes for MarkerShape {
+impl ::re_byte_size::SizeBytes for MarkerShape {
     #[inline]
     fn heap_size_bytes(&self) -> u64 {
         0
@@ -96,137 +209,5 @@ impl ::re_types_core::SizeBytes for MarkerShape {
     #[inline]
     fn is_pod() -> bool {
         true
-    }
-}
-
-impl std::fmt::Display for MarkerShape {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Circle => write!(f, "Circle"),
-            Self::Diamond => write!(f, "Diamond"),
-            Self::Square => write!(f, "Square"),
-            Self::Cross => write!(f, "Cross"),
-            Self::Plus => write!(f, "Plus"),
-            Self::Up => write!(f, "Up"),
-            Self::Down => write!(f, "Down"),
-            Self::Left => write!(f, "Left"),
-            Self::Right => write!(f, "Right"),
-            Self::Asterisk => write!(f, "Asterisk"),
-        }
-    }
-}
-
-::re_types_core::macros::impl_into_cow!(MarkerShape);
-
-impl ::re_types_core::Loggable for MarkerShape {
-    type Name = ::re_types_core::ComponentName;
-
-    #[inline]
-    fn name() -> Self::Name {
-        "rerun.components.MarkerShape".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
-        DataType::Union(
-            std::sync::Arc::new(vec![
-                Field::new("_null_markers", DataType::Null, true),
-                Field::new("Circle", DataType::Null, true),
-                Field::new("Diamond", DataType::Null, true),
-                Field::new("Square", DataType::Null, true),
-                Field::new("Cross", DataType::Null, true),
-                Field::new("Plus", DataType::Null, true),
-                Field::new("Up", DataType::Null, true),
-                Field::new("Down", DataType::Null, true),
-                Field::new("Left", DataType::Null, true),
-                Field::new("Right", DataType::Null, true),
-                Field::new("Asterisk", DataType::Null, true),
-            ]),
-            Some(std::sync::Arc::new(vec![
-                0i32, 1i32, 2i32, 3i32, 4i32, 5i32, 6i32, 7i32, 8i32, 9i32, 10i32,
-            ])),
-            UnionMode::Sparse,
-        )
-    }
-
-    fn to_arrow_opt<'a>(
-        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
-    where
-        Self: Clone + 'a,
-    {
-        #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
-        Ok({
-            // Sparse Arrow union
-            let data: Vec<_> = data
-                .into_iter()
-                .map(|datum| {
-                    let datum: Option<::std::borrow::Cow<'a, Self>> = datum.map(Into::into);
-                    datum
-                })
-                .collect();
-            let num_variants = 10usize;
-            let types = data
-                .iter()
-                .map(|a| match a.as_deref() {
-                    None => 0,
-                    Some(value) => *value as i8,
-                })
-                .collect();
-            let fields: Vec<_> =
-                std::iter::repeat(NullArray::new(DataType::Null, data.len()).boxed())
-                    .take(1 + num_variants)
-                    .collect();
-            UnionArray::new(Self::arrow_datatype(), types, fields, None).boxed()
-        })
-    }
-
-    fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
-    ) -> DeserializationResult<Vec<Option<Self>>>
-    where
-        Self: Sized,
-    {
-        #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
-        Ok({
-            let arrow_data = arrow_data
-                .as_any()
-                .downcast_ref::<arrow2::array::UnionArray>()
-                .ok_or_else(|| {
-                    let expected = Self::arrow_datatype();
-                    let actual = arrow_data.data_type().clone();
-                    DeserializationError::datatype_mismatch(expected, actual)
-                })
-                .with_context("rerun.components.MarkerShape")?;
-            let arrow_data_types = arrow_data.types();
-            arrow_data_types
-                .iter()
-                .map(|typ| match typ {
-                    0 => Ok(None),
-                    1 => Ok(Some(Self::Circle)),
-                    2 => Ok(Some(Self::Diamond)),
-                    3 => Ok(Some(Self::Square)),
-                    4 => Ok(Some(Self::Cross)),
-                    5 => Ok(Some(Self::Plus)),
-                    6 => Ok(Some(Self::Up)),
-                    7 => Ok(Some(Self::Down)),
-                    8 => Ok(Some(Self::Left)),
-                    9 => Ok(Some(Self::Right)),
-                    10 => Ok(Some(Self::Asterisk)),
-                    _ => Err(DeserializationError::missing_union_arm(
-                        Self::arrow_datatype(),
-                        "<invalid>",
-                        *typ as _,
-                    )),
-                })
-                .collect::<DeserializationResult<Vec<_>>>()
-                .with_context("rerun.components.MarkerShape")?
-        })
     }
 }

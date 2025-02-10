@@ -6,7 +6,7 @@ mod time;
 
 use std::{cmp::PartialOrd, fmt::Display};
 
-pub use time::next_grid_tick_magnitude_ns;
+pub use time::{format_timestamp_seconds, next_grid_tick_magnitude_ns, parse_timestamp_seconds};
 
 // --- Numbers ---
 
@@ -316,6 +316,23 @@ pub fn format_f32(value: f32) -> String {
     FloatFormatOptions::DEFAULT_f32.format(value)
 }
 
+/// Format a latitude or longitude value.
+///
+/// For human eyes only.
+pub fn format_lat_lon(value: f64) -> String {
+    format!(
+        "{}°",
+        FloatFormatOptions {
+            always_sign: true,
+            precision: 10,
+            num_decimals: Some(6),
+            strip_trailing_zeros: false,
+            min_decimals_for_thousands_separators: 10,
+        }
+        .format_f64(value)
+    )
+}
+
 #[test]
 fn test_format_f32() {
     let cases = [
@@ -408,6 +425,20 @@ pub fn parse_f64(text: &str) -> Option<f64> {
     text.parse().ok()
 }
 
+/// Parses a number, ignoring whitespace (e.g. thousand separators),
+/// and treating the special minus character `MINUS` (−) as a minus sign.
+pub fn parse_i64(text: &str) -> Option<i64> {
+    let text: String = text
+        .chars()
+        // Ignore whitespace (trailing, leading, and thousands separators):
+        .filter(|c| !c.is_whitespace())
+        // Replace special minus character with normal minus (hyphen):
+        .map(|c| if c == '−' { '-' } else { c })
+        .collect();
+
+    text.parse().ok()
+}
+
 /// Pretty format a large number by using SI notation (base 10), e.g.
 ///
 /// ```
@@ -474,6 +505,17 @@ fn test_format_large_number() {
 pub fn format_bytes(number_of_bytes: f64) -> String {
     if number_of_bytes < 0.0 {
         format!("{MINUS}{}", format_bytes(-number_of_bytes))
+    } else if number_of_bytes == 0.0 {
+        "0 B".to_owned()
+    } else if number_of_bytes < 1.0 {
+        format!("{number_of_bytes} B")
+    } else if number_of_bytes < 20.0 {
+        let is_integer = number_of_bytes.round() == number_of_bytes;
+        if is_integer {
+            format!("{number_of_bytes:.0} B")
+        } else {
+            format!("{number_of_bytes:.1} B")
+        }
     } else if number_of_bytes < 10.0_f64.exp2() {
         format!("{number_of_bytes:.0} B")
     } else if number_of_bytes < 20.0_f64.exp2() {
@@ -491,6 +533,11 @@ pub fn format_bytes(number_of_bytes: f64) -> String {
 #[test]
 fn test_format_bytes() {
     let test_cases = [
+        (0.0, "0 B"),
+        (0.25, "0.25 B"),
+        (1.51, "1.5 B"),
+        (11.0, "11 B"),
+        (12.5, "12.5 B"),
         (999.0, "999 B"),
         (1000.0, "1000 B"),
         (1001.0, "1001 B"),

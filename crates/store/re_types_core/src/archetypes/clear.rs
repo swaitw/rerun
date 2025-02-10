@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use crate::external::arrow2;
-use crate::ComponentName;
+use crate::try_serialize_field;
 use crate::SerializationResult;
-use crate::{ComponentBatch, MaybeOwnedComponentBatch};
+use crate::{ComponentBatch, SerializedComponentBatch};
+use crate::{ComponentDescriptor, ComponentName};
 use crate::{DeserializationError, DeserializationResult};
 
 /// **Archetype**: Empties all the components of an entity.
@@ -73,37 +73,47 @@ use crate::{DeserializationError, DeserializationResult};
 ///   <img src="https://static.rerun.io/clear_simple/2f5df95fcc53e9f0552f65670aef7f94830c5c1a/full.png" width="640">
 /// </picture>
 /// </center>
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Clear {
-    pub is_recursive: crate::components::ClearIsRecursive,
+    pub is_recursive: Option<SerializedComponentBatch>,
 }
 
-impl crate::SizeBytes for Clear {
+impl Clear {
+    /// Returns the [`ComponentDescriptor`] for [`Self::is_recursive`].
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.is_recursive.heap_size_bytes()
+    pub fn descriptor_is_recursive() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.Clear".into()),
+            component_name: "rerun.components.ClearIsRecursive".into(),
+            archetype_field_name: Some("is_recursive".into()),
+        }
     }
 
+    /// Returns the [`ComponentDescriptor`] for the associated indicator component.
     #[inline]
-    fn is_pod() -> bool {
-        <crate::components::ClearIsRecursive>::is_pod()
+    pub fn descriptor_indicator() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.Clear".into()),
+            component_name: "rerun.components.ClearIndicator".into(),
+            archetype_field_name: None,
+        }
     }
 }
 
-static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.components.ClearIsRecursive".into()]);
+static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [Clear::descriptor_is_recursive()]);
 
-static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.components.ClearIndicator".into()]);
+static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [Clear::descriptor_indicator()]);
 
-static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 0usize]> =
+static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 0usize]> =
     once_cell::sync::Lazy::new(|| []);
 
-static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 2usize]> =
+static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 2usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.ClearIsRecursive".into(),
-            "rerun.components.ClearIndicator".into(),
+            Clear::descriptor_is_recursive(),
+            Clear::descriptor_indicator(),
         ]
     });
 
@@ -129,78 +139,156 @@ impl crate::Archetype for Clear {
     }
 
     #[inline]
-    fn indicator() -> MaybeOwnedComponentBatch<'static> {
-        static INDICATOR: ClearIndicator = ClearIndicator::DEFAULT;
-        MaybeOwnedComponentBatch::Ref(&INDICATOR)
+    fn indicator() -> SerializedComponentBatch {
+        #[allow(clippy::unwrap_used)]
+        ClearIndicator::DEFAULT.serialized().unwrap()
     }
 
     #[inline]
-    fn required_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn required_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         REQUIRED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         RECOMMENDED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         OPTIONAL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn all_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn all_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         ALL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
     fn from_arrow_components(
-        arrow_data: impl IntoIterator<Item = (ComponentName, Box<dyn arrow2::array::Array>)>,
+        arrow_data: impl IntoIterator<Item = (ComponentDescriptor, arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self> {
         re_tracing::profile_function!();
         use crate::{Loggable as _, ResultExt as _};
-        let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data
-            .into_iter()
-            .map(|(name, array)| (name.full_name(), array))
-            .collect();
-        let is_recursive = {
-            let array = arrays_by_name
-                .get("rerun.components.ClearIsRecursive")
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.Clear#is_recursive")?;
-            <crate::components::ClearIsRecursive>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.Clear#is_recursive")?
-                .into_iter()
-                .next()
-                .flatten()
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.Clear#is_recursive")?
-        };
+        let arrays_by_descr: ::nohash_hasher::IntMap<_, _> = arrow_data.into_iter().collect();
+        let is_recursive = arrays_by_descr
+            .get(&Self::descriptor_is_recursive())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_is_recursive())
+            });
         Ok(Self { is_recursive })
     }
 }
 
 impl crate::AsComponents for Clear {
-    fn as_component_batches(&self) -> Vec<MaybeOwnedComponentBatch<'_>> {
-        re_tracing::profile_function!();
+    #[inline]
+    fn as_serialized_batches(&self) -> Vec<SerializedComponentBatch> {
         use crate::Archetype as _;
-        [
-            Some(Self::indicator()),
-            Some((&self.is_recursive as &dyn ComponentBatch).into()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
+        [Some(Self::indicator()), self.is_recursive.clone()]
+            .into_iter()
+            .flatten()
+            .collect()
     }
 }
+
+impl crate::ArchetypeReflectionMarker for Clear {}
 
 impl Clear {
     /// Create a new `Clear`.
     #[inline]
     pub fn new(is_recursive: impl Into<crate::components::ClearIsRecursive>) -> Self {
         Self {
-            is_recursive: is_recursive.into(),
+            is_recursive: try_serialize_field(Self::descriptor_is_recursive(), [is_recursive]),
         }
+    }
+
+    /// Update only some specific fields of a `Clear`.
+    #[inline]
+    pub fn update_fields() -> Self {
+        Self::default()
+    }
+
+    /// Clear all the fields of a `Clear`.
+    #[inline]
+    pub fn clear_fields() -> Self {
+        use crate::Loggable as _;
+        Self {
+            is_recursive: Some(SerializedComponentBatch::new(
+                crate::components::ClearIsRecursive::arrow_empty(),
+                Self::descriptor_is_recursive(),
+            )),
+        }
+    }
+
+    /// Partitions the component data into multiple sub-batches.
+    ///
+    /// Specifically, this transforms the existing [`SerializedComponentBatch`]es data into [`SerializedComponentColumn`]s
+    /// instead, via [`SerializedComponentBatch::partitioned`].
+    ///
+    /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+    ///
+    /// The specified `lengths` must sum to the total length of the component batch.
+    ///
+    /// [`SerializedComponentColumn`]: [crate::SerializedComponentColumn]
+    #[inline]
+    pub fn columns<I>(
+        self,
+        _lengths: I,
+    ) -> SerializationResult<impl Iterator<Item = crate::SerializedComponentColumn>>
+    where
+        I: IntoIterator<Item = usize> + Clone,
+    {
+        let columns = [self
+            .is_recursive
+            .map(|is_recursive| is_recursive.partitioned(_lengths.clone()))
+            .transpose()?];
+        Ok(columns
+            .into_iter()
+            .flatten()
+            .chain([crate::indicator_column::<Self>(
+                _lengths.into_iter().count(),
+            )?]))
+    }
+
+    /// Helper to partition the component data into unit-length sub-batches.
+    ///
+    /// This is semantically similar to calling [`Self::columns`] with `std::iter::take(1).repeat(n)`,
+    /// where `n` is automatically guessed.
+    #[inline]
+    pub fn columns_of_unit_batches(
+        self,
+    ) -> SerializationResult<impl Iterator<Item = crate::SerializedComponentColumn>> {
+        let len_is_recursive = self.is_recursive.as_ref().map(|b| b.array.len());
+        let len = None.or(len_is_recursive).unwrap_or(0);
+        self.columns(std::iter::repeat(1).take(len))
+    }
+
+    #[inline]
+    pub fn with_is_recursive(
+        mut self,
+        is_recursive: impl Into<crate::components::ClearIsRecursive>,
+    ) -> Self {
+        self.is_recursive = try_serialize_field(Self::descriptor_is_recursive(), [is_recursive]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::ClearIsRecursive`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_is_recursive`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_is_recursive(
+        mut self,
+        is_recursive: impl IntoIterator<Item = impl Into<crate::components::ClearIsRecursive>>,
+    ) -> Self {
+        self.is_recursive = try_serialize_field(Self::descriptor_is_recursive(), is_recursive);
+        self
+    }
+}
+
+impl ::re_byte_size::SizeBytes for Clear {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.is_recursive.heap_size_bytes()
     }
 }

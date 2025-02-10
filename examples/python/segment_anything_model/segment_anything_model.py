@@ -138,6 +138,7 @@ def load_image(image_uri: str) -> cv2.typing.MatLike:
     else:
         image = cv2.imread(image_uri, cv2.IMREAD_COLOR)
 
+    # Rerun can handle BGR as well, but SAM requires RGB.
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     return image
 
@@ -187,7 +188,7 @@ def main() -> None:
     logging.getLogger().addHandler(rr.LoggingHandler("logs"))
     logging.getLogger().setLevel(logging.INFO)
 
-    rr.log("description", rr.TextDocument(DESCRIPTION, media_type=rr.MediaType.MARKDOWN), timeless=True)
+    rr.log("description", rr.TextDocument(DESCRIPTION, media_type=rr.MediaType.MARKDOWN), static=True)
 
     sam = create_sam(args.model, args.device)
 

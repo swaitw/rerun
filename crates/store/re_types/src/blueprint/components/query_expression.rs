@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Component**: An individual query expression used to filter a set of [`datatypes::EntityPath`][crate::datatypes::EntityPath]s.
@@ -23,7 +23,7 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 /// Each expression is either an inclusion or an exclusion expression.
 /// Inclusions start with an optional `+` and exclusions must start with a `-`.
 ///
-/// Multiple expressions are combined together as part of `SpaceViewContents`.
+/// Multiple expressions are combined together as part of [`archetypes::ViewContents`][crate::blueprint::archetypes::ViewContents].
 ///
 /// The `/**` suffix matches the whole subtree, i.e. self and any child, recursively
 /// (`/world/**` matches both `/world` and `/world/car/driver`).
@@ -32,15 +32,43 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 #[repr(transparent)]
 pub struct QueryExpression(pub crate::datatypes::Utf8);
 
-impl ::re_types_core::SizeBytes for QueryExpression {
+impl ::re_types_core::Component for QueryExpression {
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.0.heap_size_bytes()
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("rerun.blueprint.components.QueryExpression")
+    }
+}
+
+::re_types_core::macros::impl_into_cow!(QueryExpression);
+
+impl ::re_types_core::Loggable for QueryExpression {
+    #[inline]
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        crate::datatypes::Utf8::arrow_datatype()
     }
 
-    #[inline]
-    fn is_pod() -> bool {
-        <crate::datatypes::Utf8>::is_pod()
+    fn to_arrow_opt<'a>(
+        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+    ) -> SerializationResult<arrow::array::ArrayRef>
+    where
+        Self: Clone + 'a,
+    {
+        crate::datatypes::Utf8::to_arrow_opt(data.into_iter().map(|datum| {
+            datum.map(|datum| match datum.into() {
+                ::std::borrow::Cow::Borrowed(datum) => ::std::borrow::Cow::Borrowed(&datum.0),
+                ::std::borrow::Cow::Owned(datum) => ::std::borrow::Cow::Owned(datum.0),
+            })
+        }))
+    }
+
+    fn from_arrow_opt(
+        arrow_data: &dyn arrow::array::Array,
+    ) -> DeserializationResult<Vec<Option<Self>>>
+    where
+        Self: Sized,
+    {
+        crate::datatypes::Utf8::from_arrow_opt(arrow_data)
+            .map(|v| v.into_iter().map(|v| v.map(Self)).collect())
     }
 }
 
@@ -73,42 +101,14 @@ impl std::ops::DerefMut for QueryExpression {
     }
 }
 
-::re_types_core::macros::impl_into_cow!(QueryExpression);
-
-impl ::re_types_core::Loggable for QueryExpression {
-    type Name = ::re_types_core::ComponentName;
-
+impl ::re_byte_size::SizeBytes for QueryExpression {
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.blueprint.components.QueryExpression".into()
+    fn heap_size_bytes(&self) -> u64 {
+        self.0.heap_size_bytes()
     }
 
     #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        crate::datatypes::Utf8::arrow_datatype()
-    }
-
-    fn to_arrow_opt<'a>(
-        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
-    where
-        Self: Clone + 'a,
-    {
-        crate::datatypes::Utf8::to_arrow_opt(data.into_iter().map(|datum| {
-            datum.map(|datum| match datum.into() {
-                ::std::borrow::Cow::Borrowed(datum) => ::std::borrow::Cow::Borrowed(&datum.0),
-                ::std::borrow::Cow::Owned(datum) => ::std::borrow::Cow::Owned(datum.0),
-            })
-        }))
-    }
-
-    fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
-    ) -> DeserializationResult<Vec<Option<Self>>>
-    where
-        Self: Sized,
-    {
-        crate::datatypes::Utf8::from_arrow_opt(arrow_data)
-            .map(|v| v.into_iter().map(|v| v.map(Self)).collect())
+    fn is_pod() -> bool {
+        <crate::datatypes::Utf8>::is_pod()
     }
 }

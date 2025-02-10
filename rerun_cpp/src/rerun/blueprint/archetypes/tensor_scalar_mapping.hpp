@@ -4,11 +4,11 @@
 #pragma once
 
 #include "../../collection.hpp"
-#include "../../compiler_utils.hpp"
+#include "../../component_batch.hpp"
+#include "../../component_column.hpp"
 #include "../../components/colormap.hpp"
 #include "../../components/gamma_correction.hpp"
 #include "../../components/magnification_filter.hpp"
-#include "../../data_cell.hpp"
 #include "../../indicator_component.hpp"
 #include "../../result.hpp"
 
@@ -23,16 +23,19 @@ namespace rerun::blueprint::archetypes {
         /// Filter used when zooming in on the tensor.
         ///
         /// Note that the filter is applied to the scalar values *before* they are mapped to color.
-        std::optional<rerun::components::MagnificationFilter> mag_filter;
+        std::optional<ComponentBatch> mag_filter;
 
         /// How scalar values map to colors.
-        std::optional<rerun::components::Colormap> colormap;
+        std::optional<ComponentBatch> colormap;
 
         /// Gamma exponent applied to normalized values before mapping to color.
         ///
         /// Raises the normalized values to the power of this value before mapping to color.
         /// Acts like an inverse brightness. Defaults to 1.0.
-        std::optional<rerun::components::GammaCorrection> gamma;
+        ///
+        /// The final value for display is set as:
+        /// `colormap( ((value - data_display_range.min) / (data_display_range.max - data_display_range.min)) ** gamma )`
+        std::optional<ComponentBatch> gamma;
 
       public:
         static constexpr const char IndicatorComponentName[] =
@@ -40,36 +43,86 @@ namespace rerun::blueprint::archetypes {
 
         /// Indicator component, used to identify the archetype when converting to a list of components.
         using IndicatorComponent = rerun::components::IndicatorComponent<IndicatorComponentName>;
+        /// The name of the archetype as used in `ComponentDescriptor`s.
+        static constexpr const char ArchetypeName[] =
+            "rerun.blueprint.archetypes.TensorScalarMapping";
+
+        /// `ComponentDescriptor` for the `mag_filter` field.
+        static constexpr auto Descriptor_mag_filter = ComponentDescriptor(
+            ArchetypeName, "mag_filter",
+            Loggable<rerun::components::MagnificationFilter>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `colormap` field.
+        static constexpr auto Descriptor_colormap = ComponentDescriptor(
+            ArchetypeName, "colormap",
+            Loggable<rerun::components::Colormap>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `gamma` field.
+        static constexpr auto Descriptor_gamma = ComponentDescriptor(
+            ArchetypeName, "gamma",
+            Loggable<rerun::components::GammaCorrection>::Descriptor.component_name
+        );
 
       public:
         TensorScalarMapping() = default;
         TensorScalarMapping(TensorScalarMapping&& other) = default;
+        TensorScalarMapping(const TensorScalarMapping& other) = default;
+        TensorScalarMapping& operator=(const TensorScalarMapping& other) = default;
+        TensorScalarMapping& operator=(TensorScalarMapping&& other) = default;
+
+        /// Update only some specific fields of a `TensorScalarMapping`.
+        static TensorScalarMapping update_fields() {
+            return TensorScalarMapping();
+        }
+
+        /// Clear all the fields of a `TensorScalarMapping`.
+        static TensorScalarMapping clear_fields();
 
         /// Filter used when zooming in on the tensor.
         ///
         /// Note that the filter is applied to the scalar values *before* they are mapped to color.
-        TensorScalarMapping with_mag_filter(rerun::components::MagnificationFilter _mag_filter) && {
-            mag_filter = std::move(_mag_filter);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        TensorScalarMapping with_mag_filter(
+            const rerun::components::MagnificationFilter& _mag_filter
+        ) && {
+            mag_filter =
+                ComponentBatch::from_loggable(_mag_filter, Descriptor_mag_filter).value_or_throw();
+            return std::move(*this);
         }
 
         /// How scalar values map to colors.
-        TensorScalarMapping with_colormap(rerun::components::Colormap _colormap) && {
-            colormap = std::move(_colormap);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        TensorScalarMapping with_colormap(const rerun::components::Colormap& _colormap) && {
+            colormap =
+                ComponentBatch::from_loggable(_colormap, Descriptor_colormap).value_or_throw();
+            return std::move(*this);
         }
 
         /// Gamma exponent applied to normalized values before mapping to color.
         ///
         /// Raises the normalized values to the power of this value before mapping to color.
         /// Acts like an inverse brightness. Defaults to 1.0.
-        TensorScalarMapping with_gamma(rerun::components::GammaCorrection _gamma) && {
-            gamma = std::move(_gamma);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        ///
+        /// The final value for display is set as:
+        /// `colormap( ((value - data_display_range.min) / (data_display_range.max - data_display_range.min)) ** gamma )`
+        TensorScalarMapping with_gamma(const rerun::components::GammaCorrection& _gamma) && {
+            gamma = ComponentBatch::from_loggable(_gamma, Descriptor_gamma).value_or_throw();
+            return std::move(*this);
         }
+
+        /// Partitions the component data into multiple sub-batches.
+        ///
+        /// Specifically, this transforms the existing `ComponentBatch` data into `ComponentColumn`s
+        /// instead, via `ComponentBatch::partitioned`.
+        ///
+        /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+        ///
+        /// The specified `lengths` must sum to the total length of the component batch.
+        Collection<ComponentColumn> columns(const Collection<uint32_t>& lengths_);
+
+        /// Partitions the component data into unit-length sub-batches.
+        ///
+        /// This is semantically similar to calling `columns` with `std::vector<uint32_t>(n, 1)`,
+        /// where `n` is automatically guessed.
+        Collection<ComponentColumn> columns();
     };
 
 } // namespace rerun::blueprint::archetypes
@@ -83,7 +136,7 @@ namespace rerun {
     template <>
     struct AsComponents<blueprint::archetypes::TensorScalarMapping> {
         /// Serialize all set component batches.
-        static Result<std::vector<DataCell>> serialize(
+        static Result<Collection<ComponentBatch>> as_batches(
             const blueprint::archetypes::TensorScalarMapping& archetype
         );
     };

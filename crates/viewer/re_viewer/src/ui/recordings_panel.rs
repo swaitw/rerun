@@ -32,9 +32,8 @@ pub fn recordings_panel_ui(
     });
 
     egui::ScrollArea::both()
-        .id_source("recordings_scroll_area")
+        .id_salt("recordings_scroll_area")
         .auto_shrink([false, true])
-        .max_height(300.)
         .show(ui, |ui| {
             ui.panel_content(|ui| {
                 re_ui::list_item::list_item_scope(ui, "recording panel", |ui| {
@@ -60,7 +59,9 @@ fn loading_receivers_ui(ctx: &ViewerContext<'_>, rx: &ReceiveSet<LogMsg>, ui: &m
         let string = match source.as_ref() {
             // We only show things we know are very-soon-to-be recordings:
             SmartChannelSource::File(path) => format!("Loading {}…", path.display()),
-            SmartChannelSource::RrdHttpStream { url, .. } => format!("Loading {url}…"),
+            SmartChannelSource::RrdHttpStream { url, .. }
+            | SmartChannelSource::RerunGrpcStream { url }
+            | SmartChannelSource::MessageProxy { url } => format!("Loading {url}…"),
 
             SmartChannelSource::RrdWebEventListener
             | SmartChannelSource::JsChannel { .. }
@@ -211,7 +212,13 @@ fn app_and_its_recordings_ui(
                 } else {
                     for entity_db in entity_dbs {
                         let include_app_id = false; // we already show it in the parent
-                        entity_db_button_ui(ctx, ui, entity_db, include_app_id);
+                        entity_db_button_ui(
+                            ctx,
+                            ui,
+                            entity_db,
+                            UiLayout::SelectionPanel,
+                            include_app_id,
+                        );
                     }
                 }
             })
@@ -222,7 +229,7 @@ fn app_and_its_recordings_ui(
         app_id.data_ui_recording(ctx, ui, UiLayout::Tooltip);
     });
 
-    ctx.select_hovered_on_click(&item_response, app_item);
+    ctx.handle_select_hover_drag_interactions(&item_response, app_item, false);
 
     if item_response.clicked() {
         // Switch to this application:

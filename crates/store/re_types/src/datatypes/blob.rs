@@ -12,57 +12,26 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Datatype**: A binary blob of data.
+///
+/// Ref-counted internally and therefore cheap to clone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Blob(pub ::re_types_core::ArrowBuffer<u8>);
 
-impl ::re_types_core::SizeBytes for Blob {
-    #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.0.heap_size_bytes()
-    }
-
-    #[inline]
-    fn is_pod() -> bool {
-        <::re_types_core::ArrowBuffer<u8>>::is_pod()
-    }
-}
-
-impl From<::re_types_core::ArrowBuffer<u8>> for Blob {
-    #[inline]
-    fn from(data: ::re_types_core::ArrowBuffer<u8>) -> Self {
-        Self(data)
-    }
-}
-
-impl From<Blob> for ::re_types_core::ArrowBuffer<u8> {
-    #[inline]
-    fn from(value: Blob) -> Self {
-        value.0
-    }
-}
-
 ::re_types_core::macros::impl_into_cow!(Blob);
 
 impl ::re_types_core::Loggable for Blob {
-    type Name = ::re_types_core::DatatypeName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.datatypes.Blob".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
+    fn arrow_datatype() -> arrow::datatypes::DataType {
         #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
+        use arrow::datatypes::*;
         DataType::List(std::sync::Arc::new(Field::new(
             "item",
             DataType::UInt8,
@@ -72,13 +41,14 @@ impl ::re_types_core::Loggable for Blob {
 
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> SerializationResult<arrow::array::ArrayRef>
     where
         Self: Clone + 'a,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
+        #![allow(clippy::manual_is_variant_and)]
+        use ::re_types_core::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
             let (somes, data0): (Vec<_>, Vec<_>) = data
                 .into_iter()
@@ -88,51 +58,50 @@ impl ::re_types_core::Loggable for Blob {
                     (datum.is_some(), datum)
                 })
                 .unzip();
-            let data0_bitmap: Option<arrow2::bitmap::Bitmap> = {
+            let data0_validity: Option<arrow::buffer::NullBuffer> = {
                 let any_nones = somes.iter().any(|some| !*some);
                 any_nones.then(|| somes.into())
             };
             {
-                use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
+                let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
                     data0
                         .iter()
                         .map(|opt| opt.as_ref().map_or(0, |datum| datum.num_instances())),
-                )?
-                .into();
-                let data0_inner_data: Buffer<_> = data0
+                );
+                let data0_inner_data: ScalarBuffer<_> = data0
                     .iter()
                     .flatten()
                     .map(|b| b.as_slice())
                     .collect::<Vec<_>>()
                     .concat()
                     .into();
-                let data0_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                ListArray::try_new(
-                    Self::arrow_datatype(),
+                let data0_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                as_array_ref(ListArray::try_new(
+                    std::sync::Arc::new(Field::new("item", DataType::UInt8, false)),
                     offsets,
-                    PrimitiveArray::new(DataType::UInt8, data0_inner_data, data0_inner_bitmap)
-                        .boxed(),
-                    data0_bitmap,
-                )?
-                .boxed()
+                    as_array_ref(PrimitiveArray::<UInt8Type>::new(
+                        data0_inner_data,
+                        data0_inner_validity,
+                    )),
+                    data0_validity,
+                )?)
             }
         })
     }
 
     fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
+        arrow_data: &dyn arrow::array::Array,
     ) -> DeserializationResult<Vec<Option<Self>>>
     where
         Self: Sized,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
+        use ::re_types_core::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
             let arrow_data = arrow_data
                 .as_any()
-                .downcast_ref::<arrow2::array::ListArray<i32>>()
+                .downcast_ref::<arrow::array::ListArray>()
                 .ok_or_else(|| {
                     let expected = Self::arrow_datatype();
                     let actual = arrow_data.data_type().clone();
@@ -156,33 +125,26 @@ impl ::re_types_core::Loggable for Blob {
                         .values()
                 };
                 let offsets = arrow_data.offsets();
-                arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                    offsets.iter().zip(offsets.lengths()),
-                    arrow_data.validity(),
-                )
-                .map(|elem| {
-                    elem.map(|(start, len)| {
-                        let start = *start as usize;
-                        let end = start + len;
-                        if end > arrow_data_inner.len() {
-                            return Err(DeserializationError::offset_slice_oob(
-                                (start, end),
-                                arrow_data_inner.len(),
-                            ));
-                        }
+                ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                    .map(|elem| {
+                        elem.map(|window| {
+                            let start = window[0] as usize;
+                            let end = window[1] as usize;
+                            if arrow_data_inner.len() < end {
+                                return Err(DeserializationError::offset_slice_oob(
+                                    (start, end),
+                                    arrow_data_inner.len(),
+                                ));
+                            }
 
-                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                        let data = unsafe {
-                            arrow_data_inner
-                                .clone()
-                                .sliced_unchecked(start, end - start)
-                        };
-                        let data = ::re_types_core::ArrowBuffer::from(data);
-                        Ok(data)
+                            #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                            let data = arrow_data_inner.clone().slice(start, end - start);
+                            let data = ::re_types_core::ArrowBuffer::from(data);
+                            Ok(data)
+                        })
+                        .transpose()
                     })
-                    .transpose()
-                })
-                .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                    .collect::<DeserializationResult<Vec<Option<_>>>>()?
             }
             .into_iter()
         }
@@ -191,5 +153,31 @@ impl ::re_types_core::Loggable for Blob {
         .collect::<DeserializationResult<Vec<Option<_>>>>()
         .with_context("rerun.datatypes.Blob#data")
         .with_context("rerun.datatypes.Blob")?)
+    }
+}
+
+impl From<::re_types_core::ArrowBuffer<u8>> for Blob {
+    #[inline]
+    fn from(data: ::re_types_core::ArrowBuffer<u8>) -> Self {
+        Self(data)
+    }
+}
+
+impl From<Blob> for ::re_types_core::ArrowBuffer<u8> {
+    #[inline]
+    fn from(value: Blob) -> Self {
+        value.0
+    }
+}
+
+impl ::re_byte_size::SizeBytes for Blob {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.0.heap_size_bytes()
+    }
+
+    #[inline]
+    fn is_pod() -> bool {
+        <::re_types_core::ArrowBuffer<u8>>::is_pod()
     }
 }

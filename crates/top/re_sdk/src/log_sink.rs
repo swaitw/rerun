@@ -2,8 +2,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use re_log_encoding::encoder::EncodeError;
-use re_log_encoding::encoder::{encode_as_bytes_local, local_encoder};
+use re_log_encoding::encoder::encode_as_bytes_local;
+use re_log_encoding::encoder::{local_raw_encoder, EncodeError};
 use re_log_types::{BlueprintActivationCommand, LogMsg, StoreId};
 
 use crate::RecordingStream;
@@ -31,6 +31,7 @@ pub trait LogSink: Send + Sync + 'static {
 
     /// Blocks until all pending data in the sink's send buffers has been fully flushed.
     ///
+    /// If applicable, this should flush all data to any underlying OS-managed file descriptors.
     /// See also [`LogSink::drop_if_disconnected`].
     fn flush_blocking(&self);
 
@@ -56,7 +57,7 @@ pub trait LogSink: Send + Sync + 'static {
                 // Let the viewer know that the blueprint has been fully received,
                 // and that it can now be activated.
                 // We don't want to activate half-loaded blueprints, because that can be confusing,
-                // and can also lead to problems with space-view heuristics.
+                // and can also lead to problems with view heuristics.
                 self.send(activation_cmd.into());
             } else {
                 re_log::warn!(
@@ -250,7 +251,7 @@ impl MemorySinkStorage {
     /// This automatically takes care of flushing the underlying [`crate::RecordingStream`].
     #[inline]
     pub fn concat_memory_sinks_as_bytes(sinks: &[&Self]) -> Result<Vec<u8>, EncodeError> {
-        let mut encoder = local_encoder()?;
+        let mut encoder = local_raw_encoder()?;
 
         for sink in sinks {
             // NOTE: It's fine, this is an in-memory sink so by definition there's no I/O involved
@@ -263,6 +264,8 @@ impl MemorySinkStorage {
                 encoder.append(message)?;
             }
         }
+
+        encoder.finish()?;
 
         Ok(encoder.into_inner())
     }
@@ -279,7 +282,7 @@ impl MemorySinkStorage {
         let mut inner = self.inner.lock();
         inner.has_been_used = true;
 
-        encode_as_bytes_local(std::mem::take(&mut inner.msgs).iter())
+        encode_as_bytes_local(std::mem::take(&mut inner.msgs).into_iter().map(Ok))
     }
 
     #[inline]
@@ -363,5 +366,43 @@ impl LogSink for TcpSink {
     #[inline]
     fn drop_if_disconnected(&self) {
         self.client.drop_if_disconnected();
+    }
+}
+
+#[cfg(feature = "grpc")]
+pub mod grpc {
+    use super::LogSink;
+    use re_grpc_client::message_proxy::write::Client;
+    use re_log_types::LogMsg;
+
+    /// Stream log messages to an in-memory storage node.
+    pub struct GrpcSink {
+        client: Client,
+    }
+
+    impl GrpcSink {
+        /// Connect to the in-memory storage node over HTTP.
+        ///
+        /// ### Example
+        ///
+        /// ```ignore
+        /// GrpcSink::new("http://127.0.0.1:9434");
+        /// ```
+        #[inline]
+        pub fn new(addr: impl Into<String>) -> Self {
+            Self {
+                client: Client::new(addr, Default::default()),
+            }
+        }
+    }
+
+    impl LogSink for GrpcSink {
+        fn send(&self, msg: LogMsg) {
+            self.client.send(msg);
+        }
+
+        fn flush_blocking(&self) {
+            self.client.flush();
+        }
     }
 }

@@ -78,7 +78,7 @@ impl std::cmp::PartialEq for InternedString {
 impl std::hash::Hash for InternedString {
     #[inline]
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.hash.hash(state);
+        state.write_u64(self.hash);
     }
 }
 
@@ -201,11 +201,8 @@ macro_rules! declare_new_type {
     ) => {
         $(#[$meta])*
         #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-        #[cfg_attr(
-            feature = "serde",
-            derive(serde::Deserialize, serde::Serialize),
-        )]
         pub struct $StructName($crate::InternedString);
+
 
         impl $StructName {
             #[inline]

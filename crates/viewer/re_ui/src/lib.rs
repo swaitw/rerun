@@ -1,33 +1,48 @@
 //! Rerun GUI theme and helpers, built around [`egui`](https://www.egui.rs/).
 
+mod color_table;
 mod command;
 mod command_palette;
-mod design_tokens;
-mod syntax_highlighting;
-
 mod context_ext;
+mod design_tokens;
 pub mod drag_and_drop;
+pub mod filter_widget;
+mod help;
+mod icon_text;
 pub mod icons;
 pub mod list_item;
 mod markdown_utils;
 pub mod modal;
+pub mod notifications;
 mod section_collapsing_header;
-pub mod toasts;
+pub mod syntax_highlighting;
 mod ui_ext;
+mod ui_layout;
 
+use egui::Color32;
 use egui::NumExt as _;
 
 pub use self::{
+    color_table::{ColorTable, ColorToken, Hue, Scale},
     command::{UICommand, UICommandSender},
     command_palette::CommandPalette,
     context_ext::ContextExt,
     design_tokens::DesignTokens,
+    help::*,
+    icon_text::*,
     icons::Icon,
     markdown_utils::*,
     section_collapsing_header::SectionCollapsingHeader,
     syntax_highlighting::SyntaxHighlighting,
     ui_ext::UiExt,
+    ui_layout::UiLayout,
 };
+
+#[cfg(feature = "arrow")]
+mod arrow_ui;
+
+#[cfg(feature = "arrow")]
+pub use self::arrow_ui::arrow_ui;
 
 // ---------------------------------------------------------------------------
 
@@ -43,6 +58,9 @@ pub const CUSTOM_WINDOW_DECORATIONS: bool = false; // !FULLSIZE_CONTENT; // TODO
 /// If true, we show the native window decorations/chrome with the
 /// close/maximize/minimize buttons and app title.
 pub const NATIVE_WINDOW_BAR: bool = !FULLSIZE_CONTENT && !CUSTOM_WINDOW_DECORATIONS;
+
+pub const INFO_COLOR: Color32 = Color32::from_rgb(0, 155, 255);
+pub const SUCCESS_COLOR: Color32 = Color32::from_rgb(0, 240, 32);
 
 // ----------------------------------------------------------------------------
 
@@ -64,7 +82,7 @@ pub enum LabelStyle {
     #[default]
     Normal,
 
-    /// Label displaying the placeholder text for a yet unnamed item (e.g. an unnamed space view).
+    /// Label displaying the placeholder text for a yet unnamed item (e.g. an unnamed view).
     Unnamed,
 }
 
@@ -89,6 +107,11 @@ pub fn apply_style_and_install_loaders(egui_ctx: &egui::Context) {
         "bytes://logo_light_mode",
         include_bytes!("../data/logo_light_mode.png"),
     );
+
+    egui_ctx.options_mut(|o| {
+        o.theme_preference = egui::ThemePreference::Dark;
+        o.fallback_theme = egui::Theme::Dark;
+    });
 
     design_tokens().apply(egui_ctx);
 

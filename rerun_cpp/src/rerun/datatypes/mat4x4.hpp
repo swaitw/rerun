@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../rerun_sdk_export.hpp"
 #include "../result.hpp"
 #include "vec4d.hpp"
@@ -33,9 +34,7 @@ namespace rerun::datatypes {
         /// Flat list of matrix coefficients in column-major order.
         std::array<float, 16> flat_columns;
 
-      public:
-        // Extensions to generated type defined in 'mat4x4_ext.cpp'
-
+      public: // START of extensions from mat4x4_ext.cpp:
         RERUN_SDK_EXPORT static const Mat4x4 IDENTITY;
 
         /// Creates a new 4x4 matrix from 3 *columns* of 4 elements each.
@@ -80,6 +79,8 @@ namespace rerun::datatypes {
                   elements[15],
               } {}
 
+        // END of extensions from mat4x4_ext.cpp, start of generated code:
+
       public:
         Mat4x4() = default;
 
@@ -99,7 +100,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::Mat4x4> {
-        static constexpr const char Name[] = "rerun.datatypes.Mat4x4";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.Mat4x4";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

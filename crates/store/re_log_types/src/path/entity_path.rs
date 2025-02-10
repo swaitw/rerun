@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
+use ahash::{HashMap, HashSet};
+use itertools::Itertools as _;
+
+use re_byte_size::SizeBytes;
 use re_string_interner::InternedString;
-use re_types_core::SizeBytes;
 
 use crate::{hash::Hash64, EntityPathPart};
 
@@ -11,7 +14,7 @@ use crate::{hash::Hash64, EntityPathPart};
 #[derive(Copy, Clone, Eq, PartialOrd, Ord)]
 pub struct EntityPathHash(Hash64);
 
-impl re_types_core::SizeBytes for EntityPathHash {
+impl re_byte_size::SizeBytes for EntityPathHash {
     #[inline]
     fn heap_size_bytes(&self) -> u64 {
         self.0.heap_size_bytes()
@@ -258,6 +261,82 @@ impl EntityPath {
         let first = entities.next().cloned().unwrap_or(Self::root());
         entities.fold(first, |acc, e| acc.common_ancestor(e))
     }
+
+    /// Returns short names for a collection of entities based on the last part(s), ensuring
+    /// uniqueness. Disambiguation is achieved by increasing the number of entity parts used.
+    ///
+    /// Note: the result is undefined when the input contains duplicates.
+    pub fn short_names_with_disambiguation(
+        entities: impl IntoIterator<Item = Self>,
+    ) -> HashMap<Self, String> {
+        struct ShortenedEntity {
+            entity: EntityPath,
+
+            /// How many parts (from the end) to use for the short name
+            num_part: usize,
+        }
+
+        impl ShortenedEntity {
+            fn ui_string(&self) -> String {
+                if self.entity.parts.is_empty() {
+                    return "/".to_owned();
+                }
+
+                self.entity
+                    .iter()
+                    .rev()
+                    .take(self.num_part)
+                    .rev()
+                    .map(|part| part.ui_string())
+                    .join("/")
+            }
+        }
+
+        let mut str_to_entities: HashMap<String, ShortenedEntity> = HashMap::default();
+        let mut known_bad_labels: HashSet<String> = HashSet::default();
+
+        for entity in entities {
+            let mut shortened = ShortenedEntity {
+                entity,
+                num_part: 1,
+            };
+
+            loop {
+                let new_label = shortened.ui_string();
+
+                if str_to_entities.contains_key(&new_label) || known_bad_labels.contains(&new_label)
+                {
+                    // we have a conflict so:
+                    // - we fix the previously added entity by increasing its `num_part`
+                    // - we increase the `num_part` of the current entity
+                    // - we record this label as bad
+
+                    known_bad_labels.insert(new_label.clone());
+
+                    if let Some(mut existing_shortened) = str_to_entities.remove(&new_label) {
+                        existing_shortened.num_part += 1;
+                        str_to_entities.insert(existing_shortened.ui_string(), existing_shortened);
+                    }
+
+                    shortened.num_part += 1;
+                    if shortened.ui_string() == new_label {
+                        // we must have reached the root for this entity, so we bail out to avoid
+                        // an infinite loop
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            str_to_entities.insert(shortened.ui_string(), shortened);
+        }
+
+        str_to_entities
+            .into_iter()
+            .map(|(str, entity)| (entity.entity, str))
+            .collect()
+    }
 }
 
 impl SizeBytes for EntityPath {
@@ -343,26 +422,19 @@ use re_types_core::Loggable;
 re_types_core::macros::impl_into_cow!(EntityPath);
 
 impl Loggable for EntityPath {
-    type Name = re_types_core::ComponentName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.controls.EntityPath".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
+    fn arrow_datatype() -> arrow::datatypes::DataType {
         re_types_core::datatypes::Utf8::arrow_datatype()
     }
 
     fn to_arrow_opt<'a>(
         _data: impl IntoIterator<Item = Option<impl Into<std::borrow::Cow<'a, Self>>>>,
-    ) -> re_types_core::SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> re_types_core::SerializationResult<arrow::array::ArrayRef>
     where
         Self: 'a,
     {
         Err(re_types_core::SerializationError::not_implemented(
-            Self::name(),
+            "rerun.controls.EntityPath",
             "EntityPaths are never nullable, use `to_arrow()` instead",
         ))
     }
@@ -370,7 +442,7 @@ impl Loggable for EntityPath {
     #[inline]
     fn to_arrow<'a>(
         data: impl IntoIterator<Item = impl Into<std::borrow::Cow<'a, Self>>>,
-    ) -> re_types_core::SerializationResult<Box<dyn ::arrow2::array::Array>>
+    ) -> re_types_core::SerializationResult<arrow::array::ArrayRef>
     where
         Self: 'a,
     {
@@ -382,7 +454,7 @@ impl Loggable for EntityPath {
     }
 
     fn from_arrow(
-        array: &dyn ::arrow2::array::Array,
+        array: &dyn ::arrow::array::Array,
     ) -> re_types_core::DeserializationResult<Vec<Self>> {
         Ok(re_types_core::datatypes::Utf8::from_arrow(array)?
             .into_iter()
@@ -536,5 +608,39 @@ mod tests {
             EntityPath::from("mario/bowser").common_ancestor(&EntityPath::from("luigi/bowser")),
             EntityPath::root()
         );
+    }
+
+    #[test]
+    fn test_short_names_with_disambiguation() {
+        fn run_test(entities: &[(&str, &str)]) {
+            let paths = entities
+                .iter()
+                .map(|(entity, _)| EntityPath::from(*entity))
+                .collect_vec();
+            let result = EntityPath::short_names_with_disambiguation(paths.clone());
+
+            for (path, shortened) in paths.iter().zip(entities.iter().map(|e| e.1)) {
+                assert_eq!(result[path], shortened);
+            }
+        }
+
+        // --
+
+        run_test(&[("foo/bar", "bar"), ("qaz/bor", "bor")]);
+
+        run_test(&[
+            ("hello/world", "world"),
+            ("bim/foo/bar", "foo/bar"),
+            ("bim/qaz/bar", "qaz/bar"),
+            ("a/x/y/z", "a/x/y/z"),
+            ("b/x/y/z", "b/x/y/z"),
+            ("c/d/y/z", "d/y/z"),
+        ]);
+
+        run_test(&[("/", "/"), ("/a", "a")]);
+
+        // degenerate cases
+        run_test(&[("/", "/"), ("/", "/")]);
+        run_test(&[("a/b", "a/b"), ("a/b", "a/b")]);
     }
 }

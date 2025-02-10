@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../datatypes/utf8.hpp"
 #include "../result.hpp"
 
@@ -16,15 +17,15 @@ namespace rerun::components {
     struct Text {
         rerun::datatypes::Utf8 value;
 
-      public:
-        // Extensions to generated type defined in 'text_ext.cpp'
-
+      public: // START of extensions from text_ext.cpp:
         /// Construct `Text` from a null-terminated UTF8 string.
         Text(const char* str) : value(str) {}
 
         const char* c_str() const {
             return value.c_str();
         }
+
+        // END of extensions from text_ext.cpp, start of generated code:
 
       public:
         Text() = default;
@@ -56,7 +57,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::Text> {
-        static constexpr const char Name[] = "rerun.components.Text";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.Text";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -67,7 +68,16 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const components::Text* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::Utf8>::to_arrow(&instances->value, num_instances);
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::Utf8>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::Utf8>::to_arrow(&instances->value, num_instances);
+            }
         }
     };
 } // namespace rerun

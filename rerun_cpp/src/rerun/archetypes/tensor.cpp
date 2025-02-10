@@ -5,29 +5,65 @@
 
 #include "../collection_adapter_builtins.hpp"
 
-namespace rerun::archetypes {}
+namespace rerun::archetypes {
+    Tensor Tensor::clear_fields() {
+        auto archetype = Tensor();
+        archetype.data =
+            ComponentBatch::empty<rerun::components::TensorData>(Descriptor_data).value_or_throw();
+        archetype.value_range =
+            ComponentBatch::empty<rerun::components::ValueRange>(Descriptor_value_range)
+                .value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> Tensor::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(3);
+        if (data.has_value()) {
+            columns.push_back(data.value().partitioned(lengths_).value_or_throw());
+        }
+        if (value_range.has_value()) {
+            columns.push_back(value_range.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(
+            ComponentColumn::from_indicators<Tensor>(static_cast<uint32_t>(lengths_.size()))
+                .value_or_throw()
+        );
+        return columns;
+    }
+
+    Collection<ComponentColumn> Tensor::columns() {
+        if (data.has_value()) {
+            return columns(std::vector<uint32_t>(data.value().length(), 1));
+        }
+        if (value_range.has_value()) {
+            return columns(std::vector<uint32_t>(value_range.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<archetypes::Tensor>::serialize(
+    Result<Collection<ComponentBatch>> AsComponents<archetypes::Tensor>::as_batches(
         const archetypes::Tensor& archetype
     ) {
         using namespace archetypes;
-        std::vector<DataCell> cells;
-        cells.reserve(2);
+        std::vector<ComponentBatch> cells;
+        cells.reserve(3);
 
-        {
-            auto result = DataCell::from_loggable(archetype.data);
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.data.has_value()) {
+            cells.push_back(archetype.data.value());
+        }
+        if (archetype.value_range.has_value()) {
+            cells.push_back(archetype.value_range.value());
         }
         {
-            auto indicator = Tensor::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<Tensor>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

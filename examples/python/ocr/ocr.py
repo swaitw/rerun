@@ -8,7 +8,7 @@ import logging
 import os
 from enum import Enum
 from pathlib import Path
-from typing import Any, Final, Iterable, Optional, TypeAlias
+from typing import Any, Final, Iterable, Optional
 
 import cv2 as cv2
 import numpy as np
@@ -21,6 +21,7 @@ import rerun.blueprint as rrb
 import tqdm
 from paddleocr import PPStructure
 from paddleocr.ppstructure.recovery.recovery_to_doc import sorted_layout_boxes
+from typing_extensions import TypeAlias
 
 EXAMPLE_DIR: Final = Path(os.path.dirname(__file__))
 DATASET_DIR: Final = EXAMPLE_DIR / "dataset"
@@ -365,7 +366,7 @@ def detect_and_log_layouts(file_path: str) -> None:
     else:
         # read image
         img = cv2.imread(file_path)
-        image_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        image_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Rerun can handle BGR as well, but `ocr_model_pp` expects RGB
         images.append(image_rgb.astype(np.uint8))
 
     # Extracte the layout from each image

@@ -1,32 +1,34 @@
+use egui::NumExt as _;
 use egui_tiles::ContainerKind;
 
 use re_context_menu::{context_menu_ui_for_item, SelectionUpdateBehavior};
 use re_data_ui::{
-    item_ui,
-    item_ui::{guess_instance_path_icon, guess_query_and_db_for_selected_entity},
+    item_ui::{self, cursor_interact_with_selectable, guess_query_and_db_for_selected_entity},
     DataUi,
 };
 use re_entity_db::{EntityPath, InstancePath};
-use re_log_types::EntityPathFilter;
+use re_log_types::{ComponentPath, EntityPathFilter, EntityPathSubs, ResolvedEntityPathFilter};
 use re_types::blueprint::components::Interactive;
 use re_ui::{
     icons,
     list_item::{self, PropertyContent},
-    ContextExt as _, DesignTokens, SyntaxHighlighting as _, UiExt,
+    ContextExt as _, UiExt,
 };
 use re_viewer_context::{
     contents_name_style, icon_for_container_kind, ContainerId, Contents, DataQueryResult,
-    DataResult, HoverHighlight, Item, SpaceViewId, SystemCommandSender, UiLayout, ViewContext,
-    ViewStates, ViewerContext,
+    DataResult, HoverHighlight, Item, UiLayout, ViewContext, ViewId, ViewStates, ViewerContext,
 };
-use re_viewport_blueprint::{ui::show_add_space_view_or_container_modal, ViewportBlueprint};
+use re_viewport_blueprint::{ui::show_add_view_or_container_modal, ViewportBlueprint};
 
-use crate::space_view_entity_picker::SpaceViewEntityPicker;
-use crate::{defaults_ui::view_components_defaults_section_ui, visualizer_ui::visualizer_ui};
 use crate::{
-    selection_history_ui::SelectionHistoryUi,
-    visible_time_range_ui::visible_time_range_ui_for_data_result,
-    visible_time_range_ui::visible_time_range_ui_for_view,
+    defaults_ui::view_components_defaults_section_ui,
+    item_heading_no_breadcrumbs::item_title_list_item,
+    item_heading_with_breadcrumbs::item_heading_with_breadcrumbs,
+    view_entity_picker::ViewEntityPicker,
+    visible_time_range_ui::{
+        visible_time_range_ui_for_data_result, visible_time_range_ui_for_view,
+    },
+    visualizer_ui::visualizer_ui,
 };
 
 // ---
@@ -38,18 +40,16 @@ fn default_selection_panel_width(screen_width: f32) -> f32 {
 #[derive(Default, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct SelectionPanel {
-    selection_state_ui: SelectionHistoryUi,
-
     #[serde(skip)]
     /// State for the "Add entity" modal.
-    space_view_entity_modal: SpaceViewEntityPicker,
+    view_entity_modal: ViewEntityPicker,
 }
 
 impl SelectionPanel {
     pub fn show_panel(
         &mut self,
         ctx: &ViewerContext<'_>,
-        blueprint: &ViewportBlueprint,
+        viewport: &ViewportBlueprint,
         view_states: &mut ViewStates,
         ui: &mut egui::Ui,
         expanded: bool,
@@ -73,15 +73,7 @@ impl SelectionPanel {
             ui.panel_content(|ui| {
                 let hover = "The selection view contains information and options about \
                     the currently selected object(s)";
-                ui.panel_title_bar_with_buttons("Selection", Some(hover), |ui| {
-                    let mut history = ctx.selection_state().history.lock();
-                    if let Some(selection) =
-                        self.selection_state_ui
-                            .selection_ui(ui, blueprint, &mut history)
-                    {
-                        ctx.selection_state().set_selection(selection);
-                    }
-                });
+                ui.panel_title_bar("Selection", Some(hover));
             });
 
             // move the vertical spacing between the title and the content to _inside_ the scroll
@@ -93,71 +85,99 @@ impl SelectionPanel {
                 .show(ui, |ui| {
                     ui.add_space(ui.spacing().item_spacing.y);
                     ui.panel_content(|ui| {
-                        self.contents(ctx, blueprint, view_states, ui);
+                        self.contents(ctx, viewport, view_states, ui);
                     });
                 });
         });
 
         // run modals (these are noop if the modals are not active)
-        self.space_view_entity_modal.ui(ui.ctx(), ctx, blueprint);
+        self.view_entity_modal.ui(ui.ctx(), ctx, viewport);
     }
 
     #[allow(clippy::unused_self)]
     fn contents(
         &mut self,
         ctx: &ViewerContext<'_>,
-        blueprint: &ViewportBlueprint,
+        viewport: &ViewportBlueprint,
         view_states: &mut ViewStates,
         ui: &mut egui::Ui,
     ) {
         re_tracing::profile_function!();
 
-        if ctx.selection().is_empty() {
+        let selection = ctx.selection();
+
+        if selection.is_empty() {
             return;
         }
 
         // no gap before the first item title
         ui.add_space(-ui.spacing().item_spacing.y);
 
-        let selection = ctx.selection();
-        let ui_layout = if selection.len() > 1 {
-            UiLayout::SelectionPanelLimitHeight
-        } else {
-            UiLayout::SelectionPanelFull
-        };
-        for (i, item) in selection.iter_items().enumerate() {
-            list_item::list_item_scope(ui, item, |ui| {
-                self.item_ui(ctx, blueprint, view_states, ui, item, ui_layout);
-            });
+        if selection.len() == 1 {
+            for item in selection.iter_items() {
+                list_item::list_item_scope(ui, item, |ui| {
+                    item_heading_with_breadcrumbs(ctx, viewport, ui, item);
 
-            if i < selection.len() - 1 {
-                // Add space some space between selections
-                ui.add_space(8.);
+                    self.item_ui(
+                        ctx,
+                        viewport,
+                        view_states,
+                        ui,
+                        item,
+                        UiLayout::SelectionPanel,
+                    );
+                });
             }
+        } else {
+            list_item::list_item_scope(ui, "selections_panel", |ui| {
+                ui.list_item()
+                    .with_height(re_ui::DesignTokens::title_bar_height())
+                    .interactive(false)
+                    .selected(true)
+                    .show_flat(
+                        ui,
+                        list_item::LabelContent::new(format!(
+                            "{} selected items",
+                            re_format::format_uint(selection.len())
+                        )),
+                    );
+
+                for item in selection.iter_items() {
+                    ui.add_space(4.0);
+                    item_title_list_item(ctx, viewport, ui, item);
+                }
+            });
         }
     }
 
+    // TODO(emilk): this should probably be `impl DataUi for Item`
     fn item_ui(
         &mut self,
         ctx: &ViewerContext<'_>,
-        blueprint: &ViewportBlueprint,
+        viewport: &ViewportBlueprint,
         view_states: &mut ViewStates,
         ui: &mut egui::Ui,
         item: &Item,
         ui_layout: UiLayout,
     ) {
-        if let Some(item_title) = item_tile(ctx, blueprint, ui.style(), item) {
-            item_title.show(ctx, ui, item);
-        } else {
-            return; // WEIRD
-        }
-
         match item {
             Item::ComponentPath(component_path) => {
-                let entity_path = &component_path.entity_path;
+                let ComponentPath {
+                    entity_path,
+                    component_name,
+                } = component_path;
 
                 let (query, db) = guess_query_and_db_for_selected_entity(ctx, entity_path);
-                let is_static = db.is_component_static(component_path).unwrap_or_default();
+                let is_static = db
+                    .storage_engine()
+                    .store()
+                    .entity_has_static_component(entity_path, component_name);
+
+                ui.list_item_flat_noninteractive(PropertyContent::new("Parent entity").value_fn(
+                    |ui, _| {
+                        item_ui::entity_path_parts_buttons(ctx, &query, db, ui, None, entity_path);
+                    },
+                ));
 
                 ui.list_item_flat_noninteractive(
                     PropertyContent::new("Component type").value_text(if is_static {
@@ -167,107 +187,78 @@ impl SelectionPanel {
                     }),
                 );
 
-                ui.list_item_flat_noninteractive(PropertyContent::new("Parent entity").value_fn(
-                    |ui, _| {
-                        item_ui::entity_path_button(ctx, &query, db, ui, None, entity_path);
-                    },
-                ));
-
-                list_existing_data_blueprints(ctx, blueprint, ui, &entity_path.clone().into());
+                list_existing_data_blueprints(ctx, viewport, ui, &entity_path.clone().into());
             }
 
             Item::InstancePath(instance_path) => {
-                let is_instance = !instance_path.instance.is_all();
-                let parent = if is_instance {
-                    Some(instance_path.entity_path.clone())
-                } else {
-                    instance_path.entity_path.parent()
-                };
-                if let Some(parent) = parent {
-                    if !parent.is_root() {
-                        let (query, db) =
-                            guess_query_and_db_for_selected_entity(ctx, &instance_path.entity_path);
+                let (query, db) =
+                    guess_query_and_db_for_selected_entity(ctx, &instance_path.entity_path);
 
-                        ui.list_item_flat_noninteractive(PropertyContent::new("Parent").value_fn(
-                            |ui, _| {
-                                item_ui::entity_path_parts_buttons(
-                                    ctx, &query, db, ui, None, &parent,
-                                );
-                            },
-                        ));
-                    }
+                ui.list_item_flat_noninteractive(PropertyContent::new("Entity path").value_fn(
+                    |ui, _| {
+                        item_ui::entity_path_parts_buttons(
+                            ctx,
+                            &query,
+                            db,
+                            ui,
+                            None,
+                            &instance_path.entity_path,
+                        );
+                    },
+                ));
+
+                if instance_path.instance.is_specific() {
+                    ui.list_item_flat_noninteractive(
+                        PropertyContent::new("Instance")
+                            .value_text(instance_path.instance.to_string()),
+                    );
                 }
 
-                list_existing_data_blueprints(ctx, blueprint, ui, instance_path);
+                list_existing_data_blueprints(ctx, viewport, ui, instance_path);
             }
 
             Item::Container(container_id) => {
-                container_top_level_properties(ctx, blueprint, ui, container_id);
-                container_children(ctx, blueprint, ui, container_id);
+                container_top_level_properties(ctx, viewport, ui, container_id);
+                container_children(ctx, viewport, ui, container_id);
             }
 
-            Item::SpaceView(view_id) => {
-                if let Some(view) = blueprint.view(view_id) {
+            Item::View(view_id) => {
+                if let Some(view) = viewport.view(view_id) {
                     view_top_level_properties(ctx, ui, view);
                 }
             }
 
             Item::DataResult(view_id, instance_path) => {
-                if let Some(view) = blueprint.view(view_id) {
-                    let is_instance = !instance_path.instance.is_all();
-                    let parent = if is_instance {
-                        Some(instance_path.entity_path.clone())
-                    } else {
-                        instance_path.entity_path.parent()
-                    };
-                    if let Some(parent) = parent {
-                        if !parent.is_root() {
-                            ui.list_item_flat_noninteractive(
-                                PropertyContent::new("Parent").value_fn(|ui, _| {
-                                    let (query, db) = guess_query_and_db_for_selected_entity(
-                                        ctx,
-                                        &instance_path.entity_path,
-                                    );
+                ui.list_item_flat_noninteractive(PropertyContent::new("Stream entity").value_fn(
+                    |ui, _| {
+                        let (query, db) =
+                            guess_query_and_db_for_selected_entity(ctx, &instance_path.entity_path);
 
-                                    item_ui::entity_path_parts_buttons(
-                                        ctx,
-                                        &query,
-                                        db,
-                                        ui,
-                                        Some(*view_id),
-                                        &parent,
-                                    );
-                                }),
-                            );
-                        }
-                    }
+                        item_ui::entity_path_parts_buttons(
+                            ctx,
+                            &query,
+                            db,
+                            ui,
+                            None,
+                            &instance_path.entity_path,
+                        );
+                    },
+                ));
 
-                    ui.list_item_flat_noninteractive(PropertyContent::new("In view").value_fn(
+                if instance_path.instance.is_specific() {
+                    ui.list_item_flat_noninteractive(PropertyContent::new("Instance").value_fn(
                         |ui, _| {
-                            space_view_button(ctx, ui, view);
+                            let response = ui.button(instance_path.instance.to_string());
+                            cursor_interact_with_selectable(
+                                ctx,
+                                response,
+                                Item::from(instance_path.clone()),
+                            );
                         },
                     ));
                 }
 
                 if instance_path.is_all() {
-                    ui.list_item_flat_noninteractive(PropertyContent::new("Entity").value_fn(
-                        |ui, _| {
-                            let (query, db) = guess_query_and_db_for_selected_entity(
-                                ctx,
-                                &instance_path.entity_path,
-                            );
-
-                            item_ui::entity_path_button(
-                                ctx,
-                                &query,
-                                db,
-                                ui,
-                                None,
-                                &instance_path.entity_path,
-                            );
-                        },
-                    ));
-
                     let entity_path = &instance_path.entity_path;
                     let query_result = ctx.lookup_query_result(*view_id);
                     let data_result = query_result
@@ -276,7 +267,7 @@ impl SelectionPanel {
                         .cloned();
 
                     if let Some(data_result) = &data_result {
-                        if let Some(view) = blueprint.view(view_id) {
+                        if let Some(view) = viewport.view(view_id) {
                             visible_interactive_toggle_ui(
                                 &view.bundle_context_with_states(ctx, view_states),
                                 ui,
@@ -306,8 +297,8 @@ impl SelectionPanel {
         }
 
         match item {
-            Item::SpaceView(view_id) => {
-                self.view_selection_ui(ctx, ui, blueprint, view_id, view_states);
+            Item::View(view_id) => {
+                self.view_selection_ui(ctx, ui, viewport, view_id, view_states);
             }
 
             Item::DataResult(view_id, instance_path) => {
@@ -316,7 +307,7 @@ impl SelectionPanel {
                         ctx,
                         ui,
                         &instance_path.entity_path,
-                        blueprint,
+                        viewport,
                         view_id,
                         view_states,
                     );
@@ -332,8 +323,8 @@ impl SelectionPanel {
         &mut self,
         ctx: &ViewerContext<'_>,
         ui: &mut egui::Ui,
-        blueprint: &ViewportBlueprint,
-        view_id: &SpaceViewId,
+        viewport: &ViewportBlueprint,
+        view_id: &ViewId,
         view_states: &mut ViewStates,
     ) {
         let markdown = r#"
@@ -373,13 +364,13 @@ The last rule matching `/world/house` is `+ /world/**`, so it is included.
     "#
         .trim();
 
-        clone_space_view_button_ui(ctx, ui, blueprint, *view_id);
+        clone_view_button_ui(ctx, ui, viewport, *view_id);
 
-        if let Some(view) = blueprint.view(view_id) {
+        if let Some(view) = viewport.view(view_id) {
             ui.section_collapsing_header("Entity path filter")
                 .button(
                     list_item::ItemActionButton::new(&re_ui::icons::EDIT, || {
-                        self.space_view_entity_modal.open(*view_id);
+                        self.view_entity_modal.open(*view_id);
                     })
                     .hover_text("Modify the entity query using the editor"),
                 )
@@ -392,11 +383,12 @@ The last rule matching `/world/house` is `+ /world/**`, so it is included.
                         ctx,
                         ui,
                         *view_id,
-                        &view.contents.entity_path_filter,
+                        view.contents.entity_path_filter(),
                         &view.space_origin,
                     ) {
-                        view.contents
-                            .set_entity_path_filter(ctx, &new_entity_path_filter);
+                        let path_subs = EntityPathSubs::new_with_origin(&view.space_origin);
+                        let query_filter = new_entity_path_filter.resolve_forgiving(&path_subs);
+                        view.contents.set_entity_path_filter(ctx, query_filter);
                     }
                 })
                 .header_response
@@ -406,8 +398,8 @@ The last rule matching `/world/house` is `+ /world/**`, so it is included.
                 );
         }
 
-        if let Some(view) = blueprint.view(view_id) {
-            let view_class = view.class(ctx.space_view_class_registry);
+        if let Some(view) = viewport.view(view_id) {
+            let view_class = view.class(ctx.view_class_registry);
             let view_state = view_states.get_mut_or_create(view.id, view_class);
 
             ui.section_collapsing_header("View properties")
@@ -435,7 +427,7 @@ The last rule matching `/world/house` is `+ /world/**`, so it is included.
             let view_ctx = view.bundle_context_with_state(ctx, view_state);
             view_components_defaults_section_ui(&view_ctx, ui, view);
 
-            visible_time_range_ui_for_view(ctx, ui, view, view_state);
+            visible_time_range_ui_for_view(ctx, ui, view, view_class, view_state);
         }
     }
 }
@@ -444,8 +436,8 @@ fn entity_selection_ui(
     ctx: &ViewerContext<'_>,
     ui: &mut egui::Ui,
     entity_path: &EntityPath,
-    blueprint: &ViewportBlueprint,
-    view_id: &SpaceViewId,
+    viewport: &ViewportBlueprint,
+    view_id: &ViewId,
     view_states: &mut ViewStates,
 ) {
     let query_result = ctx.lookup_query_result(*view_id);
@@ -454,7 +446,7 @@ fn entity_selection_ui(
         .lookup_result_by_path(entity_path)
         .cloned();
 
-    if let Some(view) = blueprint.space_views.get(view_id) {
+    if let Some(view) = viewport.view(view_id) {
         let view_ctx = view.bundle_context_with_states(ctx, view_states);
         visualizer_ui(&view_ctx, view, entity_path, ui);
     }
@@ -464,19 +456,18 @@ fn entity_selection_ui(
     }
 }
 
-fn clone_space_view_button_ui(
+fn clone_view_button_ui(
     ctx: &ViewerContext<'_>,
     ui: &mut egui::Ui,
-    blueprint: &ViewportBlueprint,
-    view_id: SpaceViewId,
+    viewport: &ViewportBlueprint,
+    view_id: ViewId,
 ) {
     ui.list_item_flat_noninteractive(
         list_item::ButtonContent::new("Clone this view")
             .on_click(|| {
-                if let Some(new_space_view_id) = blueprint.duplicate_space_view(&view_id, ctx) {
-                    ctx.selection_state()
-                        .set_selection(Item::SpaceView(new_space_view_id));
-                    blueprint.mark_user_interaction(ctx);
+                if let Some(new_view_id) = viewport.duplicate_view(&view_id, ctx) {
+                    ctx.selection_state().set_selection(Item::View(new_view_id));
+                    viewport.mark_user_interaction(ctx);
                 }
             })
             .hover_text("Create an exact duplicate of this view including all blueprint settings"),
@@ -487,8 +478,8 @@ fn clone_space_view_button_ui(
 fn entity_path_filter_ui(
     ctx: &ViewerContext<'_>,
     ui: &mut egui::Ui,
-    view_id: SpaceViewId,
-    filter: &EntityPathFilter,
+    view_id: ViewId,
+    filter: &ResolvedEntityPathFilter,
     origin: &EntityPath,
 ) -> Option<EntityPathFilter> {
     fn syntax_highlight_entity_path_filter(
@@ -539,8 +530,11 @@ fn entity_path_filter_ui(
             .clone()
     });
 
-    let response =
-        ui.add(egui::TextEdit::multiline(&mut filter_string).layouter(&mut text_layouter));
+    let response = ui.add(
+        egui::TextEdit::multiline(&mut filter_string)
+            .desired_width(ui.spacing().text_edit_width.at_least(ui.available_width()))
+            .layouter(&mut text_layouter),
+    );
 
     if response.has_focus() {
         ui.data_mut(|data| data.insert_temp::<String>(filter_text_id, filter_string.clone()));
@@ -566,8 +560,8 @@ fn entity_path_filter_ui(
     }
 
     // Apply the edit.
-    let new_filter = EntityPathFilter::parse_forgiving(&filter_string, &Default::default());
-    if &new_filter == filter {
+    let new_filter = EntityPathFilter::parse_forgiving(&filter_string);
+    if new_filter == filter.unresolved() {
         None // no change
     } else {
         Some(new_filter)
@@ -576,18 +570,18 @@ fn entity_path_filter_ui(
 
 fn container_children(
     ctx: &ViewerContext<'_>,
-    blueprint: &ViewportBlueprint,
+    viewport: &ViewportBlueprint,
     ui: &mut egui::Ui,
     container_id: &ContainerId,
 ) {
-    let Some(container) = blueprint.container(container_id) else {
+    let Some(container) = viewport.container(container_id) else {
         return;
     };
 
     let show_content = |ui: &mut egui::Ui| {
         let mut has_child = false;
         for child_contents in &container.contents {
-            has_child |= show_list_item_for_container_child(ctx, blueprint, ui, child_contents);
+            has_child |= show_list_item_for_container_child(ctx, viewport, ui, child_contents);
         }
 
         if !has_child {
@@ -602,9 +596,9 @@ fn container_children(
     ui.section_collapsing_header("Contents")
         .button(
             list_item::ItemActionButton::new(&re_ui::icons::ADD, || {
-                show_add_space_view_or_container_modal(*container_id);
+                show_add_view_or_container_modal(*container_id);
             })
-            .hover_text("Add a new space view or container to this container"),
+            .hover_text("Add a new view or container to this container"),
         )
         .show(ui, show_content);
 }
@@ -619,19 +613,19 @@ fn data_section_ui(item: &Item) -> Option<Box<dyn DataUi>> {
             Some(Box::new(instance_path.clone()))
         }
         // Skip data ui since we don't know yet what to show for these.
-        Item::SpaceView(_) | Item::Container(_) => None,
+        Item::View(_) | Item::Container(_) => None,
     }
 }
 
-fn space_view_button(
+fn view_button(
     ctx: &ViewerContext<'_>,
     ui: &mut egui::Ui,
-    view: &re_viewport_blueprint::SpaceViewBlueprint,
+    view: &re_viewport_blueprint::ViewBlueprint,
 ) -> egui::Response {
-    let item = Item::SpaceView(view.id);
+    let item = Item::View(view.id);
     let is_selected = ctx.selection().contains_item(&item);
     let view_name = view.display_name_or_default();
-    let class = view.class(ctx.space_view_class_registry);
+    let class = view.class(ctx.view_class_registry);
 
     let response = ui
         .selectable_label_with_icon(
@@ -644,261 +638,45 @@ fn space_view_button(
     item_ui::cursor_interact_with_selectable(ctx, response, item)
 }
 
-fn item_tile(
-    ctx: &ViewerContext<'_>,
-    blueprint: &ViewportBlueprint,
-    style: &egui::Style,
-    item: &Item,
-) -> Option<ItemTitle> {
-    match &item {
-        Item::AppId(app_id) => {
-            let title = app_id.to_string();
-            Some(ItemTitle::new(title).with_icon(&icons::APPLICATION))
-        }
-
-        Item::DataSource(data_source) => {
-            let title = data_source.to_string();
-            Some(ItemTitle::new(title).with_icon(&icons::DATA_SOURCE))
-        }
-
-        Item::StoreId(store_id) => {
-            let id_str = format!("{} ID: {}", store_id.kind, store_id);
-
-            let title = if let Some(entity_db) = ctx.store_context.bundle.get(store_id) {
-                if let Some(info) = entity_db.store_info() {
-                    let time = info
-                        .started
-                        .format_time_custom("[hour]:[minute]:[second]", ctx.app_options.time_zone)
-                        .unwrap_or("<unknown time>".to_owned());
-
-                    format!("{} - {}", info.application_id, time)
-                } else {
-                    id_str.clone()
-                }
-            } else {
-                id_str.clone()
-            };
-
-            let icon = match store_id.kind {
-                re_log_types::StoreKind::Recording => &icons::RECORDING,
-                re_log_types::StoreKind::Blueprint => &icons::BLUEPRINT,
-            };
-
-            Some(ItemTitle::new(title).with_icon(icon).with_tooltip(id_str))
-        }
-
-        Item::Container(container_id) => {
-            if let Some(container_blueprint) = blueprint.container(container_id) {
-                let hover_text =
-                    if let Some(display_name) = container_blueprint.display_name.as_ref() {
-                        format!(
-                            "{:?} container {display_name:?}",
-                            container_blueprint.container_kind,
-                        )
-                    } else {
-                        format!("Unnamed {:?} container", container_blueprint.container_kind,)
-                    };
-
-                let container_name = container_blueprint.display_name_or_default();
-                Some(
-                    ItemTitle::new(container_name.as_ref())
-                        .with_icon(re_viewer_context::icon_for_container_kind(
-                            &container_blueprint.container_kind,
-                        ))
-                        .with_label_style(contents_name_style(&container_name))
-                        .with_tooltip(hover_text),
-                )
-            } else {
-                None
-            }
-        }
-
-        Item::ComponentPath(component_path) => {
-            let entity_path = &component_path.entity_path;
-            let component_name = &component_path.component_name;
-
-            let (_query, db) = guess_query_and_db_for_selected_entity(ctx, entity_path);
-            let is_static = db.is_component_static(component_path).unwrap_or_default();
-
-            Some(
-                ItemTitle::new(component_name.short_name())
-                    .with_icon(if is_static {
-                        &icons::COMPONENT_STATIC
-                    } else {
-                        &icons::COMPONENT_TEMPORAL
-                    })
-                    .with_tooltip(format!(
-                        "{} component {} of entity '{}'",
-                        if is_static { "Static" } else { "Temporal" },
-                        component_name.full_name(),
-                        entity_path
-                    )),
-            )
-        }
-
-        Item::SpaceView(view_id) => {
-            if let Some(view) = blueprint.view(view_id) {
-                let view_class = view.class(ctx.space_view_class_registry);
-
-                let hover_text = if let Some(display_name) = view.display_name.as_ref() {
-                    format!(
-                        "Space view {:?} of type {}",
-                        display_name,
-                        view_class.display_name()
-                    )
-                } else {
-                    format!("Unnamed view of type {}", view_class.display_name())
-                };
-
-                let view_name = view.display_name_or_default();
-
-                Some(
-                    ItemTitle::new(view_name.as_ref())
-                        .with_icon(view.class(ctx.space_view_class_registry).icon())
-                        .with_label_style(contents_name_style(&view_name))
-                        .with_tooltip(hover_text),
-                )
-            } else {
-                None
-            }
-        }
-
-        Item::InstancePath(instance_path) => {
-            let typ = item.kind();
-            let name = instance_path.syntax_highlighted(style);
-
-            Some(
-                ItemTitle::new(name)
-                    .with_icon(guess_instance_path_icon(ctx, instance_path))
-                    .with_tooltip(format!("{typ} '{instance_path}'")),
-            )
-        }
-
-        Item::DataResult(view_id, instance_path) => {
-            let name = instance_path.syntax_highlighted(style);
-
-            if let Some(view) = blueprint.view(view_id) {
-                let typ = item.kind();
-                Some(
-                    ItemTitle::new(name)
-                        .with_icon(guess_instance_path_icon(ctx, instance_path))
-                        .with_tooltip(format!(
-                            "{typ} '{instance_path}' as shown in view {:?}",
-                            view.display_name
-                        )),
-                )
-            } else {
-                None
-            }
-        }
-    }
-}
-
-#[must_use]
-struct ItemTitle {
-    name: egui::WidgetText,
-    hover: Option<String>,
-    icon: Option<&'static re_ui::Icon>,
-    label_style: Option<re_ui::LabelStyle>,
-}
-
-impl ItemTitle {
-    fn new(name: impl Into<egui::WidgetText>) -> Self {
-        Self {
-            name: name.into(),
-            hover: None,
-            icon: None,
-            label_style: None,
-        }
-    }
-
-    #[inline]
-    fn with_tooltip(mut self, hover: impl Into<String>) -> Self {
-        self.hover = Some(hover.into());
-        self
-    }
-
-    #[inline]
-    fn with_icon(mut self, icon: &'static re_ui::Icon) -> Self {
-        self.icon = Some(icon);
-        self
-    }
-
-    #[inline]
-    fn with_label_style(mut self, label_style: re_ui::LabelStyle) -> Self {
-        self.label_style = Some(label_style);
-        self
-    }
-
-    fn show(self, ctx: &ViewerContext<'_>, ui: &mut egui::Ui, item: &Item) {
-        let Self {
-            name,
-            hover,
-            icon,
-            label_style,
-        } = self;
-
-        let mut content = list_item::LabelContent::new(name);
-
-        if let Some(icon) = icon {
-            content = content.with_icon(icon);
-        }
-
-        if let Some(label_style) = label_style {
-            content = content.label_style(label_style);
-        }
-
-        let response = ui
-            .list_item()
-            .with_height(DesignTokens::title_bar_height())
-            .selected(true)
-            .show_flat(ui, content);
-
-        if response.clicked() {
-            // If the user has multiple things selected but only wants to have one thing selected,
-            // this is how they can do it.
-            ctx.command_sender
-                .send_system(re_viewer_context::SystemCommand::SetSelection(item.clone()));
-        }
-
-        if let Some(hover) = hover {
-            response.on_hover_text(hover);
-        }
-    }
-}
-
 /// Display a list of all the views an entity appears in.
 fn list_existing_data_blueprints(
     ctx: &ViewerContext<'_>,
-    blueprint: &ViewportBlueprint,
+    viewport: &ViewportBlueprint,
     ui: &mut egui::Ui,
     instance_path: &InstancePath,
 ) {
-    let space_views_with_path =
-        blueprint.space_views_containing_entity_path(ctx, &instance_path.entity_path);
+    let views_with_path = viewport.views_containing_entity_path(ctx, &instance_path.entity_path);
 
     let (query, db) = guess_query_and_db_for_selected_entity(ctx, &instance_path.entity_path);
 
-    if space_views_with_path.is_empty() {
+    if views_with_path.is_empty() {
         ui.weak("(Not shown in any view)");
     } else {
-        for &view_id in &space_views_with_path {
-            if let Some(view) = blueprint.view(&view_id) {
+        for &view_id in &views_with_path {
+            if let Some(view) = viewport.view(&view_id) {
                 let response = ui.list_item().show_flat(
                     ui,
                     PropertyContent::new("Shown in").value_fn(|ui, _| {
-                        space_view_button(ctx, ui, view);
+                        view_button(ctx, ui, view);
                     }),
                 );
 
                 let item = Item::DataResult(view_id, instance_path.clone());
                 let response = response.on_hover_ui(|ui| {
-                    item_ui::instance_hover_card_ui(ui, ctx, &query, db, instance_path);
+                    let include_subtree = false;
+                    item_ui::instance_hover_card_ui(
+                        ui,
+                        ctx,
+                        &query,
+                        db,
+                        instance_path,
+                        include_subtree,
+                    );
                 });
 
                 // We don't use item_ui::cursor_interact_with_selectable here because the forced
                 // hover background is distracting and not useful.
-                ctx.select_hovered_on_click(&response, item);
+                ctx.handle_select_hover_drag_interactions(&response, item, false);
             }
         }
     }
@@ -912,16 +690,26 @@ fn list_existing_data_blueprints(
 fn view_top_level_properties(
     ctx: &ViewerContext<'_>,
     ui: &mut egui::Ui,
-    view: &re_viewport_blueprint::SpaceViewBlueprint,
+    view: &re_viewport_blueprint::ViewBlueprint,
 ) {
     ui.list_item_flat_noninteractive(PropertyContent::new("Name").value_fn(|ui, _| {
+        ui.spacing_mut().text_edit_width = ui
+            .spacing_mut()
+            .text_edit_width
+            .at_least(ui.available_width());
+
         let mut name = view.display_name.clone().unwrap_or_default();
         ui.add(egui::TextEdit::singleline(&mut name).hint_text("(default)"));
         view.set_display_name(ctx, if name.is_empty() { None } else { Some(name) });
     }));
 
     ui.list_item_flat_noninteractive(PropertyContent::new("Space origin").value_fn(|ui, _| {
-        super::space_view_space_origin_ui::space_view_space_origin_widget_ui(ui, ctx, view);
+        ui.spacing_mut().text_edit_width = ui
+            .spacing_mut()
+            .text_edit_width
+            .at_least(ui.available_width());
+
+        super::view_space_origin_ui::view_space_origin_widget_ui(ui, ctx, view);
     }))
     .on_hover_text(
         "The origin entity for this view. For spatial views, the space \
@@ -931,22 +719,27 @@ fn view_top_level_properties(
 
     ui.list_item_flat_noninteractive(
         PropertyContent::new("View type")
-            .value_text(view.class(ctx.space_view_class_registry).display_name()),
+            .value_text(view.class(ctx.view_class_registry).display_name()),
     )
     .on_hover_text("The type of this view");
 }
 
 fn container_top_level_properties(
     ctx: &ViewerContext<'_>,
-    blueprint: &ViewportBlueprint,
+    viewport: &ViewportBlueprint,
     ui: &mut egui::Ui,
     container_id: &ContainerId,
 ) {
-    let Some(container) = blueprint.container(container_id) else {
+    let Some(container) = viewport.container(container_id) else {
         return;
     };
 
     ui.list_item_flat_noninteractive(PropertyContent::new("Name").value_fn(|ui, _| {
+        ui.spacing_mut().text_edit_width = ui
+            .spacing_mut()
+            .text_edit_width
+            .at_least(ui.available_width());
+
         let mut name = container.display_name.clone().unwrap_or_default();
         ui.add(egui::TextEdit::singleline(&mut name));
         container.set_display_name(ctx, if name.is_empty() { None } else { Some(name) });
@@ -955,7 +748,7 @@ fn container_top_level_properties(
     ui.list_item_flat_noninteractive(PropertyContent::new("Kind").value_fn(|ui, _| {
         let mut container_kind = container.container_kind;
         container_kind_selection_ui(ui, &mut container_kind);
-        blueprint.set_container_kind(*container_id, container_kind);
+        viewport.set_container_kind(*container_id, container_kind);
     }));
 
     if container.container_kind == ContainerKind::Grid {
@@ -969,7 +762,7 @@ fn container_top_level_properties(
 
             let mut new_columns = container.grid_columns;
 
-            egui::ComboBox::from_id_source("container_grid_columns")
+            egui::ComboBox::from_id_salt("container_grid_columns")
                 .selected_text(columns_to_string(&new_columns))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut new_columns, None, columns_to_string(&None));
@@ -992,7 +785,7 @@ fn container_top_level_properties(
     ui.list_item_flat_noninteractive(
         list_item::ButtonContent::new("Simplify hierarchy")
             .on_click(|| {
-                blueprint.simplify_container(
+                viewport.simplify_container(
                     container_id,
                     egui_tiles::SimplificationOptions {
                         prune_empty_tabs: true,
@@ -1023,7 +816,7 @@ fn container_top_level_properties(
         ui.list_item_flat_noninteractive(
             list_item::ButtonContent::new("Distribute content equally")
                 .on_click(|| {
-                    blueprint.make_all_children_same_size(container_id);
+                    viewport.make_all_children_same_size(container_id);
                 })
                 .enabled(!all_shares_are_equal)
                 .hover_text("Make all children the same size"),
@@ -1060,24 +853,24 @@ fn container_kind_selection_ui(ui: &mut egui::Ui, in_out_kind: &mut ContainerKin
 /// Return true if successful.
 fn show_list_item_for_container_child(
     ctx: &ViewerContext<'_>,
-    blueprint: &ViewportBlueprint,
+    viewport: &ViewportBlueprint,
     ui: &mut egui::Ui,
     child_contents: &Contents,
 ) -> bool {
     let mut remove_contents = false;
     let (item, list_item_content) = match child_contents {
-        Contents::SpaceView(view_id) => {
-            let Some(view) = blueprint.view(view_id) else {
+        Contents::View(view_id) => {
+            let Some(view) = viewport.view(view_id) else {
                 re_log::warn_once!("Could not find view with ID {view_id:?}",);
                 return false;
             };
 
             let view_name = view.display_name_or_default();
             (
-                Item::SpaceView(*view_id),
+                Item::View(*view_id),
                 list_item::LabelContent::new(view_name.as_ref())
                     .label_style(contents_name_style(&view_name))
-                    .with_icon(view.class(ctx.space_view_class_registry).icon())
+                    .with_icon(view.class(ctx.view_class_registry).icon())
                     .with_buttons(|ui| {
                         let response = ui
                             .small_icon_button(&icons::REMOVE)
@@ -1092,7 +885,7 @@ fn show_list_item_for_container_child(
             )
         }
         Contents::Container(container_id) => {
-            let Some(container) = blueprint.container(container_id) else {
+            let Some(container) = viewport.container(container_id) else {
                 re_log::warn_once!("Could not find container with ID {container_id:?}",);
                 return false;
             };
@@ -1129,16 +922,16 @@ fn show_list_item_for_container_child(
 
     context_menu_ui_for_item(
         ctx,
-        blueprint,
+        viewport,
         &item,
         &response,
         SelectionUpdateBehavior::Ignore,
     );
-    ctx.select_hovered_on_click(&response, item);
+    ctx.handle_select_hover_drag_interactions(&response, item, false);
 
     if remove_contents {
-        blueprint.mark_user_interaction(ctx);
-        blueprint.remove_contents(*child_contents);
+        viewport.mark_user_interaction(ctx);
+        viewport.remove_contents(*child_contents);
     }
 
     true
@@ -1151,7 +944,7 @@ fn visible_interactive_toggle_ui(
     data_result: &DataResult,
 ) {
     use re_types::blueprint::components::Visible;
-    use re_types::Loggable as _;
+    use re_types::Component as _;
 
     {
         let visible_before = data_result.is_visible(ctx.viewer_ctx);

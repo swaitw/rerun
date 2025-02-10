@@ -36,10 +36,12 @@ namespace rerun {
         _CategoryArgument = 0x0000'0010,
         UnexpectedNullArgument,
         InvalidStringArgument,
+        InvalidEnumValue,
         InvalidRecordingStreamHandle,
         InvalidSocketAddress,
         InvalidComponentTypeHandle,
         InvalidTensorDimension,
+        InvalidArchetypeField,
         FileRead,
 
         // Recording stream errors
@@ -49,14 +51,19 @@ namespace rerun {
         RecordingStreamSaveFailure,
         RecordingStreamStdoutFailure,
         RecordingStreamSpawnFailure,
+        RecordingStreamChunkValidationFailure,
 
         // Arrow data processing errors.
         _CategoryArrow = 0x0000'1000,
         ArrowFfiSchemaImportError,
         ArrowFfiArrayImportError,
 
+        // Utility errors.
+        _CategoryUtilities = 0x0001'0000,
+        VideoLoadError,
+
         // Errors relating to file IO.
-        _CategoryFileIO = 0x0001'0000,
+        _CategoryFileIO = 0x0010'0000,
         FileOpenFailure,
 
         // Errors directly translated from arrow::StatusCode.
@@ -150,15 +157,21 @@ namespace rerun {
         void handle() const;
 
         /// Calls the `handle` method and then exits the application with code 1 if the error is not `Ok`.
+        /// @see throw_on_failure
         void exit_on_failure() const;
 
-#ifdef __cpp_exceptions
         /// Throws a `std::runtime_error` if the status is not `Ok`.
+        ///
+        /// If exceptions are disabled, this will forward to `exit_on_failure` instead.
+        /// @see exit_on_failure
         void throw_on_failure() const {
+#ifdef __cpp_exceptions
             if (is_err()) {
                 throw std::runtime_error(description);
             }
-        }
+#else
+            exit_on_failure();
 #endif
+        }
     };
 } // namespace rerun

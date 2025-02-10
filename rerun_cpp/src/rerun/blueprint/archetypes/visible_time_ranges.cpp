@@ -5,29 +5,55 @@
 
 #include "../../collection_adapter_builtins.hpp"
 
-namespace rerun::blueprint::archetypes {}
+namespace rerun::blueprint::archetypes {
+    VisibleTimeRanges VisibleTimeRanges::clear_fields() {
+        auto archetype = VisibleTimeRanges();
+        archetype.ranges =
+            ComponentBatch::empty<rerun::blueprint::components::VisibleTimeRange>(Descriptor_ranges)
+                .value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> VisibleTimeRanges::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(2);
+        if (ranges.has_value()) {
+            columns.push_back(ranges.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(ComponentColumn::from_indicators<VisibleTimeRanges>(
+                              static_cast<uint32_t>(lengths_.size())
+        )
+                              .value_or_throw());
+        return columns;
+    }
+
+    Collection<ComponentColumn> VisibleTimeRanges::columns() {
+        if (ranges.has_value()) {
+            return columns(std::vector<uint32_t>(ranges.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::blueprint::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<blueprint::archetypes::VisibleTimeRanges>::serialize(
-        const blueprint::archetypes::VisibleTimeRanges& archetype
-    ) {
+    Result<Collection<ComponentBatch>>
+        AsComponents<blueprint::archetypes::VisibleTimeRanges>::as_batches(
+            const blueprint::archetypes::VisibleTimeRanges& archetype
+        ) {
         using namespace blueprint::archetypes;
-        std::vector<DataCell> cells;
+        std::vector<ComponentBatch> cells;
         cells.reserve(2);
 
-        {
-            auto result = DataCell::from_loggable(archetype.ranges);
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.ranges.has_value()) {
+            cells.push_back(archetype.ranges.value());
         }
         {
-            auto indicator = VisibleTimeRanges::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<VisibleTimeRanges>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

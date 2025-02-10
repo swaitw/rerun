@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Datatype**: The underlying storage for [`archetypes::Tensor`][crate::archetypes::Tensor].
@@ -48,80 +48,153 @@ pub enum TensorBuffer {
     I64(::re_types_core::ArrowBuffer<i64>),
 
     /// 16bit IEEE-754 floating point, also known as `half`.
-    F16(::re_types_core::ArrowBuffer<arrow2::types::f16>),
+    F16(::re_types_core::ArrowBuffer<half::f16>),
 
     /// 32bit IEEE-754 floating point, also known as `float` or `single`.
     F32(::re_types_core::ArrowBuffer<f32>),
 
     /// 64bit IEEE-754 floating point, also known as `double`.
     F64(::re_types_core::ArrowBuffer<f64>),
-
-    /// NV12 is a YUV 4:2:0 chroma downsamples format with 8 bits per channel.
-    ///
-    /// First comes entire image in Y, followed by interleaved lines ordered as U0, V0, U1, V1, etc.
-    Nv12(::re_types_core::ArrowBuffer<u8>),
-
-    /// YUY2, also known as YUYV is a YUV 4:2:2 chroma downsampled format with 8 bits per channel.
-    ///
-    /// The order of the channels is Y0, U0, Y1, V0.
-    Yuy2(::re_types_core::ArrowBuffer<u8>),
-}
-
-impl ::re_types_core::SizeBytes for TensorBuffer {
-    #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        #![allow(clippy::match_same_arms)]
-        match self {
-            Self::U8(v) => v.heap_size_bytes(),
-            Self::U16(v) => v.heap_size_bytes(),
-            Self::U32(v) => v.heap_size_bytes(),
-            Self::U64(v) => v.heap_size_bytes(),
-            Self::I8(v) => v.heap_size_bytes(),
-            Self::I16(v) => v.heap_size_bytes(),
-            Self::I32(v) => v.heap_size_bytes(),
-            Self::I64(v) => v.heap_size_bytes(),
-            Self::F16(v) => v.heap_size_bytes(),
-            Self::F32(v) => v.heap_size_bytes(),
-            Self::F64(v) => v.heap_size_bytes(),
-            Self::Nv12(v) => v.heap_size_bytes(),
-            Self::Yuy2(v) => v.heap_size_bytes(),
-        }
-    }
-
-    #[inline]
-    fn is_pod() -> bool {
-        <::re_types_core::ArrowBuffer<u8>>::is_pod()
-            && <::re_types_core::ArrowBuffer<u16>>::is_pod()
-            && <::re_types_core::ArrowBuffer<u32>>::is_pod()
-            && <::re_types_core::ArrowBuffer<u64>>::is_pod()
-            && <::re_types_core::ArrowBuffer<i8>>::is_pod()
-            && <::re_types_core::ArrowBuffer<i16>>::is_pod()
-            && <::re_types_core::ArrowBuffer<i32>>::is_pod()
-            && <::re_types_core::ArrowBuffer<i64>>::is_pod()
-            && <::re_types_core::ArrowBuffer<arrow2::types::f16>>::is_pod()
-            && <::re_types_core::ArrowBuffer<f32>>::is_pod()
-            && <::re_types_core::ArrowBuffer<f64>>::is_pod()
-            && <::re_types_core::ArrowBuffer<u8>>::is_pod()
-            && <::re_types_core::ArrowBuffer<u8>>::is_pod()
-    }
 }
 
 ::re_types_core::macros::impl_into_cow!(TensorBuffer);
 
 impl ::re_types_core::Loggable for TensorBuffer {
-    type Name = ::re_types_core::DatatypeName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.datatypes.TensorBuffer".into()
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        #![allow(clippy::wildcard_imports)]
+        use arrow::datatypes::*;
+        DataType::Union(
+            UnionFields::new(
+                vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+                vec![
+                    Field::new("_null_markers", DataType::Null, true),
+                    Field::new(
+                        "U8",
+                        DataType::List(std::sync::Arc::new(Field::new(
+                            "item",
+                            DataType::UInt8,
+                            false,
+                        ))),
+                        false,
+                    ),
+                    Field::new(
+                        "U16",
+                        DataType::List(std::sync::Arc::new(Field::new(
+                            "item",
+                            DataType::UInt16,
+                            false,
+                        ))),
+                        false,
+                    ),
+                    Field::new(
+                        "U32",
+                        DataType::List(std::sync::Arc::new(Field::new(
+                            "item",
+                            DataType::UInt32,
+                            false,
+                        ))),
+                        false,
+                    ),
+                    Field::new(
+                        "U64",
+                        DataType::List(std::sync::Arc::new(Field::new(
+                            "item",
+                            DataType::UInt64,
+                            false,
+                        ))),
+                        false,
+                    ),
+                    Field::new(
+                        "I8",
+                        DataType::List(std::sync::Arc::new(Field::new(
+                            "item",
+                            DataType::Int8,
+                            false,
+                        ))),
+                        false,
+                    ),
+                    Field::new(
+                        "I16",
+                        DataType::List(std::sync::Arc::new(Field::new(
+                            "item",
+                            DataType::Int16,
+                            false,
+                        ))),
+                        false,
+                    ),
+                    Field::new(
+                        "I32",
+                        DataType::List(std::sync::Arc::new(Field::new(
+                            "item",
+                            DataType::Int32,
+                            false,
+                        ))),
+                        false,
+                    ),
+                    Field::new(
+                        "I64",
+                        DataType::List(std::sync::Arc::new(Field::new(
+                            "item",
+                            DataType::Int64,
+                            false,
+                        ))),
+                        false,
+                    ),
+                    Field::new(
+                        "F16",
+                        DataType::List(std::sync::Arc::new(Field::new(
+                            "item",
+                            DataType::Float16,
+                            false,
+                        ))),
+                        false,
+                    ),
+                    Field::new(
+                        "F32",
+                        DataType::List(std::sync::Arc::new(Field::new(
+                            "item",
+                            DataType::Float32,
+                            false,
+                        ))),
+                        false,
+                    ),
+                    Field::new(
+                        "F64",
+                        DataType::List(std::sync::Arc::new(Field::new(
+                            "item",
+                            DataType::Float64,
+                            false,
+                        ))),
+                        false,
+                    ),
+                ],
+            ),
+            UnionMode::Dense,
+        )
     }
 
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
+    fn to_arrow_opt<'a>(
+        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+    ) -> SerializationResult<arrow::array::ArrayRef>
+    where
+        Self: Clone + 'a,
+    {
         #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
-        DataType::Union(
-            std::sync::Arc::new(vec![
+        #![allow(clippy::manual_is_variant_and)]
+        use ::re_types_core::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
+        Ok({
+            // Dense Arrow union
+            let data: Vec<_> = data
+                .into_iter()
+                .map(|datum| {
+                    let datum: Option<::std::borrow::Cow<'a, Self>> = datum.map(Into::into);
+                    datum
+                })
+                .collect();
+            let field_type_ids = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+            let fields = vec![
                 Field::new("_null_markers", DataType::Null, true),
                 Field::new(
                     "U8",
@@ -222,52 +295,8 @@ impl ::re_types_core::Loggable for TensorBuffer {
                     ))),
                     false,
                 ),
-                Field::new(
-                    "NV12",
-                    DataType::List(std::sync::Arc::new(Field::new(
-                        "item",
-                        DataType::UInt8,
-                        false,
-                    ))),
-                    false,
-                ),
-                Field::new(
-                    "YUY2",
-                    DataType::List(std::sync::Arc::new(Field::new(
-                        "item",
-                        DataType::UInt8,
-                        false,
-                    ))),
-                    false,
-                ),
-            ]),
-            Some(std::sync::Arc::new(vec![
-                0i32, 1i32, 2i32, 3i32, 4i32, 5i32, 6i32, 7i32, 8i32, 9i32, 10i32, 11i32, 12i32,
-                13i32,
-            ])),
-            UnionMode::Dense,
-        )
-    }
-
-    fn to_arrow_opt<'a>(
-        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
-    where
-        Self: Clone + 'a,
-    {
-        #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
-        Ok({
-            // Dense Arrow union
-            let data: Vec<_> = data
-                .into_iter()
-                .map(|datum| {
-                    let datum: Option<::std::borrow::Cow<'a, Self>> = datum.map(Into::into);
-                    datum
-                })
-                .collect();
-            let types = data
+            ];
+            let type_ids: Vec<i8> = data
                 .iter()
                 .map(|a| match a.as_deref() {
                     None => 0,
@@ -282,502 +311,9 @@ impl ::re_types_core::Loggable for TensorBuffer {
                     Some(Self::F16(_)) => 9i8,
                     Some(Self::F32(_)) => 10i8,
                     Some(Self::F64(_)) => 11i8,
-                    Some(Self::Nv12(_)) => 12i8,
-                    Some(Self::Yuy2(_)) => 13i8,
                 })
                 .collect();
-            let fields = vec![
-                NullArray::new(DataType::Null, data.iter().filter(|v| v.is_none()).count()).boxed(),
-                {
-                    let u8: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::U8(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let u8_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                        let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                            u8.iter().map(|datum| datum.num_instances()),
-                        )?
-                        .into();
-                        let u8_inner_data: Buffer<_> = u8
-                            .iter()
-                            .map(|b| b.as_slice())
-                            .collect::<Vec<_>>()
-                            .concat()
-                            .into();
-                        let u8_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                        ListArray::try_new(
-                            DataType::List(std::sync::Arc::new(Field::new(
-                                "item",
-                                DataType::UInt8,
-                                false,
-                            ))),
-                            offsets,
-                            PrimitiveArray::new(DataType::UInt8, u8_inner_data, u8_inner_bitmap)
-                                .boxed(),
-                            u8_bitmap,
-                        )?
-                        .boxed()
-                    }
-                },
-                {
-                    let u16: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::U16(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let u16_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                        let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                            u16.iter().map(|datum| datum.num_instances()),
-                        )?
-                        .into();
-                        let u16_inner_data: Buffer<_> = u16
-                            .iter()
-                            .map(|b| b.as_slice())
-                            .collect::<Vec<_>>()
-                            .concat()
-                            .into();
-                        let u16_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                        ListArray::try_new(
-                            DataType::List(std::sync::Arc::new(Field::new(
-                                "item",
-                                DataType::UInt16,
-                                false,
-                            ))),
-                            offsets,
-                            PrimitiveArray::new(DataType::UInt16, u16_inner_data, u16_inner_bitmap)
-                                .boxed(),
-                            u16_bitmap,
-                        )?
-                        .boxed()
-                    }
-                },
-                {
-                    let u32: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::U32(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let u32_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                        let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                            u32.iter().map(|datum| datum.num_instances()),
-                        )?
-                        .into();
-                        let u32_inner_data: Buffer<_> = u32
-                            .iter()
-                            .map(|b| b.as_slice())
-                            .collect::<Vec<_>>()
-                            .concat()
-                            .into();
-                        let u32_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                        ListArray::try_new(
-                            DataType::List(std::sync::Arc::new(Field::new(
-                                "item",
-                                DataType::UInt32,
-                                false,
-                            ))),
-                            offsets,
-                            PrimitiveArray::new(DataType::UInt32, u32_inner_data, u32_inner_bitmap)
-                                .boxed(),
-                            u32_bitmap,
-                        )?
-                        .boxed()
-                    }
-                },
-                {
-                    let u64: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::U64(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let u64_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                        let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                            u64.iter().map(|datum| datum.num_instances()),
-                        )?
-                        .into();
-                        let u64_inner_data: Buffer<_> = u64
-                            .iter()
-                            .map(|b| b.as_slice())
-                            .collect::<Vec<_>>()
-                            .concat()
-                            .into();
-                        let u64_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                        ListArray::try_new(
-                            DataType::List(std::sync::Arc::new(Field::new(
-                                "item",
-                                DataType::UInt64,
-                                false,
-                            ))),
-                            offsets,
-                            PrimitiveArray::new(DataType::UInt64, u64_inner_data, u64_inner_bitmap)
-                                .boxed(),
-                            u64_bitmap,
-                        )?
-                        .boxed()
-                    }
-                },
-                {
-                    let i8: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::I8(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let i8_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                        let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                            i8.iter().map(|datum| datum.num_instances()),
-                        )?
-                        .into();
-                        let i8_inner_data: Buffer<_> = i8
-                            .iter()
-                            .map(|b| b.as_slice())
-                            .collect::<Vec<_>>()
-                            .concat()
-                            .into();
-                        let i8_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                        ListArray::try_new(
-                            DataType::List(std::sync::Arc::new(Field::new(
-                                "item",
-                                DataType::Int8,
-                                false,
-                            ))),
-                            offsets,
-                            PrimitiveArray::new(DataType::Int8, i8_inner_data, i8_inner_bitmap)
-                                .boxed(),
-                            i8_bitmap,
-                        )?
-                        .boxed()
-                    }
-                },
-                {
-                    let i16: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::I16(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let i16_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                        let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                            i16.iter().map(|datum| datum.num_instances()),
-                        )?
-                        .into();
-                        let i16_inner_data: Buffer<_> = i16
-                            .iter()
-                            .map(|b| b.as_slice())
-                            .collect::<Vec<_>>()
-                            .concat()
-                            .into();
-                        let i16_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                        ListArray::try_new(
-                            DataType::List(std::sync::Arc::new(Field::new(
-                                "item",
-                                DataType::Int16,
-                                false,
-                            ))),
-                            offsets,
-                            PrimitiveArray::new(DataType::Int16, i16_inner_data, i16_inner_bitmap)
-                                .boxed(),
-                            i16_bitmap,
-                        )?
-                        .boxed()
-                    }
-                },
-                {
-                    let i32: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::I32(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let i32_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                        let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                            i32.iter().map(|datum| datum.num_instances()),
-                        )?
-                        .into();
-                        let i32_inner_data: Buffer<_> = i32
-                            .iter()
-                            .map(|b| b.as_slice())
-                            .collect::<Vec<_>>()
-                            .concat()
-                            .into();
-                        let i32_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                        ListArray::try_new(
-                            DataType::List(std::sync::Arc::new(Field::new(
-                                "item",
-                                DataType::Int32,
-                                false,
-                            ))),
-                            offsets,
-                            PrimitiveArray::new(DataType::Int32, i32_inner_data, i32_inner_bitmap)
-                                .boxed(),
-                            i32_bitmap,
-                        )?
-                        .boxed()
-                    }
-                },
-                {
-                    let i64: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::I64(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let i64_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                        let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                            i64.iter().map(|datum| datum.num_instances()),
-                        )?
-                        .into();
-                        let i64_inner_data: Buffer<_> = i64
-                            .iter()
-                            .map(|b| b.as_slice())
-                            .collect::<Vec<_>>()
-                            .concat()
-                            .into();
-                        let i64_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                        ListArray::try_new(
-                            DataType::List(std::sync::Arc::new(Field::new(
-                                "item",
-                                DataType::Int64,
-                                false,
-                            ))),
-                            offsets,
-                            PrimitiveArray::new(DataType::Int64, i64_inner_data, i64_inner_bitmap)
-                                .boxed(),
-                            i64_bitmap,
-                        )?
-                        .boxed()
-                    }
-                },
-                {
-                    let f16: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::F16(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let f16_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                        let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                            f16.iter().map(|datum| datum.num_instances()),
-                        )?
-                        .into();
-                        let f16_inner_data: Buffer<_> = f16
-                            .iter()
-                            .map(|b| b.as_slice())
-                            .collect::<Vec<_>>()
-                            .concat()
-                            .into();
-                        let f16_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                        ListArray::try_new(
-                            DataType::List(std::sync::Arc::new(Field::new(
-                                "item",
-                                DataType::Float16,
-                                false,
-                            ))),
-                            offsets,
-                            PrimitiveArray::new(
-                                DataType::Float16,
-                                f16_inner_data,
-                                f16_inner_bitmap,
-                            )
-                            .boxed(),
-                            f16_bitmap,
-                        )?
-                        .boxed()
-                    }
-                },
-                {
-                    let f32: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::F32(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let f32_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                        let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                            f32.iter().map(|datum| datum.num_instances()),
-                        )?
-                        .into();
-                        let f32_inner_data: Buffer<_> = f32
-                            .iter()
-                            .map(|b| b.as_slice())
-                            .collect::<Vec<_>>()
-                            .concat()
-                            .into();
-                        let f32_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                        ListArray::try_new(
-                            DataType::List(std::sync::Arc::new(Field::new(
-                                "item",
-                                DataType::Float32,
-                                false,
-                            ))),
-                            offsets,
-                            PrimitiveArray::new(
-                                DataType::Float32,
-                                f32_inner_data,
-                                f32_inner_bitmap,
-                            )
-                            .boxed(),
-                            f32_bitmap,
-                        )?
-                        .boxed()
-                    }
-                },
-                {
-                    let f64: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::F64(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let f64_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                        let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                            f64.iter().map(|datum| datum.num_instances()),
-                        )?
-                        .into();
-                        let f64_inner_data: Buffer<_> = f64
-                            .iter()
-                            .map(|b| b.as_slice())
-                            .collect::<Vec<_>>()
-                            .concat()
-                            .into();
-                        let f64_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                        ListArray::try_new(
-                            DataType::List(std::sync::Arc::new(Field::new(
-                                "item",
-                                DataType::Float64,
-                                false,
-                            ))),
-                            offsets,
-                            PrimitiveArray::new(
-                                DataType::Float64,
-                                f64_inner_data,
-                                f64_inner_bitmap,
-                            )
-                            .boxed(),
-                            f64_bitmap,
-                        )?
-                        .boxed()
-                    }
-                },
-                {
-                    let nv12: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::Nv12(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let nv12_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                        let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                            nv12.iter().map(|datum| datum.num_instances()),
-                        )?
-                        .into();
-                        let nv12_inner_data: Buffer<_> = nv12
-                            .iter()
-                            .map(|b| b.as_slice())
-                            .collect::<Vec<_>>()
-                            .concat()
-                            .into();
-                        let nv12_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                        ListArray::try_new(
-                            DataType::List(std::sync::Arc::new(Field::new(
-                                "item",
-                                DataType::UInt8,
-                                false,
-                            ))),
-                            offsets,
-                            PrimitiveArray::new(
-                                DataType::UInt8,
-                                nv12_inner_data,
-                                nv12_inner_bitmap,
-                            )
-                            .boxed(),
-                            nv12_bitmap,
-                        )?
-                        .boxed()
-                    }
-                },
-                {
-                    let yuy2: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::Yuy2(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let yuy2_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                        let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                            yuy2.iter().map(|datum| datum.num_instances()),
-                        )?
-                        .into();
-                        let yuy2_inner_data: Buffer<_> = yuy2
-                            .iter()
-                            .map(|b| b.as_slice())
-                            .collect::<Vec<_>>()
-                            .concat()
-                            .into();
-                        let yuy2_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                        ListArray::try_new(
-                            DataType::List(std::sync::Arc::new(Field::new(
-                                "item",
-                                DataType::UInt8,
-                                false,
-                            ))),
-                            offsets,
-                            PrimitiveArray::new(
-                                DataType::UInt8,
-                                yuy2_inner_data,
-                                yuy2_inner_bitmap,
-                            )
-                            .boxed(),
-                            yuy2_bitmap,
-                        )?
-                        .boxed()
-                    }
-                },
-            ];
-            let offsets = Some({
+            let offsets = {
                 let mut u8_offset = 0;
                 let mut u16_offset = 0;
                 let mut u32_offset = 0;
@@ -789,8 +325,6 @@ impl ::re_types_core::Loggable for TensorBuffer {
                 let mut f16_offset = 0;
                 let mut f32_offset = 0;
                 let mut f64_offset = 0;
-                let mut nv12_offset = 0;
-                let mut yuy2_offset = 0;
                 let mut nulls_offset = 0;
                 data.iter()
                     .map(|v| match v.as_deref() {
@@ -854,36 +388,377 @@ impl ::re_types_core::Loggable for TensorBuffer {
                             f64_offset += 1;
                             offset
                         }
-                        Some(Self::Nv12(_)) => {
-                            let offset = nv12_offset;
-                            nv12_offset += 1;
-                            offset
-                        }
-                        Some(Self::Yuy2(_)) => {
-                            let offset = yuy2_offset;
-                            yuy2_offset += 1;
-                            offset
-                        }
                     })
                     .collect()
-            });
-            UnionArray::new(Self::arrow_datatype(), types, fields, offsets).boxed()
+            };
+            let children = vec![
+                as_array_ref(NullArray::new(data.iter().filter(|v| v.is_none()).count())),
+                {
+                    let u8: Vec<_> = data
+                        .iter()
+                        .filter_map(|datum| match datum.as_deref() {
+                            Some(Self::U8(v)) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let u8_validity: Option<arrow::buffer::NullBuffer> = None;
+                    {
+                        let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
+                            u8.iter().map(|datum| datum.num_instances()),
+                        );
+                        let u8_inner_data: ScalarBuffer<_> = u8
+                            .iter()
+                            .map(|b| b.as_slice())
+                            .collect::<Vec<_>>()
+                            .concat()
+                            .into();
+                        let u8_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                        as_array_ref(ListArray::try_new(
+                            std::sync::Arc::new(Field::new("item", DataType::UInt8, false)),
+                            offsets,
+                            as_array_ref(PrimitiveArray::<UInt8Type>::new(
+                                u8_inner_data,
+                                u8_inner_validity,
+                            )),
+                            u8_validity,
+                        )?)
+                    }
+                },
+                {
+                    let u16: Vec<_> = data
+                        .iter()
+                        .filter_map(|datum| match datum.as_deref() {
+                            Some(Self::U16(v)) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let u16_validity: Option<arrow::buffer::NullBuffer> = None;
+                    {
+                        let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
+                            u16.iter().map(|datum| datum.num_instances()),
+                        );
+                        let u16_inner_data: ScalarBuffer<_> = u16
+                            .iter()
+                            .map(|b| b.as_slice())
+                            .collect::<Vec<_>>()
+                            .concat()
+                            .into();
+                        let u16_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                        as_array_ref(ListArray::try_new(
+                            std::sync::Arc::new(Field::new("item", DataType::UInt16, false)),
+                            offsets,
+                            as_array_ref(PrimitiveArray::<UInt16Type>::new(
+                                u16_inner_data,
+                                u16_inner_validity,
+                            )),
+                            u16_validity,
+                        )?)
+                    }
+                },
+                {
+                    let u32: Vec<_> = data
+                        .iter()
+                        .filter_map(|datum| match datum.as_deref() {
+                            Some(Self::U32(v)) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let u32_validity: Option<arrow::buffer::NullBuffer> = None;
+                    {
+                        let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
+                            u32.iter().map(|datum| datum.num_instances()),
+                        );
+                        let u32_inner_data: ScalarBuffer<_> = u32
+                            .iter()
+                            .map(|b| b.as_slice())
+                            .collect::<Vec<_>>()
+                            .concat()
+                            .into();
+                        let u32_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                        as_array_ref(ListArray::try_new(
+                            std::sync::Arc::new(Field::new("item", DataType::UInt32, false)),
+                            offsets,
+                            as_array_ref(PrimitiveArray::<UInt32Type>::new(
+                                u32_inner_data,
+                                u32_inner_validity,
+                            )),
+                            u32_validity,
+                        )?)
+                    }
+                },
+                {
+                    let u64: Vec<_> = data
+                        .iter()
+                        .filter_map(|datum| match datum.as_deref() {
+                            Some(Self::U64(v)) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let u64_validity: Option<arrow::buffer::NullBuffer> = None;
+                    {
+                        let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
+                            u64.iter().map(|datum| datum.num_instances()),
+                        );
+                        let u64_inner_data: ScalarBuffer<_> = u64
+                            .iter()
+                            .map(|b| b.as_slice())
+                            .collect::<Vec<_>>()
+                            .concat()
+                            .into();
+                        let u64_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                        as_array_ref(ListArray::try_new(
+                            std::sync::Arc::new(Field::new("item", DataType::UInt64, false)),
+                            offsets,
+                            as_array_ref(PrimitiveArray::<UInt64Type>::new(
+                                u64_inner_data,
+                                u64_inner_validity,
+                            )),
+                            u64_validity,
+                        )?)
+                    }
+                },
+                {
+                    let i8: Vec<_> = data
+                        .iter()
+                        .filter_map(|datum| match datum.as_deref() {
+                            Some(Self::I8(v)) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let i8_validity: Option<arrow::buffer::NullBuffer> = None;
+                    {
+                        let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
+                            i8.iter().map(|datum| datum.num_instances()),
+                        );
+                        let i8_inner_data: ScalarBuffer<_> = i8
+                            .iter()
+                            .map(|b| b.as_slice())
+                            .collect::<Vec<_>>()
+                            .concat()
+                            .into();
+                        let i8_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                        as_array_ref(ListArray::try_new(
+                            std::sync::Arc::new(Field::new("item", DataType::Int8, false)),
+                            offsets,
+                            as_array_ref(PrimitiveArray::<Int8Type>::new(
+                                i8_inner_data,
+                                i8_inner_validity,
+                            )),
+                            i8_validity,
+                        )?)
+                    }
+                },
+                {
+                    let i16: Vec<_> = data
+                        .iter()
+                        .filter_map(|datum| match datum.as_deref() {
+                            Some(Self::I16(v)) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let i16_validity: Option<arrow::buffer::NullBuffer> = None;
+                    {
+                        let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
+                            i16.iter().map(|datum| datum.num_instances()),
+                        );
+                        let i16_inner_data: ScalarBuffer<_> = i16
+                            .iter()
+                            .map(|b| b.as_slice())
+                            .collect::<Vec<_>>()
+                            .concat()
+                            .into();
+                        let i16_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                        as_array_ref(ListArray::try_new(
+                            std::sync::Arc::new(Field::new("item", DataType::Int16, false)),
+                            offsets,
+                            as_array_ref(PrimitiveArray::<Int16Type>::new(
+                                i16_inner_data,
+                                i16_inner_validity,
+                            )),
+                            i16_validity,
+                        )?)
+                    }
+                },
+                {
+                    let i32: Vec<_> = data
+                        .iter()
+                        .filter_map(|datum| match datum.as_deref() {
+                            Some(Self::I32(v)) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let i32_validity: Option<arrow::buffer::NullBuffer> = None;
+                    {
+                        let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
+                            i32.iter().map(|datum| datum.num_instances()),
+                        );
+                        let i32_inner_data: ScalarBuffer<_> = i32
+                            .iter()
+                            .map(|b| b.as_slice())
+                            .collect::<Vec<_>>()
+                            .concat()
+                            .into();
+                        let i32_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                        as_array_ref(ListArray::try_new(
+                            std::sync::Arc::new(Field::new("item", DataType::Int32, false)),
+                            offsets,
+                            as_array_ref(PrimitiveArray::<Int32Type>::new(
+                                i32_inner_data,
+                                i32_inner_validity,
+                            )),
+                            i32_validity,
+                        )?)
+                    }
+                },
+                {
+                    let i64: Vec<_> = data
+                        .iter()
+                        .filter_map(|datum| match datum.as_deref() {
+                            Some(Self::I64(v)) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let i64_validity: Option<arrow::buffer::NullBuffer> = None;
+                    {
+                        let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
+                            i64.iter().map(|datum| datum.num_instances()),
+                        );
+                        let i64_inner_data: ScalarBuffer<_> = i64
+                            .iter()
+                            .map(|b| b.as_slice())
+                            .collect::<Vec<_>>()
+                            .concat()
+                            .into();
+                        let i64_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                        as_array_ref(ListArray::try_new(
+                            std::sync::Arc::new(Field::new("item", DataType::Int64, false)),
+                            offsets,
+                            as_array_ref(PrimitiveArray::<Int64Type>::new(
+                                i64_inner_data,
+                                i64_inner_validity,
+                            )),
+                            i64_validity,
+                        )?)
+                    }
+                },
+                {
+                    let f16: Vec<_> = data
+                        .iter()
+                        .filter_map(|datum| match datum.as_deref() {
+                            Some(Self::F16(v)) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let f16_validity: Option<arrow::buffer::NullBuffer> = None;
+                    {
+                        let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
+                            f16.iter().map(|datum| datum.num_instances()),
+                        );
+                        let f16_inner_data: ScalarBuffer<_> = f16
+                            .iter()
+                            .map(|b| b.as_slice())
+                            .collect::<Vec<_>>()
+                            .concat()
+                            .into();
+                        let f16_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                        as_array_ref(ListArray::try_new(
+                            std::sync::Arc::new(Field::new("item", DataType::Float16, false)),
+                            offsets,
+                            as_array_ref(PrimitiveArray::<Float16Type>::new(
+                                f16_inner_data,
+                                f16_inner_validity,
+                            )),
+                            f16_validity,
+                        )?)
+                    }
+                },
+                {
+                    let f32: Vec<_> = data
+                        .iter()
+                        .filter_map(|datum| match datum.as_deref() {
+                            Some(Self::F32(v)) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let f32_validity: Option<arrow::buffer::NullBuffer> = None;
+                    {
+                        let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
+                            f32.iter().map(|datum| datum.num_instances()),
+                        );
+                        let f32_inner_data: ScalarBuffer<_> = f32
+                            .iter()
+                            .map(|b| b.as_slice())
+                            .collect::<Vec<_>>()
+                            .concat()
+                            .into();
+                        let f32_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                        as_array_ref(ListArray::try_new(
+                            std::sync::Arc::new(Field::new("item", DataType::Float32, false)),
+                            offsets,
+                            as_array_ref(PrimitiveArray::<Float32Type>::new(
+                                f32_inner_data,
+                                f32_inner_validity,
+                            )),
+                            f32_validity,
+                        )?)
+                    }
+                },
+                {
+                    let f64: Vec<_> = data
+                        .iter()
+                        .filter_map(|datum| match datum.as_deref() {
+                            Some(Self::F64(v)) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let f64_validity: Option<arrow::buffer::NullBuffer> = None;
+                    {
+                        let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
+                            f64.iter().map(|datum| datum.num_instances()),
+                        );
+                        let f64_inner_data: ScalarBuffer<_> = f64
+                            .iter()
+                            .map(|b| b.as_slice())
+                            .collect::<Vec<_>>()
+                            .concat()
+                            .into();
+                        let f64_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                        as_array_ref(ListArray::try_new(
+                            std::sync::Arc::new(Field::new("item", DataType::Float64, false)),
+                            offsets,
+                            as_array_ref(PrimitiveArray::<Float64Type>::new(
+                                f64_inner_data,
+                                f64_inner_validity,
+                            )),
+                            f64_validity,
+                        )?)
+                    }
+                },
+            ];
+            debug_assert_eq!(field_type_ids.len(), fields.len());
+            debug_assert_eq!(fields.len(), children.len());
+            as_array_ref(UnionArray::try_new(
+                UnionFields::new(field_type_ids, fields),
+                ScalarBuffer::from(type_ids),
+                Some(offsets),
+                children,
+            )?)
         })
     }
 
     fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
+        arrow_data: &dyn arrow::array::Array,
     ) -> DeserializationResult<Vec<Option<Self>>>
     where
         Self: Sized,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
+        use ::re_types_core::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
             let arrow_data = arrow_data
                 .as_any()
-                .downcast_ref::<arrow2::array::UnionArray>()
+                .downcast_ref::<arrow::array::UnionArray>()
                 .ok_or_else(|| {
                     let expected = Self::arrow_datatype();
                     let actual = arrow_data.data_type().clone();
@@ -893,8 +768,7 @@ impl ::re_types_core::Loggable for TensorBuffer {
             if arrow_data.is_empty() {
                 Vec::new()
             } else {
-                let (arrow_data_types, arrow_data_arrays) =
-                    (arrow_data.types(), arrow_data.fields());
+                let arrow_data_type_ids = arrow_data.type_ids();
                 let arrow_data_offsets = arrow_data
                     .offsets()
                     .ok_or_else(|| {
@@ -903,22 +777,19 @@ impl ::re_types_core::Loggable for TensorBuffer {
                         DeserializationError::datatype_mismatch(expected, actual)
                     })
                     .with_context("rerun.datatypes.TensorBuffer")?;
-                if arrow_data_types.len() != arrow_data_offsets.len() {
+                if arrow_data_type_ids.len() != arrow_data_offsets.len() {
                     return Err(DeserializationError::offset_slice_oob(
-                        (0, arrow_data_types.len()),
+                        (0, arrow_data_type_ids.len()),
                         arrow_data_offsets.len(),
                     ))
                     .with_context("rerun.datatypes.TensorBuffer");
                 }
                 let u8 = {
-                    if 1usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[1usize];
+                    let arrow_data = arrow_data.child(1).as_ref();
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
+                            .downcast_ref::<arrow::array::ListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::List(std::sync::Arc::new(Field::new(
                                     "item",
@@ -946,47 +817,38 @@ impl ::re_types_core::Loggable for TensorBuffer {
                                     .values()
                             };
                             let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|window| {
+                                        let start = window[0] as usize;
+                                        let end = window[1] as usize;
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data = unsafe {
-                                        arrow_data_inner
-                                            .clone()
-                                            .sliced_unchecked(start, end - start)
-                                    };
-                                    let data = ::re_types_core::ArrowBuffer::from(data);
-                                    Ok(data)
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            arrow_data_inner.clone().slice(start, end - start);
+                                        let data = ::re_types_core::ArrowBuffer::from(data);
+                                        Ok(data)
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                     .collect::<Vec<_>>()
                 };
                 let u16 = {
-                    if 2usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[2usize];
+                    let arrow_data = arrow_data.child(2).as_ref();
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
+                            .downcast_ref::<arrow::array::ListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::List(std::sync::Arc::new(Field::new(
                                     "item",
@@ -1014,47 +876,38 @@ impl ::re_types_core::Loggable for TensorBuffer {
                                     .values()
                             };
                             let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|window| {
+                                        let start = window[0] as usize;
+                                        let end = window[1] as usize;
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data = unsafe {
-                                        arrow_data_inner
-                                            .clone()
-                                            .sliced_unchecked(start, end - start)
-                                    };
-                                    let data = ::re_types_core::ArrowBuffer::from(data);
-                                    Ok(data)
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            arrow_data_inner.clone().slice(start, end - start);
+                                        let data = ::re_types_core::ArrowBuffer::from(data);
+                                        Ok(data)
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                     .collect::<Vec<_>>()
                 };
                 let u32 = {
-                    if 3usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[3usize];
+                    let arrow_data = arrow_data.child(3).as_ref();
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
+                            .downcast_ref::<arrow::array::ListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::List(std::sync::Arc::new(Field::new(
                                     "item",
@@ -1082,47 +935,38 @@ impl ::re_types_core::Loggable for TensorBuffer {
                                     .values()
                             };
                             let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|window| {
+                                        let start = window[0] as usize;
+                                        let end = window[1] as usize;
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data = unsafe {
-                                        arrow_data_inner
-                                            .clone()
-                                            .sliced_unchecked(start, end - start)
-                                    };
-                                    let data = ::re_types_core::ArrowBuffer::from(data);
-                                    Ok(data)
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            arrow_data_inner.clone().slice(start, end - start);
+                                        let data = ::re_types_core::ArrowBuffer::from(data);
+                                        Ok(data)
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                     .collect::<Vec<_>>()
                 };
                 let u64 = {
-                    if 4usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[4usize];
+                    let arrow_data = arrow_data.child(4).as_ref();
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
+                            .downcast_ref::<arrow::array::ListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::List(std::sync::Arc::new(Field::new(
                                     "item",
@@ -1150,47 +994,38 @@ impl ::re_types_core::Loggable for TensorBuffer {
                                     .values()
                             };
                             let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|window| {
+                                        let start = window[0] as usize;
+                                        let end = window[1] as usize;
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data = unsafe {
-                                        arrow_data_inner
-                                            .clone()
-                                            .sliced_unchecked(start, end - start)
-                                    };
-                                    let data = ::re_types_core::ArrowBuffer::from(data);
-                                    Ok(data)
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            arrow_data_inner.clone().slice(start, end - start);
+                                        let data = ::re_types_core::ArrowBuffer::from(data);
+                                        Ok(data)
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                     .collect::<Vec<_>>()
                 };
                 let i8 = {
-                    if 5usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[5usize];
+                    let arrow_data = arrow_data.child(5).as_ref();
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
+                            .downcast_ref::<arrow::array::ListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::List(std::sync::Arc::new(Field::new(
                                     "item",
@@ -1218,47 +1053,38 @@ impl ::re_types_core::Loggable for TensorBuffer {
                                     .values()
                             };
                             let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|window| {
+                                        let start = window[0] as usize;
+                                        let end = window[1] as usize;
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data = unsafe {
-                                        arrow_data_inner
-                                            .clone()
-                                            .sliced_unchecked(start, end - start)
-                                    };
-                                    let data = ::re_types_core::ArrowBuffer::from(data);
-                                    Ok(data)
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            arrow_data_inner.clone().slice(start, end - start);
+                                        let data = ::re_types_core::ArrowBuffer::from(data);
+                                        Ok(data)
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                     .collect::<Vec<_>>()
                 };
                 let i16 = {
-                    if 6usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[6usize];
+                    let arrow_data = arrow_data.child(6).as_ref();
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
+                            .downcast_ref::<arrow::array::ListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::List(std::sync::Arc::new(Field::new(
                                     "item",
@@ -1286,47 +1112,38 @@ impl ::re_types_core::Loggable for TensorBuffer {
                                     .values()
                             };
                             let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|window| {
+                                        let start = window[0] as usize;
+                                        let end = window[1] as usize;
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data = unsafe {
-                                        arrow_data_inner
-                                            .clone()
-                                            .sliced_unchecked(start, end - start)
-                                    };
-                                    let data = ::re_types_core::ArrowBuffer::from(data);
-                                    Ok(data)
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            arrow_data_inner.clone().slice(start, end - start);
+                                        let data = ::re_types_core::ArrowBuffer::from(data);
+                                        Ok(data)
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                     .collect::<Vec<_>>()
                 };
                 let i32 = {
-                    if 7usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[7usize];
+                    let arrow_data = arrow_data.child(7).as_ref();
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
+                            .downcast_ref::<arrow::array::ListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::List(std::sync::Arc::new(Field::new(
                                     "item",
@@ -1354,47 +1171,38 @@ impl ::re_types_core::Loggable for TensorBuffer {
                                     .values()
                             };
                             let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|window| {
+                                        let start = window[0] as usize;
+                                        let end = window[1] as usize;
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data = unsafe {
-                                        arrow_data_inner
-                                            .clone()
-                                            .sliced_unchecked(start, end - start)
-                                    };
-                                    let data = ::re_types_core::ArrowBuffer::from(data);
-                                    Ok(data)
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            arrow_data_inner.clone().slice(start, end - start);
+                                        let data = ::re_types_core::ArrowBuffer::from(data);
+                                        Ok(data)
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                     .collect::<Vec<_>>()
                 };
                 let i64 = {
-                    if 8usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[8usize];
+                    let arrow_data = arrow_data.child(8).as_ref();
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
+                            .downcast_ref::<arrow::array::ListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::List(std::sync::Arc::new(Field::new(
                                     "item",
@@ -1422,47 +1230,38 @@ impl ::re_types_core::Loggable for TensorBuffer {
                                     .values()
                             };
                             let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|window| {
+                                        let start = window[0] as usize;
+                                        let end = window[1] as usize;
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data = unsafe {
-                                        arrow_data_inner
-                                            .clone()
-                                            .sliced_unchecked(start, end - start)
-                                    };
-                                    let data = ::re_types_core::ArrowBuffer::from(data);
-                                    Ok(data)
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            arrow_data_inner.clone().slice(start, end - start);
+                                        let data = ::re_types_core::ArrowBuffer::from(data);
+                                        Ok(data)
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                     .collect::<Vec<_>>()
                 };
                 let f16 = {
-                    if 9usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[9usize];
+                    let arrow_data = arrow_data.child(9).as_ref();
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
+                            .downcast_ref::<arrow::array::ListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::List(std::sync::Arc::new(Field::new(
                                     "item",
@@ -1490,47 +1289,38 @@ impl ::re_types_core::Loggable for TensorBuffer {
                                     .values()
                             };
                             let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|window| {
+                                        let start = window[0] as usize;
+                                        let end = window[1] as usize;
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data = unsafe {
-                                        arrow_data_inner
-                                            .clone()
-                                            .sliced_unchecked(start, end - start)
-                                    };
-                                    let data = ::re_types_core::ArrowBuffer::from(data);
-                                    Ok(data)
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            arrow_data_inner.clone().slice(start, end - start);
+                                        let data = ::re_types_core::ArrowBuffer::from(data);
+                                        Ok(data)
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                     .collect::<Vec<_>>()
                 };
                 let f32 = {
-                    if 10usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[10usize];
+                    let arrow_data = arrow_data.child(10).as_ref();
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
+                            .downcast_ref::<arrow::array::ListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::List(std::sync::Arc::new(Field::new(
                                     "item",
@@ -1558,47 +1348,38 @@ impl ::re_types_core::Loggable for TensorBuffer {
                                     .values()
                             };
                             let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|window| {
+                                        let start = window[0] as usize;
+                                        let end = window[1] as usize;
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data = unsafe {
-                                        arrow_data_inner
-                                            .clone()
-                                            .sliced_unchecked(start, end - start)
-                                    };
-                                    let data = ::re_types_core::ArrowBuffer::from(data);
-                                    Ok(data)
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            arrow_data_inner.clone().slice(start, end - start);
+                                        let data = ::re_types_core::ArrowBuffer::from(data);
+                                        Ok(data)
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                     .collect::<Vec<_>>()
                 };
                 let f64 = {
-                    if 11usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[11usize];
+                    let arrow_data = arrow_data.child(11).as_ref();
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
+                            .downcast_ref::<arrow::array::ListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::List(std::sync::Arc::new(Field::new(
                                     "item",
@@ -1626,175 +1407,33 @@ impl ::re_types_core::Loggable for TensorBuffer {
                                     .values()
                             };
                             let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|window| {
+                                        let start = window[0] as usize;
+                                        let end = window[1] as usize;
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data = unsafe {
-                                        arrow_data_inner
-                                            .clone()
-                                            .sliced_unchecked(start, end - start)
-                                    };
-                                    let data = ::re_types_core::ArrowBuffer::from(data);
-                                    Ok(data)
-                                })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
-                        }
-                        .into_iter()
-                    }
-                    .collect::<Vec<_>>()
-                };
-                let nv12 = {
-                    if 12usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[12usize];
-                    {
-                        let arrow_data = arrow_data
-                            .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
-                            .ok_or_else(|| {
-                                let expected = DataType::List(std::sync::Arc::new(Field::new(
-                                    "item",
-                                    DataType::UInt8,
-                                    false,
-                                )));
-                                let actual = arrow_data.data_type().clone();
-                                DeserializationError::datatype_mismatch(expected, actual)
-                            })
-                            .with_context("rerun.datatypes.TensorBuffer#NV12")?;
-                        if arrow_data.is_empty() {
-                            Vec::new()
-                        } else {
-                            let arrow_data_inner = {
-                                let arrow_data_inner = &**arrow_data.values();
-                                arrow_data_inner
-                                    .as_any()
-                                    .downcast_ref::<UInt8Array>()
-                                    .ok_or_else(|| {
-                                        let expected = DataType::UInt8;
-                                        let actual = arrow_data_inner.data_type().clone();
-                                        DeserializationError::datatype_mismatch(expected, actual)
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            arrow_data_inner.clone().slice(start, end - start);
+                                        let data = ::re_types_core::ArrowBuffer::from(data);
+                                        Ok(data)
                                     })
-                                    .with_context("rerun.datatypes.TensorBuffer#NV12")?
-                                    .values()
-                            };
-                            let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
-
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data = unsafe {
-                                        arrow_data_inner
-                                            .clone()
-                                            .sliced_unchecked(start, end - start)
-                                    };
-                                    let data = ::re_types_core::ArrowBuffer::from(data);
-                                    Ok(data)
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                     .collect::<Vec<_>>()
                 };
-                let yuy2 = {
-                    if 13usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[13usize];
-                    {
-                        let arrow_data = arrow_data
-                            .as_any()
-                            .downcast_ref::<arrow2::array::ListArray<i32>>()
-                            .ok_or_else(|| {
-                                let expected = DataType::List(std::sync::Arc::new(Field::new(
-                                    "item",
-                                    DataType::UInt8,
-                                    false,
-                                )));
-                                let actual = arrow_data.data_type().clone();
-                                DeserializationError::datatype_mismatch(expected, actual)
-                            })
-                            .with_context("rerun.datatypes.TensorBuffer#YUY2")?;
-                        if arrow_data.is_empty() {
-                            Vec::new()
-                        } else {
-                            let arrow_data_inner = {
-                                let arrow_data_inner = &**arrow_data.values();
-                                arrow_data_inner
-                                    .as_any()
-                                    .downcast_ref::<UInt8Array>()
-                                    .ok_or_else(|| {
-                                        let expected = DataType::UInt8;
-                                        let actual = arrow_data_inner.data_type().clone();
-                                        DeserializationError::datatype_mismatch(expected, actual)
-                                    })
-                                    .with_context("rerun.datatypes.TensorBuffer#YUY2")?
-                                    .values()
-                            };
-                            let offsets = arrow_data.offsets();
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets.iter().zip(offsets.lengths()),
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, len)| {
-                                    let start = *start as usize;
-                                    let end = start + len;
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
-
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data = unsafe {
-                                        arrow_data_inner
-                                            .clone()
-                                            .sliced_unchecked(start, end - start)
-                                    };
-                                    let data = ::re_types_core::ArrowBuffer::from(data);
-                                    Ok(data)
-                                })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
-                        }
-                        .into_iter()
-                    }
-                    .collect::<Vec<_>>()
-                };
-                arrow_data_types
+                arrow_data_type_ids
                     .iter()
                     .enumerate()
                     .map(|(i, typ)| {
@@ -1968,36 +1607,6 @@ impl ::re_types_core::Loggable for TensorBuffer {
                                         .ok_or_else(DeserializationError::missing_data)
                                         .with_context("rerun.datatypes.TensorBuffer#F64")?
                                 }),
-                                12i8 => Self::Nv12({
-                                    if offset as usize >= nv12.len() {
-                                        return Err(DeserializationError::offset_oob(
-                                            offset as _,
-                                            nv12.len(),
-                                        ))
-                                        .with_context("rerun.datatypes.TensorBuffer#NV12");
-                                    }
-
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    unsafe { nv12.get_unchecked(offset as usize) }
-                                        .clone()
-                                        .ok_or_else(DeserializationError::missing_data)
-                                        .with_context("rerun.datatypes.TensorBuffer#NV12")?
-                                }),
-                                13i8 => Self::Yuy2({
-                                    if offset as usize >= yuy2.len() {
-                                        return Err(DeserializationError::offset_oob(
-                                            offset as _,
-                                            yuy2.len(),
-                                        ))
-                                        .with_context("rerun.datatypes.TensorBuffer#YUY2");
-                                    }
-
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    unsafe { yuy2.get_unchecked(offset as usize) }
-                                        .clone()
-                                        .ok_or_else(DeserializationError::missing_data)
-                                        .with_context("rerun.datatypes.TensorBuffer#YUY2")?
-                                }),
                                 _ => {
                                     return Err(DeserializationError::missing_union_arm(
                                         Self::arrow_datatype(),
@@ -2012,5 +1621,40 @@ impl ::re_types_core::Loggable for TensorBuffer {
                     .with_context("rerun.datatypes.TensorBuffer")?
             }
         })
+    }
+}
+
+impl ::re_byte_size::SizeBytes for TensorBuffer {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        #![allow(clippy::match_same_arms)]
+        match self {
+            Self::U8(v) => v.heap_size_bytes(),
+            Self::U16(v) => v.heap_size_bytes(),
+            Self::U32(v) => v.heap_size_bytes(),
+            Self::U64(v) => v.heap_size_bytes(),
+            Self::I8(v) => v.heap_size_bytes(),
+            Self::I16(v) => v.heap_size_bytes(),
+            Self::I32(v) => v.heap_size_bytes(),
+            Self::I64(v) => v.heap_size_bytes(),
+            Self::F16(v) => v.heap_size_bytes(),
+            Self::F32(v) => v.heap_size_bytes(),
+            Self::F64(v) => v.heap_size_bytes(),
+        }
+    }
+
+    #[inline]
+    fn is_pod() -> bool {
+        <::re_types_core::ArrowBuffer<u8>>::is_pod()
+            && <::re_types_core::ArrowBuffer<u16>>::is_pod()
+            && <::re_types_core::ArrowBuffer<u32>>::is_pod()
+            && <::re_types_core::ArrowBuffer<u64>>::is_pod()
+            && <::re_types_core::ArrowBuffer<i8>>::is_pod()
+            && <::re_types_core::ArrowBuffer<i16>>::is_pod()
+            && <::re_types_core::ArrowBuffer<i32>>::is_pod()
+            && <::re_types_core::ArrowBuffer<i64>>::is_pod()
+            && <::re_types_core::ArrowBuffer<half::f16>>::is_pod()
+            && <::re_types_core::ArrowBuffer<f32>>::is_pod()
+            && <::re_types_core::ArrowBuffer<f64>>::is_pod()
     }
 }

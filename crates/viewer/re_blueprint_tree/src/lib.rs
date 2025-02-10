@@ -2,4 +2,11 @@
 
 mod blueprint_tree;
 
+#[cfg(feature = "testing")]
+pub mod data;
+
+#[cfg(not(feature = "testing"))]
+pub(crate) mod data;
+mod data_result_node_or_path;
+
 pub use blueprint_tree::BlueprintTree;

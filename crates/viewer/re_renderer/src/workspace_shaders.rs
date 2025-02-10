@@ -26,6 +26,12 @@ pub fn init() {
     }
 
     {
+        let virtpath = Path::new("shader/conversions/yuv_converter.wgsl");
+        let content = include_str!("../shader/conversions/yuv_converter.wgsl").into();
+        fs.create_file(virtpath, content).unwrap();
+    }
+
+    {
         let virtpath = Path::new("shader/copy_texture.wgsl");
         let content = include_str!("../shader/copy_texture.wgsl").into();
         fs.create_file(virtpath, content).unwrap();
@@ -34,12 +40,6 @@ pub fn init() {
     {
         let virtpath = Path::new("shader/debug_overlay.wgsl");
         let content = include_str!("../shader/debug_overlay.wgsl").into();
-        fs.create_file(virtpath, content).unwrap();
-    }
-
-    {
-        let virtpath = Path::new("shader/decodings.wgsl");
-        let content = include_str!("../shader/decodings.wgsl").into();
         fs.create_file(virtpath, content).unwrap();
     }
 
@@ -176,6 +176,18 @@ pub fn init() {
     }
 
     {
+        let virtpath = Path::new("shader/utils/interpolation.wgsl");
+        let content = include_str!("../shader/utils/interpolation.wgsl").into();
+        fs.create_file(virtpath, content).unwrap();
+    }
+
+    {
+        let virtpath = Path::new("shader/utils/plane.wgsl");
+        let content = include_str!("../shader/utils/plane.wgsl").into();
+        fs.create_file(virtpath, content).unwrap();
+    }
+
+    {
         let virtpath = Path::new("shader/utils/quaternion.wgsl");
         let content = include_str!("../shader/utils/quaternion.wgsl").into();
         fs.create_file(virtpath, content).unwrap();
@@ -196,6 +208,12 @@ pub fn init() {
     {
         let virtpath = Path::new("shader/utils/srgb.wgsl");
         let content = include_str!("../shader/utils/srgb.wgsl").into();
+        fs.create_file(virtpath, content).unwrap();
+    }
+
+    {
+        let virtpath = Path::new("shader/world_grid.wgsl");
+        let content = include_str!("../shader/world_grid.wgsl").into();
         fs.create_file(virtpath, content).unwrap();
     }
 }

@@ -19,9 +19,15 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urljoin
+from urllib.request import pathname2url
 
 
-def run_pixi_install(feature: str, dir: str, pkg: str) -> None:
+def path_to_file_url(path: Path) -> str:
+    return urljoin("file:", pathname2url(str(path.absolute())))
+
+
+def run_pixi_install(feature: str, dir: str, pkg: str, platform_independent: bool = False) -> None:
     # Find our current platform: linux, macosx, or win
     plat = platform.system()
     if plat == "Linux":
@@ -31,32 +37,48 @@ def run_pixi_install(feature: str, dir: str, pkg: str) -> None:
     elif plat == "Windows":
         plat = "win"
 
-    arch = os.uname().machine
+    if hasattr(os, "uname"):
+        arch = os.uname().machine
+    else:
+        arch = platform.machine().lower()
+
+    print(f"Platform: {plat}, Architecture: {arch}")
 
     # Find the wheels
     wheels = [whl.name for whl in Path(dir).glob("*.whl")]
+    print(f"Found {len(wheels)} wheels: {wheels}")
 
     # Filter the wheels based on package
     wheels = [whl for whl in wheels if whl.startswith(pkg.replace("-", "_"))]
 
     # Filter the wheels based on platform
-    wheels = [whl for whl in wheels if plat in whl]
+    if not platform_independent:
+        wheels = [whl for whl in wheels if plat in whl]
 
     # Filter the wheels based on architecture
-    wheels = [whl for whl in wheels if arch in whl]
+    if not platform_independent:
+        wheels = [whl for whl in wheels if arch in whl]
 
     if len(wheels) == 0:
-        print(f"No wheels found for package {pkg} on platform {plat} and architecture {arch}")
+        if platform_independent:
+            print(f"No wheels found for package {pkg} (the package was expected to be platform independent)")
+        else:
+            print(f"No wheels found for package {pkg} on platform {plat} and architecture {arch}")
         sys.exit(1)
 
     if len(wheels) > 1:
-        print(f"Multiple wheels found for package {pkg} on platform {plat} and architecture {arch}: {wheels}")
+        if platform_independent:
+            print(
+                f"Multiple wheels found for package {pkg} (the package was expected to be platform independent): {wheels}"
+            )
+        else:
+            print(f"Multiple wheels found for package {pkg} on platform {plat} and architecture {arch}: {wheels}")
         sys.exit(1)
 
     wheel = Path(dir) / wheels[0]
 
     # Install the wheel
-    cmd = ["pixi", "add", "--feature", feature, "--pypi", f"{pkg} @ {wheel}"]
+    cmd = ["pixi", "add", "--feature", feature, "--pypi", f"{pkg} @ {path_to_file_url(wheel)}"]
     print(f"Running: {' '.join(cmd)}")
     returncode = subprocess.Popen(cmd).wait()
     assert returncode == 0, f"process exited with error code {returncode}"
@@ -71,9 +93,14 @@ def main() -> None:
     parser.add_argument("--feature", required=True, help="The pixi feature to update")
     parser.add_argument("--dir", required=True, help="Directory to search")
     parser.add_argument("--package", required=True, help="The package to install")
+    parser.add_argument(
+        "--platform-independent",
+        action="store_true",
+        help="Specify if the wheel is platform independent and there should be no filtering for architecture & platform",
+    )
     args = parser.parse_args()
 
-    run_pixi_install(args.feature, args.dir, args.package)
+    run_pixi_install(args.feature, args.dir, args.package, args.platform_independent)
 
 
 if __name__ == "__main__":

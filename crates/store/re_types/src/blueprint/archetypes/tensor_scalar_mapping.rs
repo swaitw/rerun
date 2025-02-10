@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Archetype**: Configures how tensor scalars are mapped to color.
@@ -24,58 +24,85 @@ pub struct TensorScalarMapping {
     /// Filter used when zooming in on the tensor.
     ///
     /// Note that the filter is applied to the scalar values *before* they are mapped to color.
-    pub mag_filter: Option<crate::components::MagnificationFilter>,
+    pub mag_filter: Option<SerializedComponentBatch>,
 
     /// How scalar values map to colors.
-    pub colormap: Option<crate::components::Colormap>,
+    pub colormap: Option<SerializedComponentBatch>,
 
     /// Gamma exponent applied to normalized values before mapping to color.
     ///
     /// Raises the normalized values to the power of this value before mapping to color.
     /// Acts like an inverse brightness. Defaults to 1.0.
-    pub gamma: Option<crate::components::GammaCorrection>,
+    ///
+    /// The final value for display is set as:
+    /// `colormap( ((value - data_display_range.min) / (data_display_range.max - data_display_range.min)) ** gamma )`
+    pub gamma: Option<SerializedComponentBatch>,
 }
 
-impl ::re_types_core::SizeBytes for TensorScalarMapping {
+impl TensorScalarMapping {
+    /// Returns the [`ComponentDescriptor`] for [`Self::mag_filter`].
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.mag_filter.heap_size_bytes()
-            + self.colormap.heap_size_bytes()
-            + self.gamma.heap_size_bytes()
+    pub fn descriptor_mag_filter() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.blueprint.archetypes.TensorScalarMapping".into()),
+            component_name: "rerun.components.MagnificationFilter".into(),
+            archetype_field_name: Some("mag_filter".into()),
+        }
     }
 
+    /// Returns the [`ComponentDescriptor`] for [`Self::colormap`].
     #[inline]
-    fn is_pod() -> bool {
-        <Option<crate::components::MagnificationFilter>>::is_pod()
-            && <Option<crate::components::Colormap>>::is_pod()
-            && <Option<crate::components::GammaCorrection>>::is_pod()
+    pub fn descriptor_colormap() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.blueprint.archetypes.TensorScalarMapping".into()),
+            component_name: "rerun.components.Colormap".into(),
+            archetype_field_name: Some("colormap".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::gamma`].
+    #[inline]
+    pub fn descriptor_gamma() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.blueprint.archetypes.TensorScalarMapping".into()),
+            component_name: "rerun.components.GammaCorrection".into(),
+            archetype_field_name: Some("gamma".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for the associated indicator component.
+    #[inline]
+    pub fn descriptor_indicator() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.blueprint.archetypes.TensorScalarMapping".into()),
+            component_name: "rerun.blueprint.components.TensorScalarMappingIndicator".into(),
+            archetype_field_name: None,
+        }
     }
 }
 
-static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 0usize]> =
+static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 0usize]> =
     once_cell::sync::Lazy::new(|| []);
 
-static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| {
-        ["rerun.blueprint.components.TensorScalarMappingIndicator".into()]
-    });
+static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [TensorScalarMapping::descriptor_indicator()]);
 
-static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 3usize]> =
+static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 3usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.MagnificationFilter".into(),
-            "rerun.components.Colormap".into(),
-            "rerun.components.GammaCorrection".into(),
+            TensorScalarMapping::descriptor_mag_filter(),
+            TensorScalarMapping::descriptor_colormap(),
+            TensorScalarMapping::descriptor_gamma(),
         ]
     });
 
-static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 4usize]> =
+static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 4usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.blueprint.components.TensorScalarMappingIndicator".into(),
-            "rerun.components.MagnificationFilter".into(),
-            "rerun.components.Colormap".into(),
-            "rerun.components.GammaCorrection".into(),
+            TensorScalarMapping::descriptor_indicator(),
+            TensorScalarMapping::descriptor_mag_filter(),
+            TensorScalarMapping::descriptor_colormap(),
+            TensorScalarMapping::descriptor_gamma(),
         ]
     });
 
@@ -102,69 +129,49 @@ impl ::re_types_core::Archetype for TensorScalarMapping {
     }
 
     #[inline]
-    fn indicator() -> MaybeOwnedComponentBatch<'static> {
-        static INDICATOR: TensorScalarMappingIndicator = TensorScalarMappingIndicator::DEFAULT;
-        MaybeOwnedComponentBatch::Ref(&INDICATOR)
+    fn indicator() -> SerializedComponentBatch {
+        #[allow(clippy::unwrap_used)]
+        TensorScalarMappingIndicator::DEFAULT.serialized().unwrap()
     }
 
     #[inline]
-    fn required_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn required_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         REQUIRED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         RECOMMENDED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         OPTIONAL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn all_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn all_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         ALL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
     fn from_arrow_components(
-        arrow_data: impl IntoIterator<Item = (ComponentName, Box<dyn arrow2::array::Array>)>,
+        arrow_data: impl IntoIterator<Item = (ComponentDescriptor, arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self> {
         re_tracing::profile_function!();
         use ::re_types_core::{Loggable as _, ResultExt as _};
-        let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data
-            .into_iter()
-            .map(|(name, array)| (name.full_name(), array))
-            .collect();
-        let mag_filter =
-            if let Some(array) = arrays_by_name.get("rerun.components.MagnificationFilter") {
-                <crate::components::MagnificationFilter>::from_arrow_opt(&**array)
-                    .with_context("rerun.blueprint.archetypes.TensorScalarMapping#mag_filter")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
-        let colormap = if let Some(array) = arrays_by_name.get("rerun.components.Colormap") {
-            <crate::components::Colormap>::from_arrow_opt(&**array)
-                .with_context("rerun.blueprint.archetypes.TensorScalarMapping#colormap")?
-                .into_iter()
-                .next()
-                .flatten()
-        } else {
-            None
-        };
-        let gamma = if let Some(array) = arrays_by_name.get("rerun.components.GammaCorrection") {
-            <crate::components::GammaCorrection>::from_arrow_opt(&**array)
-                .with_context("rerun.blueprint.archetypes.TensorScalarMapping#gamma")?
-                .into_iter()
-                .next()
-                .flatten()
-        } else {
-            None
-        };
+        let arrays_by_descr: ::nohash_hasher::IntMap<_, _> = arrow_data.into_iter().collect();
+        let mag_filter = arrays_by_descr
+            .get(&Self::descriptor_mag_filter())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_mag_filter())
+            });
+        let colormap = arrays_by_descr
+            .get(&Self::descriptor_colormap())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_colormap()));
+        let gamma = arrays_by_descr
+            .get(&Self::descriptor_gamma())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_gamma()));
         Ok(Self {
             mag_filter,
             colormap,
@@ -174,20 +181,14 @@ impl ::re_types_core::Archetype for TensorScalarMapping {
 }
 
 impl ::re_types_core::AsComponents for TensorScalarMapping {
-    fn as_component_batches(&self) -> Vec<MaybeOwnedComponentBatch<'_>> {
-        re_tracing::profile_function!();
+    #[inline]
+    fn as_serialized_batches(&self) -> Vec<SerializedComponentBatch> {
         use ::re_types_core::Archetype as _;
         [
             Some(Self::indicator()),
-            self.mag_filter
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.colormap
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.gamma
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
+            self.mag_filter.clone(),
+            self.colormap.clone(),
+            self.gamma.clone(),
         ]
         .into_iter()
         .flatten()
@@ -208,6 +209,32 @@ impl TensorScalarMapping {
         }
     }
 
+    /// Update only some specific fields of a `TensorScalarMapping`.
+    #[inline]
+    pub fn update_fields() -> Self {
+        Self::default()
+    }
+
+    /// Clear all the fields of a `TensorScalarMapping`.
+    #[inline]
+    pub fn clear_fields() -> Self {
+        use ::re_types_core::Loggable as _;
+        Self {
+            mag_filter: Some(SerializedComponentBatch::new(
+                crate::components::MagnificationFilter::arrow_empty(),
+                Self::descriptor_mag_filter(),
+            )),
+            colormap: Some(SerializedComponentBatch::new(
+                crate::components::Colormap::arrow_empty(),
+                Self::descriptor_colormap(),
+            )),
+            gamma: Some(SerializedComponentBatch::new(
+                crate::components::GammaCorrection::arrow_empty(),
+                Self::descriptor_gamma(),
+            )),
+        }
+    }
+
     /// Filter used when zooming in on the tensor.
     ///
     /// Note that the filter is applied to the scalar values *before* they are mapped to color.
@@ -216,14 +243,14 @@ impl TensorScalarMapping {
         mut self,
         mag_filter: impl Into<crate::components::MagnificationFilter>,
     ) -> Self {
-        self.mag_filter = Some(mag_filter.into());
+        self.mag_filter = try_serialize_field(Self::descriptor_mag_filter(), [mag_filter]);
         self
     }
 
     /// How scalar values map to colors.
     #[inline]
     pub fn with_colormap(mut self, colormap: impl Into<crate::components::Colormap>) -> Self {
-        self.colormap = Some(colormap.into());
+        self.colormap = try_serialize_field(Self::descriptor_colormap(), [colormap]);
         self
     }
 
@@ -231,9 +258,21 @@ impl TensorScalarMapping {
     ///
     /// Raises the normalized values to the power of this value before mapping to color.
     /// Acts like an inverse brightness. Defaults to 1.0.
+    ///
+    /// The final value for display is set as:
+    /// `colormap( ((value - data_display_range.min) / (data_display_range.max - data_display_range.min)) ** gamma )`
     #[inline]
     pub fn with_gamma(mut self, gamma: impl Into<crate::components::GammaCorrection>) -> Self {
-        self.gamma = Some(gamma.into());
+        self.gamma = try_serialize_field(Self::descriptor_gamma(), [gamma]);
         self
+    }
+}
+
+impl ::re_byte_size::SizeBytes for TensorScalarMapping {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.mag_filter.heap_size_bytes()
+            + self.colormap.heap_size_bytes()
+            + self.gamma.heap_size_bytes()
     }
 }

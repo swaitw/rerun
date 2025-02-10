@@ -3,7 +3,8 @@
 """
 Runs custom linting on our code.
 
-Adding "NOLINT" to any line makes the linter ignore that line.
+Adding "NOLINT" to any line makes the linter ignore that line. Adding a pair of "NOLINT_START" and "NOLINT_END" makes
+the linter ignore these lines, as well as all lines in between.
 """
 
 from __future__ import annotations
@@ -114,7 +115,10 @@ def lint_url(url: str) -> str | None:
 
 
 def lint_line(
-    line: str, prev_line: str | None, file_extension: str = "rs", is_in_docstring: bool = False
+    line: str,
+    prev_line: str | None,
+    file_extension: str = "rs",
+    is_in_docstring: bool = False,
 ) -> str | None:
     if line == "":
         return None
@@ -138,7 +142,8 @@ def lint_line(
             return "It's 'GitHub', not 'github'"
 
     if re.search(r"[.a-zA-Z]  [a-zA-Z]", line):
-        return "Found double space"
+        if r"\n  " not in line:  # Allow `\n  `, which happens e.g. when markdown is embeedded in a string
+            return "Found double space"
 
     if double_the.search(line.lower()):
         return "Found 'the the'"
@@ -167,6 +172,14 @@ def lint_line(
             return "we prefer '2D' over '2d'"
         if re.search(r"\b3d\b", line):
             return "we prefer '3D' over '3d'"
+
+    if (
+        "recording=rec" in line
+        and "rr." not in line
+        and "recording=rec.to_native()" not in line
+        and "recording=recording.to_native()" not in line
+    ):
+        return "you must cast the RecordingStream first: `recording=recording.to_native()"
 
     if "FIXME" in line:
         return "we prefer TODO over FIXME"
@@ -252,7 +265,15 @@ def lint_line(
         if prev_line_stripped != "#[inline]" and prev_line_stripped != "#[inline(always)]":
             return "as_ref/borrow implementations should be marked #[inline]"
 
-    if any(s in line for s in (": &dyn std::any::Any", ": &mut dyn std::any::Any", ": &dyn Any", ": &mut dyn Any")):
+    if any(
+        s in line
+        for s in (
+            ": &dyn std::any::Any",
+            ": &mut dyn std::any::Any",
+            ": &dyn Any",
+            ": &mut dyn Any",
+        )
+    ):
         return """Functions should never take `&dyn std::any::Any` as argument since `&Box<std::any::Any>`
  itself implements `Any`, making it easy to accidentally pass the wrong object. Expect purpose defined traits instead."""
 
@@ -264,7 +285,7 @@ def test_lint_line() -> None:
 
     should_pass = [
         "hello world",
-        "this is a 2D spaceview",
+        "this is a 2D view",
         "todo lowercase is fine",
         'todo!("Macro is ok with text")',
         "TODO_TOKEN",
@@ -347,7 +368,7 @@ def test_lint_line() -> None:
     ]
 
     should_error = [
-        "this is a 2d spaceview",
+        "this is a 2d view",
         "FIXME",
         "HACK",
         "TODO",
@@ -372,7 +393,7 @@ def test_lint_line() -> None:
         r'println!("Problem: \"{}\"", string)',
         r'println!("Problem: \"{0}\"")',
         r'println!("Problem: \"{string}\"")',
-        'ui.label("This uses ugly title casing for Space View.")',
+        'ui.label("This uses ugly title casing for View.")',
         "trailing whitespace ",
         "rr_stream",
         "rec_stream",
@@ -598,7 +619,7 @@ def test_lint_workspace_deps() -> None:
         name = "clock"
         version = "0.6.0-alpha.0"
         edition = "2021"
-        rust-version = "1.76"
+        rust-version = "1.81"
         license = "MIT OR Apache-2.0"
         publish = false
 
@@ -676,6 +697,7 @@ force_capitalized = [
     "CI",
     "Colab",
     "Google",
+    "gRPC",
     "GUI",
     "GUIs",
     "July",
@@ -686,8 +708,10 @@ force_capitalized = [
     "ML",
     "Numpy",
     "nuScenes",
-    "Pixi",
+    "Pandas",
     "PDF",
+    "Pixi",
+    "Polars",
     "Python",
     "Q1",
     "Q2",
@@ -787,6 +811,10 @@ def fix_header_casing(s: str) -> str:
         if word == "":
             continue
 
+        if word == "I":
+            new_words.append(word)
+            continue
+
         if is_emoji(word):
             new_words.append(word)
             continue
@@ -848,7 +876,7 @@ def fix_enforced_upper_case(s: str) -> str:
     return "".join(new_words)
 
 
-def lint_markdown(filepath: str, lines_in: list[str]) -> tuple[list[str], list[str]]:
+def lint_markdown(filepath: str, source: SourceFile) -> tuple[list[str], list[str]]:
     """Only for .md files."""
 
     errors = []
@@ -862,12 +890,12 @@ def lint_markdown(filepath: str, lines_in: list[str]) -> tuple[list[str], list[s
     in_code_of_conduct = filepath.endswith("CODE_OF_CONDUCT.md")
 
     if in_code_of_conduct:
-        return errors, lines_in
+        return errors, source.lines
 
     in_code_block = False
     in_frontmatter = False
     in_metadata = False
-    for line_nr, line in enumerate(lines_in):
+    for line_nr, line in enumerate(source.lines):
         line_nr = line_nr + 1
 
         if line.strip().startswith("```"):
@@ -880,7 +908,7 @@ def lint_markdown(filepath: str, lines_in: list[str]) -> tuple[list[str], list[s
         if in_metadata and line.startswith("-->"):
             in_metadata = False
 
-        if not in_code_block:
+        if not in_code_block and not source.should_ignore(line_nr):
             if not in_metadata:
                 # Check the casing on markdown headers
                 if m := re.match(r"(\#+ )(.*)", line):
@@ -972,7 +1000,19 @@ class SourceFile:
         self.content = "".join(self.lines)
 
         # gather lines with a `NOLINT` marker
-        self.no_lints = {i for i, line in enumerate(self.lines) if "NOLINT" in line}
+        self.nolints = set()
+        is_in_nolint_block = False
+        for i, line in enumerate(self.lines):
+            if "NOLINT" in line:
+                self.nolints.add(i)
+
+            if "NOLINT_START" in line:
+                is_in_nolint_block = True
+
+            if is_in_nolint_block:
+                self.nolints.add(i)
+                if "NOLINT_END" in line:
+                    is_in_nolint_block = False
 
     def rewrite(self, new_lines: list[str]) -> None:
         """Rewrite the contents of the file."""
@@ -992,7 +1032,7 @@ class SourceFile:
 
         if to_line is None:
             to_line = from_line
-        return any(i in self.no_lints for i in range(from_line - 1, to_line + 1))
+        return any(i in self.nolints for i in range(from_line - 1, to_line + 1))
 
     def should_ignore_index(self, start_idx: int, end_idx: int | None = None) -> bool:
         """Same as `should_ignore` but takes 0-based indices instead of line numbers."""
@@ -1021,6 +1061,9 @@ def lint_file(filepath: str, args: Any) -> int:
 
     prev_line = None
     for line_nr, line in enumerate(source.lines):
+        if source.should_ignore(line_nr):
+            continue
+
         if line == "" or line[-1] != "\n":
             error = "Missing newline at end of file"
         else:
@@ -1048,7 +1091,7 @@ def lint_file(filepath: str, args: Any) -> int:
             source.rewrite(lines_out)
 
     if filepath.endswith(".md"):
-        errors, lines_out = lint_markdown(filepath, source.lines)
+        errors, lines_out = lint_markdown(filepath, source)
 
         for error in errors:
             print(source.error(error))
@@ -1176,9 +1219,16 @@ def main() -> None:
 
     exclude_paths = (
         "./.github/workflows/reusable_checks.yml",  # zombie TODO hunting job
+        "./.nox",
         "./.pytest_cache",
         "./CODE_STYLE.md",
-        "./crates/re_types_builder/src/reflection.rs",  # auto-generated
+        "./crates/build/re_types_builder/src/reflection.rs",  # auto-generated
+        "./crates/store/re_protos/src/v0",  # auto-generated
+        "./docs/content/concepts/app-model.md",  # this really needs custom letter casing
+        "./docs/content/reference/cli.md",  # auto-generated
+        "./docs/snippets/all/tutorials/custom-application-id.cpp",  # nuh-uh, I don't want rerun_example_ here
+        "./docs/snippets/all/tutorials/custom-application-id.py",  # nuh-uh, I don't want rerun_example_ here
+        "./docs/snippets/all/tutorials/custom-application-id.rs",  # nuh-uh, I don't want rerun_example_ here
         "./examples/assets",
         "./examples/python/detect_and_track_objects/cache/version.txt",
         "./examples/python/objectron/objectron/proto/",  # auto-generated
@@ -1187,24 +1237,26 @@ def main() -> None:
         "./rerun_cpp/docs/html",
         "./rerun_cpp/src/rerun/c/arrow_c_data_interface.h",  # Not our code
         "./rerun_cpp/src/rerun/third_party/cxxopts.hpp",  # vendored
+        "./rerun_js/node_modules",
+        "./rerun_js/web-viewer-react/node_modules",
+        "./rerun_js/web-viewer/index.js",
+        "./rerun_js/web-viewer/inlined.js",
+        "./rerun_js/web-viewer/node_modules",
+        "./rerun_js/web-viewer/re_viewer.js",
+        "./rerun_js/web-viewer/re_viewer_bg.js",  # auto-generated by wasm_bindgen
+        "./rerun_notebook/node_modules",
+        "./rerun_notebook/src/rerun_notebook/static",
         "./rerun_py/.pytest_cache/",
         "./rerun_py/site/",  # is in `.gitignore` which this script doesn't fully respect
         "./run_wasm/README.md",  # Has a "2d" lowercase example in a code snippet
         "./scripts/lint.py",  # we contain all the patterns we are linting against
         "./scripts/zombie_todos.py",
+        "./tests/assets/lerobot/apple_storage/README.md",  # not ours
+        "./tests/python/gil_stress/main.py",
         "./tests/python/release_checklist/main.py",
         "./web_viewer/re_viewer.js",  # auto-generated by wasm_bindgen
         # JS dependencies:
-        "./rerun_notebook/node_modules",
-        "./rerun_js/node_modules",
         # JS files generated during build:
-        "./rerun_notebook/src/rerun_notebook/static",
-        "./rerun_js/web-viewer-react/node_modules",
-        "./rerun_js/web-viewer/index.js",
-        "./rerun_js/web-viewer/inlined.js",
-        "./rerun_js/web-viewer/node_modules",
-        "./rerun_js/web-viewer/re_viewer_bg.js",  # auto-generated by wasm_bindgen
-        "./rerun_js/web-viewer/re_viewer.js",
     )
 
     should_ignore = parse_gitignore(".gitignore")  # TODO(#6730): parse all .gitignore files, not just top-level

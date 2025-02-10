@@ -5,29 +5,55 @@
 
 #include "../../collection_adapter_builtins.hpp"
 
-namespace rerun::blueprint::archetypes {}
+namespace rerun::blueprint::archetypes {
+    PanelBlueprint PanelBlueprint::clear_fields() {
+        auto archetype = PanelBlueprint();
+        archetype.state =
+            ComponentBatch::empty<rerun::blueprint::components::PanelState>(Descriptor_state)
+                .value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> PanelBlueprint::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(2);
+        if (state.has_value()) {
+            columns.push_back(state.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(
+            ComponentColumn::from_indicators<PanelBlueprint>(static_cast<uint32_t>(lengths_.size()))
+                .value_or_throw()
+        );
+        return columns;
+    }
+
+    Collection<ComponentColumn> PanelBlueprint::columns() {
+        if (state.has_value()) {
+            return columns(std::vector<uint32_t>(state.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::blueprint::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<blueprint::archetypes::PanelBlueprint>::serialize(
-        const blueprint::archetypes::PanelBlueprint& archetype
-    ) {
+    Result<Collection<ComponentBatch>>
+        AsComponents<blueprint::archetypes::PanelBlueprint>::as_batches(
+            const blueprint::archetypes::PanelBlueprint& archetype
+        ) {
         using namespace blueprint::archetypes;
-        std::vector<DataCell> cells;
+        std::vector<ComponentBatch> cells;
         cells.reserve(2);
 
         if (archetype.state.has_value()) {
-            auto result = DataCell::from_loggable(archetype.state.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.state.value());
         }
         {
-            auto indicator = PanelBlueprint::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<PanelBlueprint>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

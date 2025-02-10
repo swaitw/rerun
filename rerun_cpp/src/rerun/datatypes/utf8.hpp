@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../result.hpp"
 
 #include <cstdint>
@@ -21,12 +22,22 @@ namespace rerun::datatypes {
     struct Utf8 {
         std::string value;
 
-      public:
-        // Extensions to generated type defined in 'utf8_ext.cpp'
+      public: // START of extensions from utf8_ext.cpp:
+        /// Construct from a C string.
+        Utf8(const char* utf8_) : value(utf8_) {}
 
+        /// Explicit copy assignment from a C string to avoid ambiguity in some cases.
+        Utf8& operator=(const char* utf8_) {
+            value = utf8_;
+            return *this;
+        }
+
+        /// Returns a pointer to the underlying C string.
         const char* c_str() const {
             return value.c_str();
         }
+
+        // END of extensions from utf8_ext.cpp, start of generated code:
 
       public:
         Utf8() = default;
@@ -47,7 +58,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::Utf8> {
-        static constexpr const char Name[] = "rerun.datatypes.Utf8";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.Utf8";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

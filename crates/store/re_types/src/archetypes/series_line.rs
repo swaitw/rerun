@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Archetype**: Define the style properties for a line series in a chart.
@@ -69,69 +69,103 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 ///   <img src="https://static.rerun.io/series_line_style/d2616d98b1e46bdb85849b8669154fdf058e3453/full.png" width="640">
 /// </picture>
 /// </center>
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SeriesLine {
     /// Color for the corresponding series.
-    pub color: Option<crate::components::Color>,
+    pub color: Option<SerializedComponentBatch>,
 
     /// Stroke width for the corresponding series.
-    pub width: Option<crate::components::StrokeWidth>,
+    pub width: Option<SerializedComponentBatch>,
 
     /// Display name of the series.
     ///
     /// Used in the legend.
-    pub name: Option<crate::components::Name>,
+    pub name: Option<SerializedComponentBatch>,
 
     /// Configures the zoom-dependent scalar aggregation.
     ///
     /// This is done only if steps on the X axis go below a single pixel,
     /// i.e. a single pixel covers more than one tick worth of data. It can greatly improve performance
     /// (and readability) in such situations as it prevents overdraw.
-    pub aggregation_policy: Option<crate::components::AggregationPolicy>,
+    pub aggregation_policy: Option<SerializedComponentBatch>,
 }
 
-impl ::re_types_core::SizeBytes for SeriesLine {
+impl SeriesLine {
+    /// Returns the [`ComponentDescriptor`] for [`Self::color`].
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.color.heap_size_bytes()
-            + self.width.heap_size_bytes()
-            + self.name.heap_size_bytes()
-            + self.aggregation_policy.heap_size_bytes()
+    pub fn descriptor_color() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.SeriesLine".into()),
+            component_name: "rerun.components.Color".into(),
+            archetype_field_name: Some("color".into()),
+        }
     }
 
+    /// Returns the [`ComponentDescriptor`] for [`Self::width`].
     #[inline]
-    fn is_pod() -> bool {
-        <Option<crate::components::Color>>::is_pod()
-            && <Option<crate::components::StrokeWidth>>::is_pod()
-            && <Option<crate::components::Name>>::is_pod()
-            && <Option<crate::components::AggregationPolicy>>::is_pod()
+    pub fn descriptor_width() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.SeriesLine".into()),
+            component_name: "rerun.components.StrokeWidth".into(),
+            archetype_field_name: Some("width".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::name`].
+    #[inline]
+    pub fn descriptor_name() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.SeriesLine".into()),
+            component_name: "rerun.components.Name".into(),
+            archetype_field_name: Some("name".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::aggregation_policy`].
+    #[inline]
+    pub fn descriptor_aggregation_policy() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.SeriesLine".into()),
+            component_name: "rerun.components.AggregationPolicy".into(),
+            archetype_field_name: Some("aggregation_policy".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for the associated indicator component.
+    #[inline]
+    pub fn descriptor_indicator() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.SeriesLine".into()),
+            component_name: "rerun.components.SeriesLineIndicator".into(),
+            archetype_field_name: None,
+        }
     }
 }
 
-static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 0usize]> =
+static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 0usize]> =
     once_cell::sync::Lazy::new(|| []);
 
-static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.components.SeriesLineIndicator".into()]);
+static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [SeriesLine::descriptor_indicator()]);
 
-static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 4usize]> =
+static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 4usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.Color".into(),
-            "rerun.components.StrokeWidth".into(),
-            "rerun.components.Name".into(),
-            "rerun.components.AggregationPolicy".into(),
+            SeriesLine::descriptor_color(),
+            SeriesLine::descriptor_width(),
+            SeriesLine::descriptor_name(),
+            SeriesLine::descriptor_aggregation_policy(),
         ]
     });
 
-static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 5usize]> =
+static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 5usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.SeriesLineIndicator".into(),
-            "rerun.components.Color".into(),
-            "rerun.components.StrokeWidth".into(),
-            "rerun.components.Name".into(),
-            "rerun.components.AggregationPolicy".into(),
+            SeriesLine::descriptor_indicator(),
+            SeriesLine::descriptor_color(),
+            SeriesLine::descriptor_width(),
+            SeriesLine::descriptor_name(),
+            SeriesLine::descriptor_aggregation_policy(),
         ]
     });
 
@@ -157,78 +191,52 @@ impl ::re_types_core::Archetype for SeriesLine {
     }
 
     #[inline]
-    fn indicator() -> MaybeOwnedComponentBatch<'static> {
-        static INDICATOR: SeriesLineIndicator = SeriesLineIndicator::DEFAULT;
-        MaybeOwnedComponentBatch::Ref(&INDICATOR)
+    fn indicator() -> SerializedComponentBatch {
+        #[allow(clippy::unwrap_used)]
+        SeriesLineIndicator::DEFAULT.serialized().unwrap()
     }
 
     #[inline]
-    fn required_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn required_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         REQUIRED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         RECOMMENDED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         OPTIONAL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn all_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn all_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         ALL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
     fn from_arrow_components(
-        arrow_data: impl IntoIterator<Item = (ComponentName, Box<dyn arrow2::array::Array>)>,
+        arrow_data: impl IntoIterator<Item = (ComponentDescriptor, arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self> {
         re_tracing::profile_function!();
         use ::re_types_core::{Loggable as _, ResultExt as _};
-        let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data
-            .into_iter()
-            .map(|(name, array)| (name.full_name(), array))
-            .collect();
-        let color = if let Some(array) = arrays_by_name.get("rerun.components.Color") {
-            <crate::components::Color>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.SeriesLine#color")?
-                .into_iter()
-                .next()
-                .flatten()
-        } else {
-            None
-        };
-        let width = if let Some(array) = arrays_by_name.get("rerun.components.StrokeWidth") {
-            <crate::components::StrokeWidth>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.SeriesLine#width")?
-                .into_iter()
-                .next()
-                .flatten()
-        } else {
-            None
-        };
-        let name = if let Some(array) = arrays_by_name.get("rerun.components.Name") {
-            <crate::components::Name>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.SeriesLine#name")?
-                .into_iter()
-                .next()
-                .flatten()
-        } else {
-            None
-        };
-        let aggregation_policy =
-            if let Some(array) = arrays_by_name.get("rerun.components.AggregationPolicy") {
-                <crate::components::AggregationPolicy>::from_arrow_opt(&**array)
-                    .with_context("rerun.archetypes.SeriesLine#aggregation_policy")?
-                    .into_iter()
-                    .next()
-                    .flatten()
-            } else {
-                None
-            };
+        let arrays_by_descr: ::nohash_hasher::IntMap<_, _> = arrow_data.into_iter().collect();
+        let color = arrays_by_descr
+            .get(&Self::descriptor_color())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_color()));
+        let width = arrays_by_descr
+            .get(&Self::descriptor_width())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_width()));
+        let name = arrays_by_descr
+            .get(&Self::descriptor_name())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_name()));
+        let aggregation_policy = arrays_by_descr
+            .get(&Self::descriptor_aggregation_policy())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_aggregation_policy())
+            });
         Ok(Self {
             color,
             width,
@@ -239,29 +247,23 @@ impl ::re_types_core::Archetype for SeriesLine {
 }
 
 impl ::re_types_core::AsComponents for SeriesLine {
-    fn as_component_batches(&self) -> Vec<MaybeOwnedComponentBatch<'_>> {
-        re_tracing::profile_function!();
+    #[inline]
+    fn as_serialized_batches(&self) -> Vec<SerializedComponentBatch> {
         use ::re_types_core::Archetype as _;
         [
             Some(Self::indicator()),
-            self.color
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.width
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.name
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.aggregation_policy
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
+            self.color.clone(),
+            self.width.clone(),
+            self.name.clone(),
+            self.aggregation_policy.clone(),
         ]
         .into_iter()
         .flatten()
         .collect()
     }
 }
+
+impl ::re_types_core::ArchetypeReflectionMarker for SeriesLine {}
 
 impl SeriesLine {
     /// Create a new `SeriesLine`.
@@ -275,17 +277,134 @@ impl SeriesLine {
         }
     }
 
+    /// Update only some specific fields of a `SeriesLine`.
+    #[inline]
+    pub fn update_fields() -> Self {
+        Self::default()
+    }
+
+    /// Clear all the fields of a `SeriesLine`.
+    #[inline]
+    pub fn clear_fields() -> Self {
+        use ::re_types_core::Loggable as _;
+        Self {
+            color: Some(SerializedComponentBatch::new(
+                crate::components::Color::arrow_empty(),
+                Self::descriptor_color(),
+            )),
+            width: Some(SerializedComponentBatch::new(
+                crate::components::StrokeWidth::arrow_empty(),
+                Self::descriptor_width(),
+            )),
+            name: Some(SerializedComponentBatch::new(
+                crate::components::Name::arrow_empty(),
+                Self::descriptor_name(),
+            )),
+            aggregation_policy: Some(SerializedComponentBatch::new(
+                crate::components::AggregationPolicy::arrow_empty(),
+                Self::descriptor_aggregation_policy(),
+            )),
+        }
+    }
+
+    /// Partitions the component data into multiple sub-batches.
+    ///
+    /// Specifically, this transforms the existing [`SerializedComponentBatch`]es data into [`SerializedComponentColumn`]s
+    /// instead, via [`SerializedComponentBatch::partitioned`].
+    ///
+    /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+    ///
+    /// The specified `lengths` must sum to the total length of the component batch.
+    ///
+    /// [`SerializedComponentColumn`]: [::re_types_core::SerializedComponentColumn]
+    #[inline]
+    pub fn columns<I>(
+        self,
+        _lengths: I,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>>
+    where
+        I: IntoIterator<Item = usize> + Clone,
+    {
+        let columns = [
+            self.color
+                .map(|color| color.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.width
+                .map(|width| width.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.name
+                .map(|name| name.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.aggregation_policy
+                .map(|aggregation_policy| aggregation_policy.partitioned(_lengths.clone()))
+                .transpose()?,
+        ];
+        Ok(columns
+            .into_iter()
+            .flatten()
+            .chain([::re_types_core::indicator_column::<Self>(
+                _lengths.into_iter().count(),
+            )?]))
+    }
+
+    /// Helper to partition the component data into unit-length sub-batches.
+    ///
+    /// This is semantically similar to calling [`Self::columns`] with `std::iter::take(1).repeat(n)`,
+    /// where `n` is automatically guessed.
+    #[inline]
+    pub fn columns_of_unit_batches(
+        self,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>> {
+        let len_color = self.color.as_ref().map(|b| b.array.len());
+        let len_width = self.width.as_ref().map(|b| b.array.len());
+        let len_name = self.name.as_ref().map(|b| b.array.len());
+        let len_aggregation_policy = self.aggregation_policy.as_ref().map(|b| b.array.len());
+        let len = None
+            .or(len_color)
+            .or(len_width)
+            .or(len_name)
+            .or(len_aggregation_policy)
+            .unwrap_or(0);
+        self.columns(std::iter::repeat(1).take(len))
+    }
+
     /// Color for the corresponding series.
     #[inline]
     pub fn with_color(mut self, color: impl Into<crate::components::Color>) -> Self {
-        self.color = Some(color.into());
+        self.color = try_serialize_field(Self::descriptor_color(), [color]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::Color`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_color`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_color(
+        mut self,
+        color: impl IntoIterator<Item = impl Into<crate::components::Color>>,
+    ) -> Self {
+        self.color = try_serialize_field(Self::descriptor_color(), color);
         self
     }
 
     /// Stroke width for the corresponding series.
     #[inline]
     pub fn with_width(mut self, width: impl Into<crate::components::StrokeWidth>) -> Self {
-        self.width = Some(width.into());
+        self.width = try_serialize_field(Self::descriptor_width(), [width]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::StrokeWidth`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_width`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_width(
+        mut self,
+        width: impl IntoIterator<Item = impl Into<crate::components::StrokeWidth>>,
+    ) -> Self {
+        self.width = try_serialize_field(Self::descriptor_width(), width);
         self
     }
 
@@ -294,7 +413,20 @@ impl SeriesLine {
     /// Used in the legend.
     #[inline]
     pub fn with_name(mut self, name: impl Into<crate::components::Name>) -> Self {
-        self.name = Some(name.into());
+        self.name = try_serialize_field(Self::descriptor_name(), [name]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::Name`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_name`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_name(
+        mut self,
+        name: impl IntoIterator<Item = impl Into<crate::components::Name>>,
+    ) -> Self {
+        self.name = try_serialize_field(Self::descriptor_name(), name);
         self
     }
 
@@ -308,7 +440,32 @@ impl SeriesLine {
         mut self,
         aggregation_policy: impl Into<crate::components::AggregationPolicy>,
     ) -> Self {
-        self.aggregation_policy = Some(aggregation_policy.into());
+        self.aggregation_policy =
+            try_serialize_field(Self::descriptor_aggregation_policy(), [aggregation_policy]);
         self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::AggregationPolicy`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_aggregation_policy`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_aggregation_policy(
+        mut self,
+        aggregation_policy: impl IntoIterator<Item = impl Into<crate::components::AggregationPolicy>>,
+    ) -> Self {
+        self.aggregation_policy =
+            try_serialize_field(Self::descriptor_aggregation_policy(), aggregation_policy);
+        self
+    }
+}
+
+impl ::re_byte_size::SizeBytes for SeriesLine {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.color.heap_size_bytes()
+            + self.width.heap_size_bytes()
+            + self.name.heap_size_bytes()
+            + self.aggregation_policy.heap_size_bytes()
     }
 }

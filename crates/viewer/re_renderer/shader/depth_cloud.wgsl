@@ -42,8 +42,8 @@ struct DepthCloudInfo {
     /// Point radius is calculated as world-space depth times this value.
     point_radius_from_world_depth: f32,
 
-    /// The maximum depth value in world-space, for use with the colormap.
-    max_depth_in_world: f32,
+    /// The minimum & maximum depth value in world-space, for use with the colormap.
+    min_max_depth_in_world: vec2f,
 
     /// Configures color mapping mode, see `colormap.wgsl`.
     colormap: u32,
@@ -120,7 +120,10 @@ fn compute_point_data(quad_idx: u32) -> PointData {
 
     if 0.0 < world_space_depth && world_space_depth < f32max {
         // TODO(cmc): albedo textures
-        let color = vec4f(colormap_linear(depth_cloud_info.colormap, world_space_depth / depth_cloud_info.max_depth_in_world), 1.0);
+        let normalized_depth =
+            (world_space_depth - depth_cloud_info.min_max_depth_in_world.x) /
+            (depth_cloud_info.min_max_depth_in_world.y - depth_cloud_info.min_max_depth_in_world.x);
+        let color = vec4f(colormap_linear(depth_cloud_info.colormap, normalized_depth), 1.0);
 
         // TODO(cmc): This assumes a pinhole camera; need to support other kinds at some point.
         let intrinsics = depth_cloud_info.depth_camera_intrinsics;
@@ -199,11 +202,10 @@ fn fs_main_picking_layer(in: VertexOut) -> @location(0) vec4u {
 
 @fragment
 fn fs_main_outline_mask(in: VertexOut) -> @location(0) vec2u {
-    // Output is an integer target, can't use coverage therefore.
-    // But we still want to discard fragments where coverage is low.
-    // Since the outline extends a bit, a very low cut off tends to look better.
+    // Output is an integer target so we can't use coverage even though
+    // the target is anti-aliased.
     let coverage = sphere_quad_coverage(in.pos_in_world, in.point_radius, in.point_pos_in_world);
-    if coverage < 1.0 {
+    if coverage <= 0.5 {
         discard;
     }
     return depth_cloud_info.outline_mask_id;

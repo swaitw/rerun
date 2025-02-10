@@ -4,11 +4,11 @@
 #pragma once
 
 #include "../collection.hpp"
-#include "../compiler_utils.hpp"
+#include "../component_batch.hpp"
+#include "../component_column.hpp"
 #include "../components/color.hpp"
 #include "../components/text.hpp"
 #include "../components/text_log_level.hpp"
-#include "../data_cell.hpp"
 #include "../indicator_component.hpp"
 #include "../result.hpp"
 
@@ -80,43 +80,119 @@ namespace rerun::archetypes {
     /// ```
     struct TextLog {
         /// The body of the message.
-        rerun::components::Text text;
+        std::optional<ComponentBatch> text;
 
         /// The verbosity level of the message.
         ///
         /// This can be used to filter the log messages in the Rerun Viewer.
-        std::optional<rerun::components::TextLogLevel> level;
+        std::optional<ComponentBatch> level;
 
         /// Optional color to use for the log line in the Rerun Viewer.
-        std::optional<rerun::components::Color> color;
+        std::optional<ComponentBatch> color;
 
       public:
         static constexpr const char IndicatorComponentName[] = "rerun.components.TextLogIndicator";
 
         /// Indicator component, used to identify the archetype when converting to a list of components.
         using IndicatorComponent = rerun::components::IndicatorComponent<IndicatorComponentName>;
+        /// The name of the archetype as used in `ComponentDescriptor`s.
+        static constexpr const char ArchetypeName[] = "rerun.archetypes.TextLog";
+
+        /// `ComponentDescriptor` for the `text` field.
+        static constexpr auto Descriptor_text = ComponentDescriptor(
+            ArchetypeName, "text", Loggable<rerun::components::Text>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `level` field.
+        static constexpr auto Descriptor_level = ComponentDescriptor(
+            ArchetypeName, "level",
+            Loggable<rerun::components::TextLogLevel>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `color` field.
+        static constexpr auto Descriptor_color = ComponentDescriptor(
+            ArchetypeName, "color", Loggable<rerun::components::Color>::Descriptor.component_name
+        );
 
       public:
         TextLog() = default;
         TextLog(TextLog&& other) = default;
+        TextLog(const TextLog& other) = default;
+        TextLog& operator=(const TextLog& other) = default;
+        TextLog& operator=(TextLog&& other) = default;
 
-        explicit TextLog(rerun::components::Text _text) : text(std::move(_text)) {}
+        explicit TextLog(rerun::components::Text _text)
+            : text(ComponentBatch::from_loggable(std::move(_text), Descriptor_text).value_or_throw()
+              ) {}
+
+        /// Update only some specific fields of a `TextLog`.
+        static TextLog update_fields() {
+            return TextLog();
+        }
+
+        /// Clear all the fields of a `TextLog`.
+        static TextLog clear_fields();
+
+        /// The body of the message.
+        TextLog with_text(const rerun::components::Text& _text) && {
+            text = ComponentBatch::from_loggable(_text, Descriptor_text).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `text` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_text` should
+        /// be used when logging a single row's worth of data.
+        TextLog with_many_text(const Collection<rerun::components::Text>& _text) && {
+            text = ComponentBatch::from_loggable(_text, Descriptor_text).value_or_throw();
+            return std::move(*this);
+        }
 
         /// The verbosity level of the message.
         ///
         /// This can be used to filter the log messages in the Rerun Viewer.
-        TextLog with_level(rerun::components::TextLogLevel _level) && {
-            level = std::move(_level);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        TextLog with_level(const rerun::components::TextLogLevel& _level) && {
+            level = ComponentBatch::from_loggable(_level, Descriptor_level).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `level` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_level` should
+        /// be used when logging a single row's worth of data.
+        TextLog with_many_level(const Collection<rerun::components::TextLogLevel>& _level) && {
+            level = ComponentBatch::from_loggable(_level, Descriptor_level).value_or_throw();
+            return std::move(*this);
         }
 
         /// Optional color to use for the log line in the Rerun Viewer.
-        TextLog with_color(rerun::components::Color _color) && {
-            color = std::move(_color);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        TextLog with_color(const rerun::components::Color& _color) && {
+            color = ComponentBatch::from_loggable(_color, Descriptor_color).value_or_throw();
+            return std::move(*this);
         }
+
+        /// This method makes it possible to pack multiple `color` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_color` should
+        /// be used when logging a single row's worth of data.
+        TextLog with_many_color(const Collection<rerun::components::Color>& _color) && {
+            color = ComponentBatch::from_loggable(_color, Descriptor_color).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// Partitions the component data into multiple sub-batches.
+        ///
+        /// Specifically, this transforms the existing `ComponentBatch` data into `ComponentColumn`s
+        /// instead, via `ComponentBatch::partitioned`.
+        ///
+        /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+        ///
+        /// The specified `lengths` must sum to the total length of the component batch.
+        Collection<ComponentColumn> columns(const Collection<uint32_t>& lengths_);
+
+        /// Partitions the component data into unit-length sub-batches.
+        ///
+        /// This is semantically similar to calling `columns` with `std::vector<uint32_t>(n, 1)`,
+        /// where `n` is automatically guessed.
+        Collection<ComponentColumn> columns();
     };
 
 } // namespace rerun::archetypes
@@ -130,6 +206,6 @@ namespace rerun {
     template <>
     struct AsComponents<archetypes::TextLog> {
         /// Serialize all set component batches.
-        static Result<std::vector<DataCell>> serialize(const archetypes::TextLog& archetype);
+        static Result<Collection<ComponentBatch>> as_batches(const archetypes::TextLog& archetype);
     };
 } // namespace rerun

@@ -204,7 +204,7 @@ impl PickingLayerProcessor {
             },
         );
 
-        let direct_depth_readback = ctx.config.device_caps.support_depth_readback();
+        let direct_depth_readback = ctx.device_caps().tier.support_depth_readback();
 
         let picking_depth_target = ctx.gpu_resources.textures.alloc(
             &ctx.device,
@@ -361,7 +361,7 @@ impl PickingLayerProcessor {
             encoder,
             &[
                 (
-                    wgpu::ImageCopyTexture {
+                    wgpu::TexelCopyTextureInfo {
                         texture: &self.picking_target.texture,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
@@ -370,7 +370,7 @@ impl PickingLayerProcessor {
                     extent,
                 ),
                 (
-                    wgpu::ImageCopyTexture {
+                    wgpu::TexelCopyTextureInfo {
                         texture: &readable_depth_texture.texture,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,

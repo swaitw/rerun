@@ -52,12 +52,16 @@ X = Fore.RESET
 def cargo(
     args: str,
     *,
+    cargo_version: str | None = None,
     cwd: str | Path | None = None,
     env: dict[str, Any] = {},
     dry_run: bool = False,
     capture: bool = False,
 ) -> Any:
-    cmd = [CARGO_PATH] + args.split()
+    if cargo_version is None:
+        cmd = [CARGO_PATH] + args.split()
+    else:
+        cmd = [CARGO_PATH, f"+{cargo_version}"] + args.split()
     # print(f"> {subprocess.list2cmdline(cmd)}")
     if not dry_run:
         stderr = subprocess.STDOUT if capture else None
@@ -152,6 +156,7 @@ def get_sorted_publishable_crates(ctx: Context, crates: dict[str, Crate]) -> dic
     ) -> None:
         crate = crates[name]
         for dependency in crate_deps(crate.manifest):
+            assert dependency.name != name, "Crate {name} had itself as a dependency"
             if dependency.name not in crates:
                 continue
             if dependency.name in visited:
@@ -428,7 +433,13 @@ def publish_crate(crate: Crate, token: str, version: str, env: dict[str, Any]) -
     retry_attempts = 5
     while True:
         try:
-            cargo(f"publish --quiet --token {token}", cwd=crate.path, env=env, dry_run=False, capture=True)
+            cargo(
+                f"publish --quiet --locked --token {token}",
+                cwd=crate.path,
+                env=env,
+                dry_run=False,
+                capture=True,
+            )
             print(f"{G}Published{X} {B}{name}{X}@{B}{version}{X}")
             break
         except subprocess.CalledProcessError as e:
@@ -467,8 +478,8 @@ def publish_unpublished_crates_in_parallel(all_crates: dict[str, Crate], version
         dependency_graph[name] = dependencies
 
     # walk the dependency graph in parallel and publish each crate
-    print("Publishing crates…")
-    env = {**os.environ.copy(), "RERUN_IS_PUBLISHING": "yes"}
+    print(f"Publishing {len(unpublished_crates)} crates…")
+    env = {**os.environ.copy(), "RERUN_IS_PUBLISHING_CRATES": "yes"}
     DAG(dependency_graph).walk_parallel(
         lambda name: publish_crate(unpublished_crates[name], token, version, env),  # noqa: E731
         # 30 tokens per minute (burst limit in crates.io)

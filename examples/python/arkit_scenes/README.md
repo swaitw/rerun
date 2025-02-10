@@ -52,10 +52,10 @@ rr.log(
         vertex_colors=mesh.visual.vertex_colors,
         triangle_indices=mesh.faces,
     ),
-    timeless=True,
+    static=True,
 )
 ```
-Here, the mesh is logged to the world/mesh entity and is marked as timeless, since it does not change in the context of this visualization.
+Here, the mesh is logged to the world/mesh entity and is marked as static, since it does not change in the context of this visualization.
 
 ### Logging 3D bounding boxes
 Here we loop through the data and add bounding boxes to all the items found.
@@ -66,11 +66,11 @@ for i, label_info in enumerate(annotation["data"]):
         rr.Boxes3D(
             half_sizes=half_size,
             centers=centroid,
-            rotations=rr.Quaternion(xyzw=rot.as_quat()),
             labels=label,
             colors=colors[i],
         ),
-        timeless=True,
+        rr.InstancePoses3D(mat3x3=mat3x3),
+        static=True,
     )
 ```
 

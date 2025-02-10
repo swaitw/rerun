@@ -42,7 +42,7 @@ impl<'a> PropertyContent<'a> {
 
     /// Set the minimum desired width for the entire content.
     ///
-    /// Since there is no possibly way to meaningfully collapse two to three columns worth of
+    /// Since there is no possible way to meaningfully collapse two to three columns worth of
     /// content, this is set to 200.0 by default.
     #[inline]
     pub fn min_desired_width(mut self, min_desired_width: f32) -> Self {
@@ -78,7 +78,7 @@ impl<'a> PropertyContent<'a> {
         // TODO(#6191): support multiple action buttons
         assert!(
             self.button.is_none(),
-            "Only one action button supported right now"
+            "Only one action button is supported right now"
         );
 
         self.button = Some(Box::new(button));
@@ -152,9 +152,14 @@ impl<'a> PropertyContent<'a> {
     /// Show a read-only boolean in the value column.
     #[inline]
     pub fn value_bool(self, mut b: bool) -> Self {
-        self.value_fn(move |ui: &mut Ui, _| {
-            ui.add_enabled_ui(false, |ui| ui.re_checkbox(&mut b, ""));
-        })
+        if true {
+            self.value_text(b.to_string())
+        } else {
+            // This is not readable, which is why it is disabled
+            self.value_fn(move |ui: &mut Ui, _| {
+                ui.add_enabled_ui(false, |ui| ui.re_checkbox(&mut b, ""));
+            })
+        }
     }
 
     /// Show an editable boolean in the value column.
@@ -336,10 +341,10 @@ impl ListItemContent for PropertyContent<'_> {
         };
         if let Some(value_fn) = value_fn {
             if should_show_value {
-                let mut child_ui = ui.child_ui(
-                    value_rect,
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    None,
+                let mut child_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(value_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 );
                 value_fn(&mut child_ui, visuals);
 
@@ -359,10 +364,10 @@ impl ListItemContent for PropertyContent<'_> {
 
             // the right to left layout is used to mimic LabelContent's buttons behavior and get a
             // better alignment
-            let mut child_ui = ui.child_ui(
-                action_button_rect,
-                egui::Layout::right_to_left(egui::Align::Center),
-                None,
+            let mut child_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(action_button_rect)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
             );
 
             button.ui(&mut child_ui);

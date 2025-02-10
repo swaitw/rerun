@@ -2,7 +2,7 @@
 //!
 //! On the left is a 2D view, on the right a 3D view of the same scene.
 
-// TODO(#3408): remove unwrap()
+// TODO(#6330): remove unwrap()
 #![allow(clippy::unwrap_used)]
 
 use itertools::Itertools as _;
@@ -13,7 +13,7 @@ use re_renderer::{
         ColormappedTexture, LineStripFlags, RectangleDrawData, RectangleOptions, TextureFilterMag,
         TextureFilterMin, TexturedRect,
     },
-    resource_managers::{GpuTexture2D, Texture2DCreationDesc},
+    resource_managers::{GpuTexture2D, ImageDataDesc},
     view_builder::{self, Projection, TargetConfiguration, ViewBuilder},
     Color32, LineDrawableBuilder, PointCloudBuilder, Size,
 };
@@ -40,13 +40,12 @@ impl framework::Example for Render2D {
         let rerun_logo_texture = re_ctx
             .texture_manager_2d
             .create(
-                &re_ctx.gpu_resources.textures,
-                &Texture2DCreationDesc {
+                re_ctx,
+                ImageDataDesc {
                     label: "rerun logo".into(),
                     data: image_data.into(),
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    width: rerun_logo.width(),
-                    height: rerun_logo.height(),
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb.into(),
+                    width_height: [rerun_logo.width(), rerun_logo.height()],
                 },
             )
             .expect("Failed to create texture for rerun logo");
@@ -64,7 +63,7 @@ impl framework::Example for Render2D {
         resolution: [u32; 2],
         time: &framework::Time,
         pixels_per_point: f32,
-    ) -> Vec<framework::ViewDrawResult> {
+    ) -> anyhow::Result<Vec<framework::ViewDrawResult>> {
         let splits = framework::split_resolution(resolution, 1, 2).collect::<Vec<_>>();
 
         let screen_size = glam::vec2(
@@ -247,8 +246,8 @@ impl framework::Example for Render2D {
                 .add_points_2d(&positions, &sizes, &colors, &picking_ids);
         }
 
-        let line_strip_draw_data = line_strip_builder.into_draw_data().unwrap();
-        let point_draw_data = point_cloud_builder.into_draw_data().unwrap();
+        let line_strip_draw_data = line_strip_builder.into_draw_data()?;
+        let point_draw_data = point_cloud_builder.into_draw_data()?;
 
         let image_scale = 4.0;
         let rectangle_draw_data = RectangleDrawData::new(
@@ -287,10 +286,9 @@ impl framework::Example for Render2D {
                     },
                 },
             ],
-        )
-        .unwrap();
+        )?;
 
-        vec![
+        Ok(vec![
             // 2D view to the left
             {
                 let mut view_builder = ViewBuilder::new(
@@ -363,7 +361,7 @@ impl framework::Example for Render2D {
                     target_location: splits[1].target_location,
                 }
             },
-        ]
+        ])
     }
 
     fn on_key_event(&mut self, _input: winit::event::KeyEvent) {}

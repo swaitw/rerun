@@ -1,29 +1,27 @@
 use ahash::HashMap;
 use egui_tiles::TileId;
 
-use re_chunk::{Chunk, LatestAtQuery, RowId};
+use re_chunk::LatestAtQuery;
 use re_entity_db::EntityDb;
-use re_log::ResultExt;
 use re_log_types::EntityPath;
-use re_types::components::Name;
-use re_types::{blueprint::components::Visible, Archetype as _};
-use re_types_blueprint::blueprint::archetypes as blueprint_archetypes;
-use re_types_blueprint::blueprint::components::{ContainerKind, GridColumns};
-use re_types_core::archetypes::Clear;
-use re_viewer_context::{
-    ContainerId, Contents, ContentsName, SpaceViewId, SystemCommand, SystemCommandSender as _,
-    ViewerContext,
+use re_types::blueprint::archetypes as blueprint_archetypes;
+use re_types::blueprint::components::{
+    ActiveTab, ColumnShare, ContainerKind, GridColumns, IncludedContent, RowShare,
 };
+use re_types::components::Name;
+use re_types::Loggable as _;
+use re_types::{blueprint::components::Visible, Archetype as _};
+use re_viewer_context::{ContainerId, Contents, ContentsName, ViewId, ViewerContext};
 
-/// The native version of a [`re_types_blueprint::blueprint::archetypes::ContainerBlueprint`].
+/// The native version of a [`re_types::blueprint::archetypes::ContainerBlueprint`].
 ///
 /// This represents a single container in the blueprint. On each frame, it is
 /// used to populate an [`egui_tiles::Container`]. Each child in `contents` can
-/// be either a [`SpaceViewId`] or another [`ContainerId`].
+/// be either a [`ViewId`] or another [`ContainerId`].
 ///
 /// The main reason this exists is to handle type conversions that aren't yet
 /// well handled by the code-generated archetypes.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ContainerBlueprint {
     pub id: ContainerId,
     pub container_kind: egui_tiles::ContainerKind,
@@ -36,7 +34,30 @@ pub struct ContainerBlueprint {
     pub grid_columns: Option<u32>,
 }
 
+impl Default for ContainerBlueprint {
+    fn default() -> Self {
+        Self {
+            id: ContainerId::random(),
+            container_kind: egui_tiles::ContainerKind::Grid,
+            display_name: None,
+            contents: vec![],
+            col_shares: vec![],
+            row_shares: vec![],
+            active_tab: None,
+            visible: true,
+            grid_columns: None,
+        }
+    }
+}
+
 impl ContainerBlueprint {
+    pub fn new(id: ContainerId) -> Self {
+        Self {
+            id,
+            ..Default::default()
+        }
+    }
+
     /// Attempt to load a [`ContainerBlueprint`] from the blueprint store.
     pub fn try_from_db(
         blueprint_db: &EntityDb,
@@ -47,40 +68,24 @@ impl ContainerBlueprint {
 
         // ----
 
-        let resolver = blueprint_db.resolver();
-        let results = blueprint_db.query_caches().latest_at(
-            blueprint_db.store(),
+        let results = blueprint_db.storage_engine().cache().latest_at(
             query,
             &id.as_entity_path(),
-            blueprint_archetypes::ContainerBlueprint::all_components()
-                .iter()
-                .copied(),
+            blueprint_archetypes::ContainerBlueprint::all_components().iter(),
         );
 
         // This is a required component. Note that when loading containers we crawl the subtree and so
         // cleared empty container paths may exist transiently. The fact that they have an empty container_kind
         // is the marker that the have been cleared and not an error.
-        let container_kind = results.get_instance::<ContainerKind>(resolver, 0)?;
+        let container_kind = results.component_instance::<ContainerKind>(0)?;
 
-        let blueprint_archetypes::ContainerBlueprint {
-            container_kind,
-            display_name,
-            contents,
-            col_shares,
-            row_shares,
-            active_tab,
-            visible,
-            grid_columns,
-        } = blueprint_archetypes::ContainerBlueprint {
-            container_kind,
-            display_name: results.get_instance(resolver, 0),
-            contents: results.get_vec(resolver),
-            col_shares: results.get_vec(resolver),
-            row_shares: results.get_vec(resolver),
-            active_tab: results.get_instance(resolver, 0),
-            visible: results.get_instance(resolver, 0),
-            grid_columns: results.get_instance(resolver, 0),
-        };
+        let display_name = results.component_instance::<Name>(0);
+        let contents = results.component_batch::<IncludedContent>();
+        let col_shares = results.component_batch::<ColumnShare>();
+        let row_shares = results.component_batch::<RowShare>();
+        let active_tab = results.component_instance::<ActiveTab>(0);
+        let visible = results.component_instance::<Visible>(0);
+        let grid_columns = results.component_instance::<GridColumns>(0);
 
         // ----
 
@@ -126,6 +131,24 @@ impl ContainerBlueprint {
         self.id.as_entity_path()
     }
 
+    pub fn add_child(&mut self, content: Contents) {
+        self.contents.push(content);
+        match self.container_kind {
+            egui_tiles::ContainerKind::Tabs => {
+                self.active_tab = self.active_tab.or(Some(content));
+            }
+            egui_tiles::ContainerKind::Horizontal => {
+                self.col_shares.push(1.0);
+            }
+            egui_tiles::ContainerKind::Vertical => {
+                self.row_shares.push(1.0);
+            }
+            egui_tiles::ContainerKind::Grid => {
+                // dunno
+            }
+        }
+    }
+
     /// Persist the entire [`ContainerBlueprint`] to the blueprint store.
     ///
     /// This only needs to be called if the [`ContainerBlueprint`] was created with [`Self::from_egui_tiles_container`].
@@ -133,8 +156,6 @@ impl ContainerBlueprint {
     /// Otherwise, incremental calls to `set_` functions will write just the necessary component
     /// update directly to the store.
     pub fn save_to_blueprint_store(&self, ctx: &ViewerContext<'_>) {
-        let timepoint = ctx.store_context.blueprint_timepoint_for_writes();
-
         let Self {
             id,
             container_kind,
@@ -150,12 +171,11 @@ impl ContainerBlueprint {
         let contents: Vec<_> = contents.iter().map(|item| item.as_entity_path()).collect();
 
         let container_kind = crate::container_kind_from_egui(*container_kind);
-        let mut arch =
-            re_types_blueprint::blueprint::archetypes::ContainerBlueprint::new(container_kind)
-                .with_contents(&contents)
-                .with_col_shares(col_shares.clone())
-                .with_row_shares(row_shares.clone())
-                .with_visible(*visible);
+        let mut arch = re_types::blueprint::archetypes::ContainerBlueprint::new(container_kind)
+            .with_contents(&contents)
+            .with_col_shares(col_shares.clone())
+            .with_row_shares(row_shares.clone())
+            .with_visible(*visible);
 
         // Note: it's important to _not_ clear the `Name` component if `display_name` is set to
         // `None`, as we call this function with `ContainerBlueprint` recreated from `egui_tiles`,
@@ -173,21 +193,13 @@ impl ContainerBlueprint {
         if let Some(cols) = grid_columns {
             arch = arch.with_grid_columns(*cols);
         } else {
-            // TODO(#3381): Archetypes should provide a convenience API for this
-            ctx.save_empty_blueprint_component::<GridColumns>(&id.as_entity_path());
+            arch.grid_columns = Some(re_types::SerializedComponentBatch::new(
+                re_types::blueprint::components::GridColumns::arrow_empty(),
+                re_types::blueprint::archetypes::ContainerBlueprint::descriptor_grid_columns(),
+            ));
         }
 
-        if let Some(chunk) = Chunk::builder(id.as_entity_path())
-            .with_archetype(RowId::new(), timepoint.clone(), &arch)
-            .build()
-            .warn_on_err_once("Failed to create container blueprint.")
-        {
-            ctx.command_sender
-                .send_system(SystemCommand::UpdateBlueprint(
-                    ctx.store_context.blueprint.store_id().clone(),
-                    vec![chunk],
-                ));
-        }
+        ctx.save_blueprint_archetype(&id.as_entity_path(), &arch);
     }
 
     /// Creates a new [`ContainerBlueprint`] from the given [`egui_tiles::Container`].
@@ -281,7 +293,7 @@ impl ContainerBlueprint {
         }
     }
 
-    /// Placeholder name displayed in the UI if the user hasn't explicitly named the space view.
+    /// Placeholder name displayed in the UI if the user hasn't explicitly named the view.
     #[inline]
     pub fn missing_name_placeholder(&self) -> String {
         format!("{:?}", self.container_kind)
@@ -336,13 +348,16 @@ impl ContainerBlueprint {
     }
 
     /// Clears the blueprint component for this container.
-    // TODO(jleibs): Should this be a recursive clear?
     pub fn clear(&self, ctx: &ViewerContext<'_>) {
-        let clear = Clear::recursive();
-        ctx.save_blueprint_component(&self.entity_path(), &clear.is_recursive);
+        // We can't delete the entity, because we need to support undo.
+        // TODO(#8249): configure blueprint GC to remove this entity if all that remains is the recursive clear.
+        ctx.save_blueprint_archetype(
+            &self.entity_path(),
+            &re_types::archetypes::Clear::recursive(),
+        );
     }
 
-    pub fn to_tile(&self) -> egui_tiles::Tile<SpaceViewId> {
+    pub fn to_tile(&self) -> egui_tiles::Tile<ViewId> {
         let children = self
             .contents
             .iter()

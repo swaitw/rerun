@@ -2,10 +2,13 @@ mod drag_and_drop;
 mod hierarchical_drag_and_drop;
 mod right_panel;
 
+use egui::Modifiers;
+use re_ui::filter_widget::format_matching_text;
 use re_ui::{
-    list_item, toasts, CommandPalette, ContextExt as _, DesignTokens, UICommand, UICommandSender,
-    UiExt as _,
+    filter_widget::FilterState, list_item, CommandPalette, ContextExt as _, DesignTokens, Help,
+    ModifiersText, UICommand, UICommandSender, UiExt as _,
 };
+use re_ui::{icon_text, icons, notifications};
 
 /// Sender that queues up the execution of a command.
 pub struct CommandSender(std::sync::mpsc::Sender<UICommand>);
@@ -50,9 +53,6 @@ fn main() -> eframe::Result {
             .with_titlebar_shown(!re_ui::FULLSIZE_CONTENT)
             .with_transparent(re_ui::CUSTOM_WINDOW_DECORATIONS), // To have rounded corners without decorations we need transparency
 
-        follow_system_theme: false,
-        default_theme: eframe::Theme::Dark,
-
         ..Default::default()
     };
 
@@ -67,7 +67,7 @@ fn main() -> eframe::Result {
 }
 
 pub struct ExampleApp {
-    toasts: toasts::Toasts,
+    notifications: notifications::NotificationUi,
 
     /// Listens to the local text log stream
     text_log_rx: std::sync::mpsc::Receiver<re_log::LogMsg>,
@@ -88,6 +88,8 @@ pub struct ExampleApp {
 
     dummy_bool: bool,
 
+    filter_state: FilterState,
+
     cmd_palette: CommandPalette,
 
     /// Commands to run at the end of the frame.
@@ -106,7 +108,7 @@ impl ExampleApp {
         let (command_sender, command_receiver) = command_channel();
 
         Self {
-            toasts: Default::default(),
+            notifications: Default::default(),
             text_log_rx,
 
             tree,
@@ -121,6 +123,8 @@ impl ExampleApp {
 
             dummy_bool: true,
 
+            filter_state: FilterState::default(),
+
             cmd_palette: CommandPalette::default(),
             command_sender,
             command_receiver,
@@ -130,26 +134,8 @@ impl ExampleApp {
 
     /// Show recent text log messages to the user as toast notifications.
     fn show_text_logs_as_notifications(&mut self) {
-        while let Ok(re_log::LogMsg {
-            level,
-            target: _,
-            msg,
-        }) = self.text_log_rx.try_recv()
-        {
-            let kind = match level {
-                re_log::Level::Error => toasts::ToastKind::Error,
-                re_log::Level::Warn => toasts::ToastKind::Warning,
-                re_log::Level::Info => toasts::ToastKind::Info,
-                re_log::Level::Debug | re_log::Level::Trace => {
-                    continue; // too spammy
-                }
-            };
-
-            self.toasts.add(toasts::Toast {
-                kind,
-                text: msg,
-                options: toasts::ToastOptions::with_ttl_in_seconds(4.0),
-            });
+        while let Ok(message) = self.text_log_rx.try_recv() {
+            self.notifications.add_log(message);
         }
     }
 }
@@ -161,7 +147,6 @@ impl eframe::App for ExampleApp {
 
     fn update(&mut self, egui_ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.show_text_logs_as_notifications();
-        self.toasts.show(egui_ctx);
 
         self.top_bar(egui_ctx);
 
@@ -177,29 +162,29 @@ impl eframe::App for ExampleApp {
         let left_panel_top_section_ui = |ui: &mut egui::Ui| {
             ui.horizontal_centered(|ui| {
                 ui.strong("Left bar");
-            });
 
-            if ui.button("Log info").clicked() {
-                re_log::info!(
-                    "A lot of text on info level.\nA lot of text in fact. So \
+                if ui.button("Log info").clicked() {
+                    re_log::info!(
+                        "A lot of text on info level.\nA lot of text in fact. So \
                              much that we should ideally be auto-wrapping it at some point, much \
                              earlier than this."
-                );
-            }
-            if ui.button("Log warn").clicked() {
-                re_log::warn!(
-                    "A lot of text on warn level.\nA lot of text in fact. So \
-                            much that we should ideally be auto-wrapping it at some point, much \
-                            earlier than this."
-                );
-            }
-            if ui.button("Log error").clicked() {
-                re_log::error!(
-                    "A lot of text on error level.\nA lot of text in fact. \
+                    );
+                }
+                if ui.button("Log warn").clicked() {
+                    re_log::warn!(
+                        "A lot of text on warn level.\nA lot of text in fact."
+                    );
+                }
+                if ui.button("Log error").clicked() {
+                    re_log::error!(
+                        "A lot of text on error level.\nA lot of text in fact. \
                             So much that we should ideally be auto-wrapping it at some point, much \
-                            earlier than this."
-                );
-            }
+                            earlier than this. Lorem ipsum sit dolor amet. Lorem ipsum sit dolor amet. \
+                            Lorem ipsum sit dolor amet. Lorem ipsum sit dolor amet. Lorem ipsum sit dolor amet. \
+                            Lorem ipsum sit dolor amet."
+                    );
+                }
+            });
         };
 
         // bottom section closure
@@ -210,6 +195,11 @@ impl eframe::App for ExampleApp {
             });
             ui.label(format!("Latest command: {}", self.latest_cmd));
 
+            ui.selectable_toggle(|ui| {
+                ui.selectable_value(&mut self.dummy_bool, false, "Inactive");
+                ui.selectable_value(&mut self.dummy_bool, true, "Active");
+            });
+
             // ---
 
             if ui.button("Open modal").clicked() {
@@ -218,7 +208,7 @@ impl eframe::App for ExampleApp {
 
             self.modal_handler.ui(
                 ui.ctx(),
-                || re_ui::modal::Modal::new("Modal window"),
+                || re_ui::modal::ModalWrapper::new("Modal window"),
                 |ui, _| ui.label("This is a modal window."),
             );
 
@@ -230,7 +220,7 @@ impl eframe::App for ExampleApp {
 
             self.full_span_modal_handler.ui(
                 ui.ctx(),
-                || re_ui::modal::Modal::new("Modal window").full_span_content(true),
+                || re_ui::modal::ModalWrapper::new("Modal window").full_span_content(true),
                 |ui, _| {
                     list_item::list_item_scope(ui, "modal demo", |ui| {
                         for idx in 0..10 {
@@ -260,6 +250,34 @@ impl eframe::App for ExampleApp {
                     ui.re_checkbox(&mut self.dummy_bool, "Checkbox");
                 });
             });
+
+            //TODO(ab): this demo could be slightly more interesting.
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+
+                ui.full_span_separator();
+                self.filter_state
+                    .ui(ui, egui::RichText::new("Filter demo").strong());
+                ui.full_span_separator();
+
+                let names = vec![
+                    "Andreas", "Antoine", "Clement", "Emil", "Jan", "Jeremy", "Jochen", "Katya",
+                    "Moritz", "Niko", "Zeljko",
+                ];
+
+                let filter = self.filter_state.filter();
+                for name in names {
+                    if let Some(mut hierarchy_ranges) = filter.match_path([name]) {
+                        let widget_text = format_matching_text(
+                            ui.ctx(),
+                            name,
+                            hierarchy_ranges.remove(0).into_iter().flatten(),
+                            None,
+                        );
+                        ui.list_item_flat_noninteractive(list_item::LabelContent::new(widget_text));
+                    }
+                }
+            });
         };
 
         // UI code
@@ -270,26 +288,34 @@ impl eframe::App for ExampleApp {
                 ..Default::default()
             })
             .show_animated(egui_ctx, self.show_left_panel, |ui| {
-                egui::TopBottomPanel::top("left_panel_top_bar")
-                    .exact_height(re_ui::DesignTokens::title_bar_height())
-                    .frame(egui::Frame {
-                        inner_margin: egui::Margin::symmetric(
-                            re_ui::DesignTokens::view_padding(),
-                            0.0,
-                        ),
-                        ..Default::default()
-                    })
-                    .show_inside(ui, left_panel_top_section_ui);
+                let y_spacing = ui.spacing().item_spacing.y;
 
-                egui::ScrollArea::both()
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        egui::Frame {
-                            inner_margin: egui::Margin::same(re_ui::DesignTokens::view_padding()),
+                list_item::list_item_scope(ui, "left_panel", |ui| {
+                    // revert change by `list_item_scope`
+                    ui.spacing_mut().item_spacing.y = y_spacing;
+                    egui::TopBottomPanel::top("left_panel_top_bar")
+                        .exact_height(re_ui::DesignTokens::title_bar_height())
+                        .frame(egui::Frame {
+                            inner_margin: egui::Margin::symmetric(
+                                re_ui::DesignTokens::view_padding(),
+                                0,
+                            ),
                             ..Default::default()
-                        }
-                        .show(ui, left_panel_bottom_section_ui);
-                    });
+                        })
+                        .show_inside(ui, left_panel_top_section_ui);
+
+                    egui::ScrollArea::both()
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            egui::Frame {
+                                inner_margin: egui::Margin::same(
+                                    re_ui::DesignTokens::view_padding(),
+                                ),
+                                ..Default::default()
+                            }
+                            .show(ui, left_panel_bottom_section_ui);
+                        });
+                });
             });
 
         // RIGHT PANEL
@@ -421,6 +447,8 @@ impl ExampleApp {
                 &re_ui::icons::LEFT_PANEL_TOGGLE,
                 &mut self.show_left_panel,
             );
+
+            notifications::notification_toggle_button(ui, &mut self.notifications);
         });
     }
 }
@@ -447,14 +475,35 @@ impl egui_tiles::Behavior<Tab> for MyTileTreeBehavior {
         _tile_id: egui_tiles::TileId,
         _pane: &mut Tab,
     ) -> egui_tiles::UiResponse {
-        egui::warn_if_debug_build(ui);
-        ui.label("Hover me for a tooltip")
-            .on_hover_text("This is a tooltip");
+        egui::Frame::new().inner_margin(4.0).show(ui, |ui| {
+            egui::warn_if_debug_build(ui);
+            ui.label("Hover me for a tooltip")
+                .on_hover_text("This is a tooltip");
 
-        ui.label(
-            egui::RichText::new("Welcome to the ReUi example")
-                .text_style(DesignTokens::welcome_screen_h1()),
-        );
+            ui.label("Help").on_hover_ui(|ui| {
+                Help::new("Help example")
+                    .docs_link("https://rerun.io/docs/reference/types/views/map_view")
+                    .control("Pan", icon_text!(icons::LEFT_MOUSE_CLICK, "+ drag"))
+                    .control(
+                        "Zoom",
+                        icon_text!(
+                            ModifiersText(Modifiers::COMMAND, ui.ctx()),
+                            "+",
+                            icons::SCROLL
+                        ),
+                    )
+                    .control("Reset view", icon_text!("double", icons::LEFT_MOUSE_CLICK))
+                    .ui(ui);
+            });
+
+            ui.label(
+                egui::RichText::new("Welcome to the ReUi example")
+                    .text_style(DesignTokens::welcome_screen_h1()),
+            );
+
+            ui.error_label("This is an example of a long error label.");
+            ui.warning_label("This is an example of a long warning label.");
+        });
 
         Default::default()
     }

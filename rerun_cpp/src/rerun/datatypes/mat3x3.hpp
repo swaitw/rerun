@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../rerun_sdk_export.hpp"
 #include "../result.hpp"
 #include "vec3d.hpp"
@@ -32,10 +33,9 @@ namespace rerun::datatypes {
         /// Flat list of matrix coefficients in column-major order.
         std::array<float, 9> flat_columns;
 
-      public:
-        // Extensions to generated type defined in 'mat3x3_ext.cpp'
-
+      public: // START of extensions from mat3x3_ext.cpp:
         static const Mat3x3 IDENTITY;
+        static const Mat3x3 INVALID;
 
         /// Creates a new 3x3 matrix from 3 *columns* of 3 elements each.
         Mat3x3(const Vec3D (&columns)[3])
@@ -65,6 +65,8 @@ namespace rerun::datatypes {
                   elements[8],
               } {}
 
+        // END of extensions from mat3x3_ext.cpp, start of generated code:
+
       public:
         Mat3x3() = default;
 
@@ -84,7 +86,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::Mat3x3> {
-        static constexpr const char Name[] = "rerun.datatypes.Mat3x3";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.Mat3x3";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

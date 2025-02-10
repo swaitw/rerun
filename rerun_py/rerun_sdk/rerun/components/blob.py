@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["Blob", "BlobBatch", "BlobType"]
+__all__ = ["Blob", "BlobBatch"]
 
 
 class Blob(datatypes.Blob, ComponentMixin):
@@ -24,12 +25,8 @@ class Blob(datatypes.Blob, ComponentMixin):
     pass
 
 
-class BlobType(datatypes.BlobType):
-    _TYPE_NAME: str = "rerun.components.Blob"
-
-
 class BlobBatch(datatypes.BlobBatch, ComponentBatchMixin):
-    _ARROW_TYPE = BlobType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.Blob")
 
 
 # This is patched in late to avoid circular dependencies.

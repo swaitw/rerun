@@ -12,17 +12,17 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Archetype**: 2D line strips with positions and optional colors, radii, labels, etc.
 ///
 /// ## Examples
 ///
-/// ### `line_strip2d_batch`:
+/// ### `line_strips2d_batch`:
 /// ```ignore
 /// fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let rec = rerun::RecordingStreamBuilder::new("rerun_example_line_strip2d_batch").spawn()?;
@@ -45,24 +45,24 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 /// ```
 /// <center>
 /// <picture>
-///   <source media="(max-width: 480px)" srcset="https://static.rerun.io/line_strip2d_batch/d8aae7ca3d6c3b0e3b636de60b8067fa2f0b6db9/480w.png">
-///   <source media="(max-width: 768px)" srcset="https://static.rerun.io/line_strip2d_batch/d8aae7ca3d6c3b0e3b636de60b8067fa2f0b6db9/768w.png">
-///   <source media="(max-width: 1024px)" srcset="https://static.rerun.io/line_strip2d_batch/d8aae7ca3d6c3b0e3b636de60b8067fa2f0b6db9/1024w.png">
-///   <source media="(max-width: 1200px)" srcset="https://static.rerun.io/line_strip2d_batch/d8aae7ca3d6c3b0e3b636de60b8067fa2f0b6db9/1200w.png">
-///   <img src="https://static.rerun.io/line_strip2d_batch/d8aae7ca3d6c3b0e3b636de60b8067fa2f0b6db9/full.png" width="640">
+///   <source media="(max-width: 480px)" srcset="https://static.rerun.io/line_strip2d_batch/c6f4062bcf510462d298a5dfe9fdbe87c754acee/480w.png">
+///   <source media="(max-width: 768px)" srcset="https://static.rerun.io/line_strip2d_batch/c6f4062bcf510462d298a5dfe9fdbe87c754acee/768w.png">
+///   <source media="(max-width: 1024px)" srcset="https://static.rerun.io/line_strip2d_batch/c6f4062bcf510462d298a5dfe9fdbe87c754acee/1024w.png">
+///   <source media="(max-width: 1200px)" srcset="https://static.rerun.io/line_strip2d_batch/c6f4062bcf510462d298a5dfe9fdbe87c754acee/1200w.png">
+///   <img src="https://static.rerun.io/line_strip2d_batch/c6f4062bcf510462d298a5dfe9fdbe87c754acee/full.png" width="640">
 /// </picture>
 /// </center>
 ///
 /// ### Lines with scene & UI radius each
 /// ```ignore
 /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let rec = rerun::RecordingStreamBuilder::new("rerun_example_line_strip3d_ui_radius").spawn()?;
+///     let rec = rerun::RecordingStreamBuilder::new("rerun_example_line_strip2d_ui_radius").spawn()?;
 ///
 ///     // A blue line with a scene unit radii of 0.01.
-///     let points = [[0., 0., 0.], [0., 0., 1.], [1., 0., 0.], [1., 0., 1.]];
+///     let points = [[0., 0.], [0., 1.], [1., 0.], [1., 1.]];
 ///     rec.log(
 ///         "scene_unit_line",
-///         &rerun::LineStrips3D::new([points])
+///         &rerun::LineStrips2D::new([points])
 ///             // By default, radii are interpreted as world-space units.
 ///             .with_radii([0.01])
 ///             .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
@@ -71,105 +71,172 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 ///     // A red line with a ui point radii of 5.
 ///     // UI points are independent of zooming in Views, but are sensitive to the application UI scaling.
 ///     // For 100 % ui scaling, UI points are equal to pixels.
-///     let points = [[3., 0., 0.], [3., 0., 1.], [4., 0., 0.], [4., 0., 1.]];
+///     let points = [[3., 0.], [3., 1.], [4., 0.], [4., 1.]];
 ///     rec.log(
 ///         "ui_points_line",
-///         &rerun::LineStrips3D::new([points])
+///         &rerun::LineStrips2D::new([points])
 ///             // rerun::Radius::new_ui_points produces a radius that the viewer interprets as given in ui points.
 ///             .with_radii([rerun::Radius::new_ui_points(5.0)])
 ///             .with_colors([rerun::Color::from_rgb(255, 0, 0)]),
 ///     )?;
 ///
+///     // TODO(#5520): log VisualBounds2D
+///
 ///     Ok(())
 /// }
 /// ```
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct LineStrips2D {
     /// All the actual 2D line strips that make up the batch.
-    pub strips: Vec<crate::components::LineStrip2D>,
+    pub strips: Option<SerializedComponentBatch>,
 
     /// Optional radii for the line strips.
-    pub radii: Option<Vec<crate::components::Radius>>,
+    pub radii: Option<SerializedComponentBatch>,
 
     /// Optional colors for the line strips.
-    pub colors: Option<Vec<crate::components::Color>>,
+    pub colors: Option<SerializedComponentBatch>,
 
     /// Optional text labels for the line strips.
     ///
     /// If there's a single label present, it will be placed at the center of the entity.
     /// Otherwise, each instance will have its own label.
-    pub labels: Option<Vec<crate::components::Text>>,
+    pub labels: Option<SerializedComponentBatch>,
+
+    /// Optional choice of whether the text labels should be shown by default.
+    pub show_labels: Option<SerializedComponentBatch>,
 
     /// An optional floating point value that specifies the 2D drawing order of each line strip.
     ///
     /// Objects with higher values are drawn on top of those with lower values.
-    pub draw_order: Option<crate::components::DrawOrder>,
+    pub draw_order: Option<SerializedComponentBatch>,
 
     /// Optional [`components::ClassId`][crate::components::ClassId]s for the lines.
     ///
     /// The [`components::ClassId`][crate::components::ClassId] provides colors and labels if not specified explicitly.
-    pub class_ids: Option<Vec<crate::components::ClassId>>,
+    pub class_ids: Option<SerializedComponentBatch>,
 }
 
-impl ::re_types_core::SizeBytes for LineStrips2D {
+impl LineStrips2D {
+    /// Returns the [`ComponentDescriptor`] for [`Self::strips`].
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.strips.heap_size_bytes()
-            + self.radii.heap_size_bytes()
-            + self.colors.heap_size_bytes()
-            + self.labels.heap_size_bytes()
-            + self.draw_order.heap_size_bytes()
-            + self.class_ids.heap_size_bytes()
+    pub fn descriptor_strips() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.LineStrips2D".into()),
+            component_name: "rerun.components.LineStrip2D".into(),
+            archetype_field_name: Some("strips".into()),
+        }
     }
 
+    /// Returns the [`ComponentDescriptor`] for [`Self::radii`].
     #[inline]
-    fn is_pod() -> bool {
-        <Vec<crate::components::LineStrip2D>>::is_pod()
-            && <Option<Vec<crate::components::Radius>>>::is_pod()
-            && <Option<Vec<crate::components::Color>>>::is_pod()
-            && <Option<Vec<crate::components::Text>>>::is_pod()
-            && <Option<crate::components::DrawOrder>>::is_pod()
-            && <Option<Vec<crate::components::ClassId>>>::is_pod()
+    pub fn descriptor_radii() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.LineStrips2D".into()),
+            component_name: "rerun.components.Radius".into(),
+            archetype_field_name: Some("radii".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::colors`].
+    #[inline]
+    pub fn descriptor_colors() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.LineStrips2D".into()),
+            component_name: "rerun.components.Color".into(),
+            archetype_field_name: Some("colors".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::labels`].
+    #[inline]
+    pub fn descriptor_labels() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.LineStrips2D".into()),
+            component_name: "rerun.components.Text".into(),
+            archetype_field_name: Some("labels".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::show_labels`].
+    #[inline]
+    pub fn descriptor_show_labels() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.LineStrips2D".into()),
+            component_name: "rerun.components.ShowLabels".into(),
+            archetype_field_name: Some("show_labels".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::draw_order`].
+    #[inline]
+    pub fn descriptor_draw_order() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.LineStrips2D".into()),
+            component_name: "rerun.components.DrawOrder".into(),
+            archetype_field_name: Some("draw_order".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::class_ids`].
+    #[inline]
+    pub fn descriptor_class_ids() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.LineStrips2D".into()),
+            component_name: "rerun.components.ClassId".into(),
+            archetype_field_name: Some("class_ids".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for the associated indicator component.
+    #[inline]
+    pub fn descriptor_indicator() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.LineStrips2D".into()),
+            component_name: "rerun.components.LineStrips2DIndicator".into(),
+            archetype_field_name: None,
+        }
     }
 }
 
-static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.components.LineStrip2D".into()]);
+static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [LineStrips2D::descriptor_strips()]);
 
-static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 3usize]> =
+static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 3usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.Radius".into(),
-            "rerun.components.Color".into(),
-            "rerun.components.LineStrips2DIndicator".into(),
+            LineStrips2D::descriptor_radii(),
+            LineStrips2D::descriptor_colors(),
+            LineStrips2D::descriptor_indicator(),
         ]
     });
 
-static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 3usize]> =
+static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 4usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.Text".into(),
-            "rerun.components.DrawOrder".into(),
-            "rerun.components.ClassId".into(),
+            LineStrips2D::descriptor_labels(),
+            LineStrips2D::descriptor_show_labels(),
+            LineStrips2D::descriptor_draw_order(),
+            LineStrips2D::descriptor_class_ids(),
         ]
     });
 
-static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 7usize]> =
+static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 8usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.LineStrip2D".into(),
-            "rerun.components.Radius".into(),
-            "rerun.components.Color".into(),
-            "rerun.components.LineStrips2DIndicator".into(),
-            "rerun.components.Text".into(),
-            "rerun.components.DrawOrder".into(),
-            "rerun.components.ClassId".into(),
+            LineStrips2D::descriptor_strips(),
+            LineStrips2D::descriptor_radii(),
+            LineStrips2D::descriptor_colors(),
+            LineStrips2D::descriptor_indicator(),
+            LineStrips2D::descriptor_labels(),
+            LineStrips2D::descriptor_show_labels(),
+            LineStrips2D::descriptor_draw_order(),
+            LineStrips2D::descriptor_class_ids(),
         ]
     });
 
 impl LineStrips2D {
-    /// The total number of components in the archetype: 1 required, 3 recommended, 3 optional
-    pub const NUM_COMPONENTS: usize = 7usize;
+    /// The total number of components in the archetype: 1 required, 3 recommended, 4 optional
+    pub const NUM_COMPONENTS: usize = 8usize;
 }
 
 /// Indicator component for the [`LineStrips2D`] [`::re_types_core::Archetype`]
@@ -189,115 +256,71 @@ impl ::re_types_core::Archetype for LineStrips2D {
     }
 
     #[inline]
-    fn indicator() -> MaybeOwnedComponentBatch<'static> {
-        static INDICATOR: LineStrips2DIndicator = LineStrips2DIndicator::DEFAULT;
-        MaybeOwnedComponentBatch::Ref(&INDICATOR)
+    fn indicator() -> SerializedComponentBatch {
+        #[allow(clippy::unwrap_used)]
+        LineStrips2DIndicator::DEFAULT.serialized().unwrap()
     }
 
     #[inline]
-    fn required_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn required_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         REQUIRED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         RECOMMENDED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         OPTIONAL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn all_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn all_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         ALL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
     fn from_arrow_components(
-        arrow_data: impl IntoIterator<Item = (ComponentName, Box<dyn arrow2::array::Array>)>,
+        arrow_data: impl IntoIterator<Item = (ComponentDescriptor, arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self> {
         re_tracing::profile_function!();
         use ::re_types_core::{Loggable as _, ResultExt as _};
-        let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data
-            .into_iter()
-            .map(|(name, array)| (name.full_name(), array))
-            .collect();
-        let strips = {
-            let array = arrays_by_name
-                .get("rerun.components.LineStrip2D")
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.LineStrips2D#strips")?;
-            <crate::components::LineStrip2D>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.LineStrips2D#strips")?
-                .into_iter()
-                .map(|v| v.ok_or_else(DeserializationError::missing_data))
-                .collect::<DeserializationResult<Vec<_>>>()
-                .with_context("rerun.archetypes.LineStrips2D#strips")?
-        };
-        let radii = if let Some(array) = arrays_by_name.get("rerun.components.Radius") {
-            Some({
-                <crate::components::Radius>::from_arrow_opt(&**array)
-                    .with_context("rerun.archetypes.LineStrips2D#radii")?
-                    .into_iter()
-                    .map(|v| v.ok_or_else(DeserializationError::missing_data))
-                    .collect::<DeserializationResult<Vec<_>>>()
-                    .with_context("rerun.archetypes.LineStrips2D#radii")?
-            })
-        } else {
-            None
-        };
-        let colors = if let Some(array) = arrays_by_name.get("rerun.components.Color") {
-            Some({
-                <crate::components::Color>::from_arrow_opt(&**array)
-                    .with_context("rerun.archetypes.LineStrips2D#colors")?
-                    .into_iter()
-                    .map(|v| v.ok_or_else(DeserializationError::missing_data))
-                    .collect::<DeserializationResult<Vec<_>>>()
-                    .with_context("rerun.archetypes.LineStrips2D#colors")?
-            })
-        } else {
-            None
-        };
-        let labels = if let Some(array) = arrays_by_name.get("rerun.components.Text") {
-            Some({
-                <crate::components::Text>::from_arrow_opt(&**array)
-                    .with_context("rerun.archetypes.LineStrips2D#labels")?
-                    .into_iter()
-                    .map(|v| v.ok_or_else(DeserializationError::missing_data))
-                    .collect::<DeserializationResult<Vec<_>>>()
-                    .with_context("rerun.archetypes.LineStrips2D#labels")?
-            })
-        } else {
-            None
-        };
-        let draw_order = if let Some(array) = arrays_by_name.get("rerun.components.DrawOrder") {
-            <crate::components::DrawOrder>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.LineStrips2D#draw_order")?
-                .into_iter()
-                .next()
-                .flatten()
-        } else {
-            None
-        };
-        let class_ids = if let Some(array) = arrays_by_name.get("rerun.components.ClassId") {
-            Some({
-                <crate::components::ClassId>::from_arrow_opt(&**array)
-                    .with_context("rerun.archetypes.LineStrips2D#class_ids")?
-                    .into_iter()
-                    .map(|v| v.ok_or_else(DeserializationError::missing_data))
-                    .collect::<DeserializationResult<Vec<_>>>()
-                    .with_context("rerun.archetypes.LineStrips2D#class_ids")?
-            })
-        } else {
-            None
-        };
+        let arrays_by_descr: ::nohash_hasher::IntMap<_, _> = arrow_data.into_iter().collect();
+        let strips = arrays_by_descr
+            .get(&Self::descriptor_strips())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_strips()));
+        let radii = arrays_by_descr
+            .get(&Self::descriptor_radii())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_radii()));
+        let colors = arrays_by_descr
+            .get(&Self::descriptor_colors())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_colors()));
+        let labels = arrays_by_descr
+            .get(&Self::descriptor_labels())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_labels()));
+        let show_labels = arrays_by_descr
+            .get(&Self::descriptor_show_labels())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_show_labels())
+            });
+        let draw_order = arrays_by_descr
+            .get(&Self::descriptor_draw_order())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_draw_order())
+            });
+        let class_ids = arrays_by_descr
+            .get(&Self::descriptor_class_ids())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_class_ids())
+            });
         Ok(Self {
             strips,
             radii,
             colors,
             labels,
+            show_labels,
             draw_order,
             class_ids,
         })
@@ -305,33 +328,26 @@ impl ::re_types_core::Archetype for LineStrips2D {
 }
 
 impl ::re_types_core::AsComponents for LineStrips2D {
-    fn as_component_batches(&self) -> Vec<MaybeOwnedComponentBatch<'_>> {
-        re_tracing::profile_function!();
+    #[inline]
+    fn as_serialized_batches(&self) -> Vec<SerializedComponentBatch> {
         use ::re_types_core::Archetype as _;
         [
             Some(Self::indicator()),
-            Some((&self.strips as &dyn ComponentBatch).into()),
-            self.radii
-                .as_ref()
-                .map(|comp_batch| (comp_batch as &dyn ComponentBatch).into()),
-            self.colors
-                .as_ref()
-                .map(|comp_batch| (comp_batch as &dyn ComponentBatch).into()),
-            self.labels
-                .as_ref()
-                .map(|comp_batch| (comp_batch as &dyn ComponentBatch).into()),
-            self.draw_order
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.class_ids
-                .as_ref()
-                .map(|comp_batch| (comp_batch as &dyn ComponentBatch).into()),
+            self.strips.clone(),
+            self.radii.clone(),
+            self.colors.clone(),
+            self.labels.clone(),
+            self.show_labels.clone(),
+            self.draw_order.clone(),
+            self.class_ids.clone(),
         ]
         .into_iter()
         .flatten()
         .collect()
     }
 }
+
+impl ::re_types_core::ArchetypeReflectionMarker for LineStrips2D {}
 
 impl LineStrips2D {
     /// Create a new `LineStrips2D`.
@@ -340,13 +356,142 @@ impl LineStrips2D {
         strips: impl IntoIterator<Item = impl Into<crate::components::LineStrip2D>>,
     ) -> Self {
         Self {
-            strips: strips.into_iter().map(Into::into).collect(),
+            strips: try_serialize_field(Self::descriptor_strips(), strips),
             radii: None,
             colors: None,
             labels: None,
+            show_labels: None,
             draw_order: None,
             class_ids: None,
         }
+    }
+
+    /// Update only some specific fields of a `LineStrips2D`.
+    #[inline]
+    pub fn update_fields() -> Self {
+        Self::default()
+    }
+
+    /// Clear all the fields of a `LineStrips2D`.
+    #[inline]
+    pub fn clear_fields() -> Self {
+        use ::re_types_core::Loggable as _;
+        Self {
+            strips: Some(SerializedComponentBatch::new(
+                crate::components::LineStrip2D::arrow_empty(),
+                Self::descriptor_strips(),
+            )),
+            radii: Some(SerializedComponentBatch::new(
+                crate::components::Radius::arrow_empty(),
+                Self::descriptor_radii(),
+            )),
+            colors: Some(SerializedComponentBatch::new(
+                crate::components::Color::arrow_empty(),
+                Self::descriptor_colors(),
+            )),
+            labels: Some(SerializedComponentBatch::new(
+                crate::components::Text::arrow_empty(),
+                Self::descriptor_labels(),
+            )),
+            show_labels: Some(SerializedComponentBatch::new(
+                crate::components::ShowLabels::arrow_empty(),
+                Self::descriptor_show_labels(),
+            )),
+            draw_order: Some(SerializedComponentBatch::new(
+                crate::components::DrawOrder::arrow_empty(),
+                Self::descriptor_draw_order(),
+            )),
+            class_ids: Some(SerializedComponentBatch::new(
+                crate::components::ClassId::arrow_empty(),
+                Self::descriptor_class_ids(),
+            )),
+        }
+    }
+
+    /// Partitions the component data into multiple sub-batches.
+    ///
+    /// Specifically, this transforms the existing [`SerializedComponentBatch`]es data into [`SerializedComponentColumn`]s
+    /// instead, via [`SerializedComponentBatch::partitioned`].
+    ///
+    /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+    ///
+    /// The specified `lengths` must sum to the total length of the component batch.
+    ///
+    /// [`SerializedComponentColumn`]: [::re_types_core::SerializedComponentColumn]
+    #[inline]
+    pub fn columns<I>(
+        self,
+        _lengths: I,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>>
+    where
+        I: IntoIterator<Item = usize> + Clone,
+    {
+        let columns = [
+            self.strips
+                .map(|strips| strips.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.radii
+                .map(|radii| radii.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.colors
+                .map(|colors| colors.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.labels
+                .map(|labels| labels.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.show_labels
+                .map(|show_labels| show_labels.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.draw_order
+                .map(|draw_order| draw_order.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.class_ids
+                .map(|class_ids| class_ids.partitioned(_lengths.clone()))
+                .transpose()?,
+        ];
+        Ok(columns
+            .into_iter()
+            .flatten()
+            .chain([::re_types_core::indicator_column::<Self>(
+                _lengths.into_iter().count(),
+            )?]))
+    }
+
+    /// Helper to partition the component data into unit-length sub-batches.
+    ///
+    /// This is semantically similar to calling [`Self::columns`] with `std::iter::take(1).repeat(n)`,
+    /// where `n` is automatically guessed.
+    #[inline]
+    pub fn columns_of_unit_batches(
+        self,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>> {
+        let len_strips = self.strips.as_ref().map(|b| b.array.len());
+        let len_radii = self.radii.as_ref().map(|b| b.array.len());
+        let len_colors = self.colors.as_ref().map(|b| b.array.len());
+        let len_labels = self.labels.as_ref().map(|b| b.array.len());
+        let len_show_labels = self.show_labels.as_ref().map(|b| b.array.len());
+        let len_draw_order = self.draw_order.as_ref().map(|b| b.array.len());
+        let len_class_ids = self.class_ids.as_ref().map(|b| b.array.len());
+        let len = None
+            .or(len_strips)
+            .or(len_radii)
+            .or(len_colors)
+            .or(len_labels)
+            .or(len_show_labels)
+            .or(len_draw_order)
+            .or(len_class_ids)
+            .unwrap_or(0);
+        self.columns(std::iter::repeat(1).take(len))
+    }
+
+    /// All the actual 2D line strips that make up the batch.
+    #[inline]
+    pub fn with_strips(
+        mut self,
+        strips: impl IntoIterator<Item = impl Into<crate::components::LineStrip2D>>,
+    ) -> Self {
+        self.strips = try_serialize_field(Self::descriptor_strips(), strips);
+        self
     }
 
     /// Optional radii for the line strips.
@@ -355,7 +500,7 @@ impl LineStrips2D {
         mut self,
         radii: impl IntoIterator<Item = impl Into<crate::components::Radius>>,
     ) -> Self {
-        self.radii = Some(radii.into_iter().map(Into::into).collect());
+        self.radii = try_serialize_field(Self::descriptor_radii(), radii);
         self
     }
 
@@ -365,7 +510,7 @@ impl LineStrips2D {
         mut self,
         colors: impl IntoIterator<Item = impl Into<crate::components::Color>>,
     ) -> Self {
-        self.colors = Some(colors.into_iter().map(Into::into).collect());
+        self.colors = try_serialize_field(Self::descriptor_colors(), colors);
         self
     }
 
@@ -378,7 +523,30 @@ impl LineStrips2D {
         mut self,
         labels: impl IntoIterator<Item = impl Into<crate::components::Text>>,
     ) -> Self {
-        self.labels = Some(labels.into_iter().map(Into::into).collect());
+        self.labels = try_serialize_field(Self::descriptor_labels(), labels);
+        self
+    }
+
+    /// Optional choice of whether the text labels should be shown by default.
+    #[inline]
+    pub fn with_show_labels(
+        mut self,
+        show_labels: impl Into<crate::components::ShowLabels>,
+    ) -> Self {
+        self.show_labels = try_serialize_field(Self::descriptor_show_labels(), [show_labels]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::ShowLabels`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_show_labels`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_show_labels(
+        mut self,
+        show_labels: impl IntoIterator<Item = impl Into<crate::components::ShowLabels>>,
+    ) -> Self {
+        self.show_labels = try_serialize_field(Self::descriptor_show_labels(), show_labels);
         self
     }
 
@@ -387,7 +555,20 @@ impl LineStrips2D {
     /// Objects with higher values are drawn on top of those with lower values.
     #[inline]
     pub fn with_draw_order(mut self, draw_order: impl Into<crate::components::DrawOrder>) -> Self {
-        self.draw_order = Some(draw_order.into());
+        self.draw_order = try_serialize_field(Self::descriptor_draw_order(), [draw_order]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::DrawOrder`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_draw_order`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_draw_order(
+        mut self,
+        draw_order: impl IntoIterator<Item = impl Into<crate::components::DrawOrder>>,
+    ) -> Self {
+        self.draw_order = try_serialize_field(Self::descriptor_draw_order(), draw_order);
         self
     }
 
@@ -399,7 +580,20 @@ impl LineStrips2D {
         mut self,
         class_ids: impl IntoIterator<Item = impl Into<crate::components::ClassId>>,
     ) -> Self {
-        self.class_ids = Some(class_ids.into_iter().map(Into::into).collect());
+        self.class_ids = try_serialize_field(Self::descriptor_class_ids(), class_ids);
         self
+    }
+}
+
+impl ::re_byte_size::SizeBytes for LineStrips2D {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.strips.heap_size_bytes()
+            + self.radii.heap_size_bytes()
+            + self.colors.heap_size_bytes()
+            + self.labels.heap_size_bytes()
+            + self.show_labels.heap_size_bytes()
+            + self.draw_order.heap_size_bytes()
+            + self.class_ids.heap_size_bytes()
     }
 }

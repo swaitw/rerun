@@ -5,29 +5,54 @@
 
 #include "../collection_adapter_builtins.hpp"
 
-namespace rerun::archetypes {}
+namespace rerun::archetypes {
+    Clear Clear::clear_fields() {
+        auto archetype = Clear();
+        archetype.is_recursive =
+            ComponentBatch::empty<rerun::components::ClearIsRecursive>(Descriptor_is_recursive)
+                .value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> Clear::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(2);
+        if (is_recursive.has_value()) {
+            columns.push_back(is_recursive.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(
+            ComponentColumn::from_indicators<Clear>(static_cast<uint32_t>(lengths_.size()))
+                .value_or_throw()
+        );
+        return columns;
+    }
+
+    Collection<ComponentColumn> Clear::columns() {
+        if (is_recursive.has_value()) {
+            return columns(std::vector<uint32_t>(is_recursive.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<archetypes::Clear>::serialize(
+    Result<Collection<ComponentBatch>> AsComponents<archetypes::Clear>::as_batches(
         const archetypes::Clear& archetype
     ) {
         using namespace archetypes;
-        std::vector<DataCell> cells;
+        std::vector<ComponentBatch> cells;
         cells.reserve(2);
 
-        {
-            auto result = DataCell::from_loggable(archetype.is_recursive);
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.is_recursive.has_value()) {
+            cells.push_back(archetype.is_recursive.value());
         }
         {
-            auto indicator = Clear::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<Clear>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

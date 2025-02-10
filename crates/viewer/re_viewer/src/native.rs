@@ -1,3 +1,4 @@
+use re_capabilities::MainThreadToken;
 use re_log_types::LogMsg;
 
 /// Used by `eframe` to decide where to store the app state.
@@ -7,8 +8,10 @@ type AppCreator = Box<dyn FnOnce(&eframe::CreationContext<'_>) -> Box<dyn eframe
 
 // NOTE: the name of this function is hard-coded in `crates/top/rerun/src/crash_handler.rs`!
 pub fn run_native_app(
+    // `eframe::run_native` may only be called on the main thread.
+    _: crate::MainThreadToken,
     app_creator: AppCreator,
-    force_wgpu_backend: Option<String>,
+    force_wgpu_backend: Option<&str>,
 ) -> eframe::Result {
     let native_options = eframe_options(force_wgpu_backend);
 
@@ -23,7 +26,7 @@ pub fn run_native_app(
     )
 }
 
-pub fn eframe_options(force_wgpu_backend: Option<String>) -> eframe::NativeOptions {
+pub fn eframe_options(force_wgpu_backend: Option<&str>) -> eframe::NativeOptions {
     re_tracing::profile_function!();
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -37,9 +40,6 @@ pub fn eframe_options(force_wgpu_backend: Option<String>) -> eframe::NativeOptio
             .with_titlebar_buttons_shown(!re_ui::CUSTOM_WINDOW_DECORATIONS)
             .with_titlebar_shown(!re_ui::FULLSIZE_CONTENT)
             .with_transparent(re_ui::CUSTOM_WINDOW_DECORATIONS), // To have rounded corners without decorations we need transparency
-
-        follow_system_theme: false,
-        default_theme: eframe::Theme::Dark,
 
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: crate::wgpu_options(force_wgpu_backend),
@@ -82,6 +82,7 @@ fn icon_data() -> egui::IconData {
 }
 
 pub fn run_native_viewer_with_messages(
+    main_thread_token: MainThreadToken,
     build_info: re_build_info::BuildInfo,
     app_env: crate::AppEnvironment,
     startup_options: crate::StartupOptions,
@@ -97,17 +98,13 @@ pub fn run_native_viewer_with_messages(
 
     let force_wgpu_backend = startup_options.force_wgpu_backend.clone();
     run_native_app(
+        main_thread_token,
         Box::new(move |cc| {
-            let mut app = crate::App::new(
-                build_info,
-                &app_env,
-                startup_options,
-                cc.egui_ctx.clone(),
-                cc.storage,
-            );
+            let mut app =
+                crate::App::new(main_thread_token, build_info, &app_env, startup_options, cc);
             app.add_receiver(rx);
             Box::new(app)
         }),
-        force_wgpu_backend,
+        force_wgpu_backend.as_deref(),
     )
 }

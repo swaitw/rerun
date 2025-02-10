@@ -3,14 +3,18 @@ use std::sync::Arc;
 use nohash_hasher::IntMap;
 use parking_lot::Mutex;
 
-use re_chunk::{Chunk, ChunkResult, RowId};
+use re_chunk::{Chunk, ChunkResult, RowId, TimeInt};
 use re_chunk_store::{
-    ChunkStore, ChunkStoreConfig, ChunkStoreEvent, ChunkStoreSubscriber, GarbageCollectionOptions,
-    GarbageCollectionTarget,
+    ChunkStore, ChunkStoreChunkStats, ChunkStoreConfig, ChunkStoreDiffKind, ChunkStoreEvent,
+    ChunkStoreHandle, ChunkStoreSubscriber, GarbageCollectionOptions, GarbageCollectionTarget,
 };
 use re_log_types::{
-    ApplicationId, ComponentPath, EntityPath, EntityPathHash, LogMsg, ResolvedTimeRange,
-    ResolvedTimeRangeF, SetStoreInfo, StoreId, StoreInfo, StoreKind, Timeline,
+    ApplicationId, EntityPath, EntityPathHash, LogMsg, ResolvedTimeRange, ResolvedTimeRangeF,
+    SetStoreInfo, StoreId, StoreInfo, StoreKind, Timeline,
+};
+use re_query::{
+    QueryCache, QueryCacheHandle, StorageEngine, StorageEngineArcReadGuard, StorageEngineReadGuard,
+    StorageEngineWriteGuard,
 };
 
 use crate::{Error, TimesPerTimeline};
@@ -18,7 +22,7 @@ use crate::{Error, TimesPerTimeline};
 // ----------------------------------------------------------------------------
 
 /// See [`GarbageCollectionOptions::time_budget`].
-const DEFAULT_GC_TIME_BUDGET: std::time::Duration = std::time::Duration::from_micros(3500); // empirical
+pub const DEFAULT_GC_TIME_BUDGET: std::time::Duration = std::time::Duration::from_micros(3500); // empirical
 
 // ----------------------------------------------------------------------------
 
@@ -51,19 +55,26 @@ pub struct EntityDb {
     /// entities/components.
     ///
     /// Used for time control.
+    ///
+    /// TODO(#7084): Get rid of [`TimesPerTimeline`] and implement time-stepping with [`crate::TimeHistogram`] instead.
     times_per_timeline: TimesPerTimeline,
+
+    /// A time histogram of all entities, for every timeline.
+    time_histogram_per_timeline: crate::TimeHistogramPerTimeline,
 
     /// A tree-view (split on path components) of the entities.
     tree: crate::EntityTree,
 
-    /// Stores all components for all entities for all timelines.
-    data_store: ChunkStore,
-
-    /// The active promise resolver for this DB.
-    resolver: re_query::PromiseResolver,
-
-    /// Query caches for the data in [`Self::data_store`].
-    query_caches: re_query::Caches,
+    /// The [`StorageEngine`] that backs this [`EntityDb`].
+    ///
+    /// This object and all its internal fields are **never** allowed to be publicly exposed,
+    /// whether that is directly or through methods, _even if that's just shared references_.
+    ///
+    /// The only way to get access to the [`StorageEngine`] from the outside is to use
+    /// [`EntityDb::storage_engine`], which returns a read-only guard.
+    /// The design statically guarantees the absence of deadlocks and race conditions that normally
+    /// results from letting store and cache handles arbitrarily loose all across the codebase.
+    storage_engine: StorageEngine,
 
     stats: IngestionStatistics,
 }
@@ -74,8 +85,12 @@ impl EntityDb {
     }
 
     pub fn with_store_config(store_id: StoreId, store_config: ChunkStoreConfig) -> Self {
-        let data_store = ChunkStore::new(store_id.clone(), store_config);
-        let query_caches = re_query::Caches::new(&data_store);
+        let store = ChunkStoreHandle::new(ChunkStore::new(store_id.clone(), store_config));
+        let cache = QueryCacheHandle::new(QueryCache::new(store.clone()));
+
+        // Safety: these handles are never going to be leaked outside of the `EntityDb`.
+        #[allow(unsafe_code)]
+        let storage_engine = unsafe { StorageEngine::new(store, cache) };
 
         Self {
             data_source: None,
@@ -85,9 +100,8 @@ impl EntityDb {
             entity_path_from_hash: Default::default(),
             times_per_timeline: Default::default(),
             tree: crate::EntityTree::root(),
-            data_store,
-            resolver: re_query::PromiseResolver::default(),
-            query_caches,
+            time_histogram_per_timeline: Default::default(),
+            storage_engine,
             stats: IngestionStatistics::new(store_id),
         }
     }
@@ -97,9 +111,21 @@ impl EntityDb {
         &self.tree
     }
 
+    /// Returns a read-only guard to the backing [`StorageEngine`].
     #[inline]
-    pub fn data_store(&self) -> &ChunkStore {
-        &self.data_store
+    pub fn storage_engine(&self) -> StorageEngineReadGuard<'_> {
+        self.storage_engine.read()
+    }
+
+    /// Returns a read-only guard to the backing [`StorageEngine`].
+    ///
+    /// That guard can be cloned at will and has a static lifetime.
+    ///
+    /// It is not possible to insert any more data in this [`EntityDb`] until the returned guard,
+    /// and any clones, have been dropped.
+    #[inline]
+    pub fn storage_engine_arc(&self) -> StorageEngineArcReadGuard {
+        self.storage_engine.read_arc()
     }
 
     pub fn store_info_msg(&self) -> Option<&SetStoreInfo> {
@@ -114,16 +140,6 @@ impl EntityDb {
         self.store_info().map(|ri| &ri.application_id)
     }
 
-    #[inline]
-    pub fn query_caches(&self) -> &re_query::Caches {
-        &self.query_caches
-    }
-
-    #[inline]
-    pub fn resolver(&self) -> &re_query::PromiseResolver {
-        &self.resolver
-    }
-
     /// Queries for the given `component_names` using latest-at semantics.
     ///
     /// See [`re_query::LatestAtResults`] for more information about how to handle the results.
@@ -136,8 +152,10 @@ impl EntityDb {
         entity_path: &EntityPath,
         component_names: impl IntoIterator<Item = re_types_core::ComponentName>,
     ) -> re_query::LatestAtResults {
-        self.query_caches()
-            .latest_at(self.store(), query, entity_path, component_names)
+        self.storage_engine
+            .read()
+            .cache()
+            .latest_at(query, entity_path, component_names)
     }
 
     /// Get the latest index and value for a given dense [`re_types_core::Component`].
@@ -153,13 +171,15 @@ impl EntityDb {
         &self,
         entity_path: &EntityPath,
         query: &re_chunk_store::LatestAtQuery,
-    ) -> Option<re_query::LatestAtMonoResult<C>> {
-        self.query_caches().latest_at_component::<C>(
-            self.store(),
-            self.resolver(),
-            entity_path,
-            query,
-        )
+    ) -> Option<((TimeInt, RowId), C)> {
+        let results =
+            self.storage_engine
+                .read()
+                .cache()
+                .latest_at(query, entity_path, [&C::descriptor()]);
+        results
+            .component_mono()
+            .map(|value| (results.index(), value))
     }
 
     /// Get the latest index and value for a given dense [`re_types_core::Component`].
@@ -175,13 +195,15 @@ impl EntityDb {
         &self,
         entity_path: &EntityPath,
         query: &re_chunk_store::LatestAtQuery,
-    ) -> Option<re_query::LatestAtMonoResult<C>> {
-        self.query_caches().latest_at_component_quiet::<C>(
-            self.store(),
-            self.resolver(),
-            entity_path,
-            query,
-        )
+    ) -> Option<((TimeInt, RowId), C)> {
+        let results =
+            self.storage_engine
+                .read()
+                .cache()
+                .latest_at(query, entity_path, [&C::descriptor()]);
+        results
+            .component_mono_quiet()
+            .map(|value| (results.index(), value))
     }
 
     #[inline]
@@ -189,19 +211,18 @@ impl EntityDb {
         &self,
         entity_path: &EntityPath,
         query: &re_chunk_store::LatestAtQuery,
-    ) -> Option<(EntityPath, re_query::LatestAtMonoResult<C>)> {
-        self.query_caches()
-            .latest_at_component_at_closest_ancestor::<C>(
-                self.store(),
-                self.resolver(),
-                entity_path,
-                query,
-            )
-    }
+    ) -> Option<(EntityPath, (TimeInt, RowId), C)> {
+        re_tracing::profile_function!();
 
-    #[inline]
-    pub fn store(&self) -> &ChunkStore {
-        &self.data_store
+        let mut cur_entity_path = Some(entity_path.clone());
+        while let Some(entity_path) = cur_entity_path {
+            if let Some((index, value)) = self.latest_at_component(&entity_path, query) {
+                return Some((entity_path, index, value));
+            }
+            cur_entity_path = entity_path.parent();
+        }
+
+        None
     }
 
     #[inline]
@@ -210,8 +231,8 @@ impl EntityDb {
     }
 
     #[inline]
-    pub fn store_id(&self) -> &StoreId {
-        self.data_store.id()
+    pub fn store_id(&self) -> StoreId {
+        self.storage_engine.read().store().id()
     }
 
     /// If this entity db is the result of a clone, which store was it cloned from?
@@ -228,7 +249,7 @@ impl EntityDb {
     }
 
     pub fn timelines(&self) -> impl ExactSizeIterator<Item = &Timeline> {
-        self.times_per_timeline().keys()
+        self.time_histogram_per_timeline.timelines()
     }
 
     pub fn times_per_timeline(&self) -> &TimesPerTimeline {
@@ -236,68 +257,34 @@ impl EntityDb {
     }
 
     pub fn has_any_data_on_timeline(&self, timeline: &Timeline) -> bool {
-        if let Some(times) = self.times_per_timeline.get(timeline) {
-            !times.is_empty()
-        } else {
-            false
-        }
+        self.time_histogram_per_timeline
+            .get(timeline)
+            .is_some_and(|hist| !hist.is_empty())
     }
 
     /// Returns the time range of data on the given timeline, ignoring any static times.
-    ///
-    /// This is O(N) in the number of times on the timeline.
     pub fn time_range_for(&self, timeline: &Timeline) -> Option<ResolvedTimeRange> {
-        let (mut start, mut end) = (None, None);
-        for time in self
-            .times_per_timeline()
-            .get(timeline)?
-            .keys()
-            .filter(|v| !v.is_static())
-            .copied()
-        {
-            if start.is_none() || Some(time) < start {
-                start = Some(time);
-            }
-            if end.is_none() || Some(time) > end {
-                end = Some(time);
-            }
-        }
-        Some(ResolvedTimeRange::new(start?, end?))
+        let hist = self.time_histogram_per_timeline.get(timeline)?;
+        let min = hist.min_key()?;
+        let max = hist.max_key()?;
+        Some(ResolvedTimeRange::new(min, max))
     }
 
     /// Histogram of all events on the timeeline, of all entities.
     pub fn time_histogram(&self, timeline: &Timeline) -> Option<&crate::TimeHistogram> {
-        self.tree().subtree.time_histogram.get(timeline)
-    }
-
-    /// Total number of static messages for any entity.
-    pub fn num_static_messages(&self) -> u64 {
-        self.tree.num_static_messages_recursive()
-    }
-
-    /// Returns whether a component is static.
-    pub fn is_component_static(&self, component_path: &ComponentPath) -> Option<bool> {
-        if let Some(entity_tree) = self.tree().subtree(component_path.entity_path()) {
-            entity_tree
-                .entity
-                .components
-                .get(&component_path.component_name)
-                .map(|component_histogram| component_histogram.is_static())
-        } else {
-            None
-        }
+        self.time_histogram_per_timeline.get(timeline)
     }
 
     #[inline]
     pub fn num_rows(&self) -> u64 {
-        self.data_store.stats().total().total_num_rows
+        self.storage_engine.read().store().stats().total().num_rows
     }
 
     /// Return the current `ChunkStoreGeneration`. This can be used to determine whether the
     /// database has been modified since the last time it was queried.
     #[inline]
     pub fn generation(&self) -> re_chunk_store::ChunkStoreGeneration {
-        self.data_store.generation()
+        self.storage_engine.read().store().generation()
     }
 
     #[inline]
@@ -347,34 +334,44 @@ impl EntityDb {
         self.entity_path_from_hash.contains_key(&entity_path.hash())
     }
 
-    pub fn add(&mut self, msg: &LogMsg) -> Result<(), Error> {
+    pub fn add(&mut self, msg: &LogMsg) -> Result<Vec<ChunkStoreEvent>, Error> {
         re_tracing::profile_function!();
 
-        debug_assert_eq!(msg.store_id(), self.store_id());
+        debug_assert_eq!(*msg.store_id(), self.store_id());
 
-        match &msg {
-            LogMsg::SetStoreInfo(msg) => self.set_store_info(msg.clone()),
+        let store_events = match &msg {
+            LogMsg::SetStoreInfo(msg) => {
+                self.set_store_info(msg.clone());
+                vec![]
+            }
 
             LogMsg::ArrowMsg(_, arrow_msg) => {
                 self.last_modified_at = web_time::Instant::now();
 
                 let mut chunk = re_chunk::Chunk::from_arrow_msg(arrow_msg)?;
                 chunk.sort_if_unsorted();
-                self.add_chunk(&Arc::new(chunk))?;
+                self.add_chunk(&Arc::new(chunk))?
             }
 
             LogMsg::BlueprintActivationCommand(_) => {
                 // Not for us to handle
+                vec![]
             }
-        }
+        };
 
-        Ok(())
+        Ok(store_events)
     }
 
-    pub fn add_chunk(&mut self, chunk: &Arc<Chunk>) -> Result<(), Error> {
-        let store_events = self.data_store.insert_chunk(chunk)?;
+    pub fn add_chunk(&mut self, chunk: &Arc<Chunk>) -> Result<Vec<ChunkStoreEvent>, Error> {
+        let mut engine = self.storage_engine.write();
+        let store_events = engine.store().insert_chunk(chunk)?;
+        engine.cache().on_events(&store_events);
 
-        self.register_entity_path(chunk.entity_path());
+        self.entity_path_from_hash
+            .entry(chunk.entity_path().hash())
+            .or_insert_with(|| chunk.entity_path().clone());
+
+        let engine = engine.downgrade();
 
         if self.latest_row_id < chunk.row_id_range().map(|(_, row_id_max)| row_id_max) {
             self.latest_row_id = chunk.row_id_range().map(|(_, row_id_max)| row_id_max);
@@ -383,53 +380,72 @@ impl EntityDb {
         {
             // Update our internal views by notifying them of resulting [`ChunkStoreEvent`]s.
             self.times_per_timeline.on_events(&store_events);
-            self.query_caches.on_events(&store_events);
+            self.time_histogram_per_timeline.on_events(&store_events);
             self.tree.on_store_additions(&store_events);
-            self.tree.on_store_deletions(&store_events);
+
+            // It is possible for writes to trigger deletions: specifically in the case of
+            // overwritten static data leading to dangling chunks.
+            let entity_paths_with_deletions = store_events
+                .iter()
+                .filter(|event| event.kind == ChunkStoreDiffKind::Deletion)
+                .map(|event| event.chunk.entity_path().clone())
+                .collect();
+
+            {
+                re_tracing::profile_scope!("on_store_deletions");
+                self.tree
+                    .on_store_deletions(&engine, &entity_paths_with_deletions, &store_events);
+            }
 
             // We inform the stats last, since it measures e2e latency.
             self.stats.on_events(&store_events);
         }
 
-        Ok(())
-    }
-
-    fn register_entity_path(&mut self, entity_path: &EntityPath) {
-        self.entity_path_from_hash
-            .entry(entity_path.hash())
-            .or_insert_with(|| entity_path.clone());
+        Ok(store_events)
     }
 
     pub fn set_store_info(&mut self, store_info: SetStoreInfo) {
         self.set_store_info = Some(store_info);
     }
 
-    pub fn gc_everything_but_the_latest_row_on_non_default_timelines(&mut self) {
-        re_tracing::profile_function!();
-
-        self.gc(&GarbageCollectionOptions {
-            target: GarbageCollectionTarget::Everything,
-            protect_latest: 1, // TODO(jleibs): Bump this after we have an undo buffer
-            time_budget: DEFAULT_GC_TIME_BUDGET,
-        });
-    }
-
     /// Free up some RAM by forgetting the older parts of all timelines.
-    pub fn purge_fraction_of_ram(&mut self, fraction_to_purge: f32) {
+    pub fn purge_fraction_of_ram(&mut self, fraction_to_purge: f32) -> Vec<ChunkStoreEvent> {
         re_tracing::profile_function!();
 
         assert!((0.0..=1.0).contains(&fraction_to_purge));
-        self.gc(&GarbageCollectionOptions {
+
+        let store_events = self.gc(&GarbageCollectionOptions {
             target: GarbageCollectionTarget::DropAtLeastFraction(fraction_to_purge as _),
             protect_latest: 1,
             time_budget: DEFAULT_GC_TIME_BUDGET,
+
+            // TODO(emilk): we could protect the data that is currently being viewed
+            // (e.g. when paused in the live camera example).
+            // To be perfect it would need margins (because of latest-at), i.e. we would need to know
+            // exactly how far back the latest-at is of each component at the current time…
+            // …but maybe it doesn't have to be perfect.
+            protected_time_ranges: Default::default(),
         });
+
+        if store_events.is_empty() {
+            // If we weren't able to collect any data, then we need to GC the cache itself in order
+            // to regain some space.
+            // See <https://github.com/rerun-io/rerun/issues/7369#issuecomment-2335164098> for the
+            // complete rationale.
+            self.storage_engine
+                .write()
+                .cache()
+                .purge_fraction_of_ram(fraction_to_purge);
+        }
+
+        store_events
     }
 
-    pub fn gc(&mut self, gc_options: &GarbageCollectionOptions) {
+    pub fn gc(&mut self, gc_options: &GarbageCollectionOptions) -> Vec<ChunkStoreEvent> {
         re_tracing::profile_function!();
 
-        let (store_events, stats_diff) = self.data_store.gc(gc_options);
+        let mut engine = self.storage_engine.write();
+        let (store_events, stats_diff) = engine.store().gc(gc_options);
 
         re_log::trace!(
             num_row_ids_dropped = store_events.len(),
@@ -437,30 +453,98 @@ impl EntityDb {
             "purged datastore"
         );
 
-        self.on_store_deletions(&store_events);
+        Self::on_store_deletions(
+            &mut self.times_per_timeline,
+            &mut self.time_histogram_per_timeline,
+            &mut self.tree,
+            engine,
+            &store_events,
+        );
+
+        store_events
     }
 
-    fn on_store_deletions(&mut self, store_events: &[ChunkStoreEvent]) {
+    /// Drop all events in the given time range from the given timeline.
+    ///
+    /// Used to implement undo (erase the last event from the blueprint db).
+    pub fn drop_time_range(
+        &mut self,
+        timeline: &Timeline,
+        drop_range: ResolvedTimeRange,
+    ) -> Vec<ChunkStoreEvent> {
         re_tracing::profile_function!();
 
-        let Self {
-            data_source: _,
-            set_store_info: _,
-            last_modified_at: _,
-            latest_row_id: _,
-            entity_path_from_hash: _,
-            times_per_timeline,
-            tree,
-            data_store: _,
-            resolver: _,
-            query_caches,
-            stats: _,
-        } = self;
+        let mut engine = self.storage_engine.write();
 
+        let store_events = engine.store().drop_time_range(timeline, drop_range);
+        Self::on_store_deletions(
+            &mut self.times_per_timeline,
+            &mut self.time_histogram_per_timeline,
+            &mut self.tree,
+            engine,
+            &store_events,
+        );
+
+        store_events
+    }
+
+    /// Unconditionally drops all the data for a given [`EntityPath`] .
+    ///
+    /// This is _not_ recursive. Children of this entity will not be affected.
+    ///
+    /// To drop the entire subtree below an entity, see: [`Self::drop_entity_path_recursive`].
+    pub fn drop_entity_path(&mut self, entity_path: &EntityPath) {
+        re_tracing::profile_function!();
+
+        let mut engine = self.storage_engine.write();
+
+        let store_events = engine.store().drop_entity_path(entity_path);
+        Self::on_store_deletions(
+            &mut self.times_per_timeline,
+            &mut self.time_histogram_per_timeline,
+            &mut self.tree,
+            engine,
+            &store_events,
+        );
+    }
+
+    /// Unconditionally drops all the data for a given [`EntityPath`] and all its children.
+    pub fn drop_entity_path_recursive(&mut self, entity_path: &EntityPath) {
+        re_tracing::profile_function!();
+
+        let mut to_drop = vec![entity_path.clone()];
+
+        if let Some(tree) = self.tree().subtree(entity_path) {
+            tree.visit_children_recursively(|path| {
+                to_drop.push(path.clone());
+            });
+        }
+
+        for entity_path in to_drop {
+            self.drop_entity_path(&entity_path);
+        }
+    }
+
+    // NOTE: Parameters deconstructed instead of taking `self`, because borrowck cannot understand
+    // partial borrows on methods.
+    fn on_store_deletions(
+        times_per_timeline: &mut TimesPerTimeline,
+        time_histogram_per_timeline: &mut crate::TimeHistogramPerTimeline,
+        tree: &mut crate::EntityTree,
+        mut engine: StorageEngineWriteGuard<'_>,
+        store_events: &[ChunkStoreEvent],
+    ) {
+        engine.cache().on_events(store_events);
         times_per_timeline.on_events(store_events);
-        query_caches.on_events(store_events);
+        time_histogram_per_timeline.on_events(store_events);
 
-        tree.on_store_deletions(store_events);
+        let engine = engine.downgrade();
+        let entity_paths_with_deletions = store_events
+            .iter()
+            .filter(|event| event.kind == ChunkStoreDiffKind::Deletion)
+            .map(|event| event.chunk.entity_path().clone())
+            .collect();
+        tree.on_store_deletions(&engine, &entity_paths_with_deletions, store_events);
     }
 
     /// Key used for sorting recordings in the UI.
@@ -476,42 +560,51 @@ impl EntityDb {
     pub fn to_messages(
         &self,
         time_selection: Option<(Timeline, ResolvedTimeRangeF)>,
-    ) -> ChunkResult<Vec<LogMsg>> {
+    ) -> impl Iterator<Item = ChunkResult<LogMsg>> + '_ {
         re_tracing::profile_function!();
+
+        let engine = self.storage_engine.read();
 
         let set_store_info_msg = self
             .store_info_msg()
             .map(|msg| Ok(LogMsg::SetStoreInfo(msg.clone())));
 
-        let time_filter = time_selection.map(|(timeline, range)| {
-            (
-                timeline,
-                ResolvedTimeRange::new(range.min.floor(), range.max.ceil()),
-            )
-        });
+        let data_messages = {
+            let time_filter = time_selection.map(|(timeline, range)| {
+                (
+                    timeline,
+                    ResolvedTimeRange::new(range.min.floor(), range.max.ceil()),
+                )
+            });
 
-        let data_messages = self
-            .store()
-            .iter_chunks()
-            .filter(|chunk| {
-                let Some((timeline, time_range)) = time_filter else {
-                    return true;
-                };
+            let mut chunks: Vec<Arc<Chunk>> = engine
+                .store()
+                .iter_chunks()
+                .filter(move |chunk| {
+                    let Some((timeline, time_range)) = time_filter else {
+                        return true;
+                    };
 
-                // TODO(cmc): chunk.slice_time_selection(time_selection)
-                chunk
-                    .timelines()
-                    .get(&timeline)
-                    .map_or(false, |time_chunk| {
-                        time_range.contains(time_chunk.time_range().min())
-                            || time_range.contains(time_chunk.time_range().max())
+                    // TODO(cmc): chunk.slice_time_selection(time_selection)
+                    chunk.timelines().get(&timeline).is_some_and(|time_column| {
+                        time_range.contains(time_column.time_range().min())
+                            || time_range.contains(time_column.time_range().max())
                     })
-            })
-            .map(|chunk| {
+                })
+                .cloned() // refcount
+                .collect();
+
+            // Try to roughly preserve the order of the chunks
+            // from how they were originally logged.
+            // See https://github.com/rerun-io/rerun/issues/7175 for why.
+            chunks.sort_by_key(|chunk| chunk.row_id_range().map(|(min, _)| min));
+
+            chunks.into_iter().map(|chunk| {
                 chunk
                     .to_arrow_msg()
                     .map(|msg| LogMsg::ArrowMsg(self.store_id().clone(), msg))
-            });
+            })
+        };
 
         // If this is a blueprint, make sure to include the `BlueprintActivationCommand` message.
         // We generally use `to_messages` to export a blueprint via "save". In that
@@ -528,13 +621,10 @@ impl EntityDb {
             itertools::Either::Right(std::iter::empty())
         };
 
-        let messages: Result<Vec<_>, _> = set_store_info_msg
+        set_store_info_msg
             .into_iter()
             .chain(data_messages)
             .chain(blueprint_ready)
-            .collect();
-
-        messages
     }
 
     /// Make a clone of this [`EntityDb`], assigning it a new [`StoreId`].
@@ -565,7 +655,8 @@ impl EntityDb {
             });
         }
 
-        for chunk in self.store().iter_chunks() {
+        let engine = self.storage_engine.read();
+        for chunk in engine.store().iter_chunks() {
             new_db.add_chunk(&Arc::clone(chunk))?;
         }
 
@@ -573,11 +664,110 @@ impl EntityDb {
     }
 }
 
-impl re_types_core::SizeBytes for EntityDb {
+/// ## Stats
+impl EntityDb {
+    /// Returns the stats for the static store of the entity and all its children, recursively.
+    ///
+    /// This excludes temporal data.
+    pub fn subtree_stats_static(
+        &self,
+        engine: &StorageEngineReadGuard<'_>,
+        entity_path: &EntityPath,
+    ) -> ChunkStoreChunkStats {
+        re_tracing::profile_function!();
+
+        let Some(subtree) = self.tree.subtree(entity_path) else {
+            return Default::default();
+        };
+
+        let mut stats = ChunkStoreChunkStats::default();
+        subtree.visit_children_recursively(|path| {
+            stats += engine.store().entity_stats_static(path);
+        });
+
+        stats
+    }
+
+    /// Returns the stats for the entity and all its children on the given timeline, recursively.
+    ///
+    /// This excludes static data.
+    pub fn subtree_stats_on_timeline(
+        &self,
+        engine: &StorageEngineReadGuard<'_>,
+        entity_path: &EntityPath,
+        timeline: &Timeline,
+    ) -> ChunkStoreChunkStats {
+        re_tracing::profile_function!();
+
+        let Some(subtree) = self.tree.subtree(entity_path) else {
+            return Default::default();
+        };
+
+        let mut stats = ChunkStoreChunkStats::default();
+        subtree.visit_children_recursively(|path| {
+            stats += engine.store().entity_stats_on_timeline(path, timeline);
+        });
+
+        stats
+    }
+
+    /// Returns true if an entity or any of its children have any data on the given timeline.
+    ///
+    /// This includes static data.
+    pub fn subtree_has_data_on_timeline(
+        &self,
+        engine: &StorageEngineReadGuard<'_>,
+        timeline: &Timeline,
+        entity_path: &EntityPath,
+    ) -> bool {
+        re_tracing::profile_function!();
+
+        let Some(subtree) = self.tree.subtree(entity_path) else {
+            return false;
+        };
+
+        subtree
+            .find_first_child_recursive(|path| {
+                engine.store().entity_has_data_on_timeline(timeline, path)
+            })
+            .is_some()
+    }
+
+    /// Returns true if an entity or any of its children have any temporal data on the given timeline.
+    ///
+    /// This ignores static data.
+    pub fn subtree_has_temporal_data_on_timeline(
+        &self,
+        engine: &StorageEngineReadGuard<'_>,
+        timeline: &Timeline,
+        entity_path: &EntityPath,
+    ) -> bool {
+        re_tracing::profile_function!();
+
+        let Some(subtree) = self.tree.subtree(entity_path) else {
+            return false;
+        };
+
+        subtree
+            .find_first_child_recursive(|path| {
+                engine
+                    .store()
+                    .entity_has_temporal_data_on_timeline(timeline, path)
+            })
+            .is_some()
+    }
+}
+
+impl re_byte_size::SizeBytes for EntityDb {
     #[inline]
     fn heap_size_bytes(&self) -> u64 {
         // TODO(emilk): size of entire EntityDb, including secondary indices etc
-        self.data_store().stats().total().total_size_bytes
+        self.storage_engine
+            .read()
+            .store()
+            .stats()
+            .total()
+            .total_size_bytes
     }
 }
 
@@ -630,7 +820,7 @@ impl IngestionStatistics {
         }
     }
 
-    fn on_new_row_id(&mut self, row_id: RowId) {
+    fn on_new_row_id(&self, row_id: RowId) {
         if let Ok(duration_since_epoch) = web_time::SystemTime::UNIX_EPOCH.elapsed() {
             let nanos_since_epoch = duration_since_epoch.as_nanos() as u64;
 

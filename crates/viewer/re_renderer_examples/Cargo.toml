@@ -36,6 +36,9 @@ path = "outlines.rs"
 name = "picking"
 path = "picking.rs"
 
+[[bin]]
+name = "world_grid"
+path = "world_grid.rs"
 
 [dependencies]
 re_log = { workspace = true, features = ["setup"] }
@@ -58,7 +61,6 @@ winit = { workspace = true, default-features = false, features = [
   "wayland",
   "wayland-dlopen",
 ] }
-zip = { workspace = true, default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook.workspace = true

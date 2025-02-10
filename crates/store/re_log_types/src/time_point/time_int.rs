@@ -12,7 +12,7 @@ pub struct TimeInt(Option<NonMinI64>);
 static_assertions::assert_eq_size!(TimeInt, i64);
 static_assertions::assert_eq_align!(TimeInt, i64);
 
-impl re_types_core::SizeBytes for TimeInt {
+impl re_byte_size::SizeBytes for TimeInt {
     #[inline]
     fn heap_size_bytes(&self) -> u64 {
         0
@@ -43,7 +43,7 @@ impl TimeInt {
     /// It is illegal to create a [`TimeInt`] with that value in a temporal context.
     ///
     /// SDK users cannot log data at that timestamp explicitly, the only way to do so is to use
-    /// the timeless APIs.
+    /// the static APIs.
     pub const STATIC: Self = Self(None);
 
     /// Value used to represent the minimal temporal value a [`TimeInt`] can hold.
@@ -60,8 +60,8 @@ impl TimeInt {
     pub const ONE: Self = Self(Some(NonMinI64::ONE));
 
     #[inline]
-    pub fn is_static(&self) -> bool {
-        *self == Self::STATIC
+    pub fn is_static(self) -> bool {
+        self == Self::STATIC
     }
 
     /// Creates a new temporal [`TimeInt`].
@@ -100,7 +100,7 @@ impl TimeInt {
 
     /// Returns `i64::MIN` for [`Self::STATIC`].
     #[inline]
-    pub const fn as_i64(&self) -> i64 {
+    pub const fn as_i64(self) -> i64 {
         match self.0 {
             Some(t) => t.get(),
             None => i64::MIN,
@@ -109,7 +109,7 @@ impl TimeInt {
 
     /// Returns `f64::MIN` for [`Self::STATIC`].
     #[inline]
-    pub const fn as_f64(&self) -> f64 {
+    pub const fn as_f64(self) -> f64 {
         match self.0 {
             Some(t) => t.get() as _,
             None => f64::MIN,
@@ -118,19 +118,21 @@ impl TimeInt {
 
     /// Always returns [`Self::STATIC`] for [`Self::STATIC`].
     #[inline]
-    pub fn inc(&self) -> Self {
+    #[must_use]
+    pub fn inc(self) -> Self {
         match self.0 {
             Some(t) => Self::new_temporal(t.get().saturating_add(1)),
-            None => *self,
+            None => self,
         }
     }
 
     /// Always returns [`Self::STATIC`] for [`Self::STATIC`].
     #[inline]
-    pub fn dec(&self) -> Self {
+    #[must_use]
+    pub fn dec(self) -> Self {
         match self.0 {
             Some(t) => Self::new_temporal(t.get().saturating_sub(1)),
-            None => *self,
+            None => self,
         }
     }
 }

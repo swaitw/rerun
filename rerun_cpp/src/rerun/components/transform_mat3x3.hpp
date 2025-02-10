@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../datatypes/mat3x3.hpp"
 #include "../result.hpp"
 
@@ -26,6 +27,11 @@ namespace rerun::components {
     /// ```
     struct TransformMat3x3 {
         rerun::datatypes::Mat3x3 matrix;
+
+      public: // START of extensions from transform_mat3x3_ext.cpp:
+        TransformMat3x3(const rerun::datatypes::Vec3D (&columns)[3]) : matrix(columns) {}
+
+        // END of extensions from transform_mat3x3_ext.cpp, start of generated code:
 
       public:
         TransformMat3x3() = default;
@@ -57,7 +63,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::TransformMat3x3> {
-        static constexpr const char Name[] = "rerun.components.TransformMat3x3";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.TransformMat3x3";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -68,7 +74,19 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const components::TransformMat3x3* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::Mat3x3>::to_arrow(&instances->matrix, num_instances);
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::Mat3x3>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::Mat3x3>::to_arrow(
+                    &instances->matrix,
+                    num_instances
+                );
+            }
         }
     };
 } // namespace rerun

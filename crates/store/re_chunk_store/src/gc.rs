@@ -1,15 +1,16 @@
 use std::{
-    collections::{btree_map::Entry as BTreeMapEntry, BTreeSet},
+    collections::{btree_map::Entry as BTreeMapEntry, hash_map::Entry as HashMapEntry, BTreeSet},
     time::Duration,
 };
 
 use ahash::{HashMap, HashSet};
 use nohash_hasher::IntMap;
+use re_byte_size::SizeBytes;
 use web_time::Instant;
 
 use re_chunk::{Chunk, ChunkId};
-use re_log_types::{EntityPath, TimeInt, Timeline};
-use re_types_core::{ComponentName, SizeBytes};
+use re_log_types::{EntityPath, ResolvedTimeRange, TimeInt, Timeline};
+use re_types_core::ComponentName;
 
 use crate::{
     store::ChunkIdSetPerTime, ChunkStore, ChunkStoreChunkStats, ChunkStoreDiff, ChunkStoreDiffKind,
@@ -51,6 +52,9 @@ pub struct GarbageCollectionOptions {
 
     /// How many component revisions to preserve on each timeline.
     pub protect_latest: usize,
+
+    /// Do not remove any data within these time ranges.
+    pub protected_time_ranges: HashMap<Timeline, ResolvedTimeRange>,
 }
 
 impl GarbageCollectionOptions {
@@ -59,7 +63,20 @@ impl GarbageCollectionOptions {
             target: GarbageCollectionTarget::Everything,
             time_budget: std::time::Duration::MAX,
             protect_latest: 0,
+            protected_time_ranges: Default::default(),
         }
+    }
+
+    /// If true, we cannot remove this chunk.
+    pub fn is_chunk_protected(&self, chunk: &Chunk) -> bool {
+        for (timeline, protected_time_range) in &self.protected_time_ranges {
+            if let Some(time_column) = chunk.timelines().get(timeline) {
+                if time_column.time_range().intersects(*protected_time_range) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 
@@ -113,7 +130,7 @@ impl ChunkStore {
 
         let total_size_bytes_before = stats_before.total().total_size_bytes as f64;
         let total_num_chunks_before = stats_before.total().num_chunks;
-        let total_num_rows_before = stats_before.total().total_num_rows;
+        let total_num_rows_before = stats_before.total().num_rows;
 
         let protected_chunk_ids = self.find_all_protected_chunk_ids(options.protect_latest);
 
@@ -155,7 +172,7 @@ impl ChunkStore {
         let stats_after = self.stats();
         let total_size_bytes_after = stats_after.total().total_size_bytes as f64;
         let total_num_chunks_after = stats_after.total().num_chunks;
-        let total_num_rows_after = stats_after.total().total_num_rows;
+        let total_num_rows_after = stats_after.total().num_rows;
 
         re_log::trace!(
             kind = "gc",
@@ -269,6 +286,10 @@ impl ChunkStore {
                 .filter(|chunk_id| !protected_chunk_ids.contains(chunk_id))
             {
                 if let Some(chunk) = self.chunks_per_chunk_id.get(chunk_id) {
+                    if options.is_chunk_protected(chunk) {
+                        continue;
+                    }
+
                     // NOTE: Do _NOT_ use `chunk.total_size_bytes` as it is sitting behind an Arc
                     // and would count as amortized (i.e. 0 bytes).
                     num_bytes_to_drop -= <Chunk as SizeBytes>::total_size_bytes(chunk) as f64;
@@ -279,14 +300,14 @@ impl ChunkStore {
                     let per_timeline = chunk_ids_to_be_removed
                         .entry(entity_path.clone())
                         .or_default();
-                    for (&timeline, time_chunk) in chunk.timelines() {
+                    for (&timeline, time_column) in chunk.timelines() {
                         let per_component = per_timeline.entry(timeline).or_default();
                         for component_name in chunk.component_names() {
                             let per_time = per_component.entry(component_name).or_default();
 
                             // NOTE: As usual, these are vectors of `ChunkId`s, as it is legal to
                             // have perfectly overlapping chunks.
-                            let time_range = time_chunk.time_range();
+                            let time_range = time_column.time_range();
                             per_time
                                 .entry(time_range.min())
                                 .or_default()
@@ -317,8 +338,10 @@ impl ChunkStore {
 
             let Self {
                 id: _,
+                info: _,
                 config: _,
                 type_registry: _,
+                per_column_metadata: _, // column metadata is additive only
                 chunks_per_chunk_id,
                 chunk_ids_per_min_row_id,
                 temporal_chunk_ids_per_entity_per_component,
@@ -327,7 +350,6 @@ impl ChunkStore {
                 static_chunk_ids_per_entity: _, // we don't GC static data
                 static_chunks_stats: _,         // we don't GC static data
                 insert_id: _,
-                query_id: _,
                 gc_id: _,
                 event_id: _,
             } = self;
@@ -450,18 +472,20 @@ impl ChunkStore {
             for (timeline, time_range_per_component) in chunk.time_range_per_component() {
                 let chunk_ids_to_be_removed = chunk_ids_to_be_removed.entry(timeline).or_default();
 
-                for (component_name, time_range) in time_range_per_component {
-                    let chunk_ids_to_be_removed =
-                        chunk_ids_to_be_removed.entry(component_name).or_default();
+                for (component_name, per_desc) in time_range_per_component {
+                    for (_component_desc, time_range) in per_desc {
+                        let chunk_ids_to_be_removed =
+                            chunk_ids_to_be_removed.entry(component_name).or_default();
 
-                    chunk_ids_to_be_removed
-                        .entry(time_range.min())
-                        .or_default()
-                        .push(chunk.id());
-                    chunk_ids_to_be_removed
-                        .entry(time_range.max())
-                        .or_default()
-                        .push(chunk.id());
+                        chunk_ids_to_be_removed
+                            .entry(time_range.min())
+                            .or_default()
+                            .push(chunk.id());
+                        chunk_ids_to_be_removed
+                            .entry(time_range.max())
+                            .or_default()
+                            .push(chunk.id());
+                    }
                 }
             }
         }
@@ -493,14 +517,14 @@ impl ChunkStore {
         // before we had time to clean the other.
 
         for (entity_path, chunk_ids_to_be_removed) in chunk_ids_to_be_removed {
-            let BTreeMapEntry::Occupied(mut temporal_chunk_ids_per_timeline) = self
+            let HashMapEntry::Occupied(mut temporal_chunk_ids_per_timeline) = self
                 .temporal_chunk_ids_per_entity_per_component
                 .entry(entity_path.clone())
             else {
                 continue;
             };
 
-            let BTreeMapEntry::Occupied(mut temporal_chunk_ids_per_timeline_componentless) =
+            let HashMapEntry::Occupied(mut temporal_chunk_ids_per_timeline_componentless) =
                 self.temporal_chunk_ids_per_entity.entry(entity_path)
             else {
                 continue;
@@ -509,7 +533,7 @@ impl ChunkStore {
             for (timeline, chunk_ids_to_be_removed) in chunk_ids_to_be_removed {
                 // Component-less indices
                 {
-                    let BTreeMapEntry::Occupied(mut temporal_chunk_ids_per_time_componentless) =
+                    let HashMapEntry::Occupied(mut temporal_chunk_ids_per_time_componentless) =
                         temporal_chunk_ids_per_timeline_componentless
                             .get_mut()
                             .entry(timeline)
@@ -573,14 +597,14 @@ impl ChunkStore {
                 // NOTE: This must go all the way, no matter the time budget left. Otherwise the
                 // component-less and per-component indices would go out of sync.
 
-                let BTreeMapEntry::Occupied(mut temporal_chunk_ids_per_component) =
+                let HashMapEntry::Occupied(mut temporal_chunk_ids_per_component) =
                     temporal_chunk_ids_per_timeline.get_mut().entry(timeline)
                 else {
                     continue;
                 };
 
                 for (component_name, chunk_ids_to_be_removed) in chunk_ids_to_be_removed {
-                    let BTreeMapEntry::Occupied(mut temporal_chunk_ids_per_time) =
+                    let HashMapEntry::Occupied(mut temporal_chunk_ids_per_time) =
                         temporal_chunk_ids_per_component
                             .get_mut()
                             .entry(component_name)

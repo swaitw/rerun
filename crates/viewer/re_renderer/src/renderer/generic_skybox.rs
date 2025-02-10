@@ -28,7 +28,7 @@ pub enum GenericSkyboxType {
 mod gpu_data {
     use crate::wgpu_buffer_types;
 
-    #[repr(C, align(256))]
+    #[repr(C)]
     #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct UniformBuffer {
         pub background_type: wgpu_buffer_types::U32RowPadded,
@@ -137,7 +137,10 @@ impl Renderer for GenericSkybox {
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
-                multisample: ViewBuilder::MAIN_TARGET_DEFAULT_MSAA_STATE,
+                multisample: ViewBuilder::main_target_default_msaa_state(
+                    ctx.render_config(),
+                    false,
+                ),
             },
         );
         Self {
@@ -146,12 +149,12 @@ impl Renderer for GenericSkybox {
         }
     }
 
-    fn draw<'a>(
+    fn draw(
         &self,
-        render_pipelines: &'a GpuRenderPipelinePoolAccessor<'a>,
+        render_pipelines: &GpuRenderPipelinePoolAccessor<'_>,
         _phase: DrawPhase,
-        pass: &mut wgpu::RenderPass<'a>,
-        draw_data: &'a Self::RendererDrawData,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw_data: &Self::RendererDrawData,
     ) -> Result<(), DrawError> {
         re_tracing::profile_function!();
 

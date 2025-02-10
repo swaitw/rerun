@@ -3,31 +3,28 @@ namespace rerun.archetypes;
 
 /// A monochrome or color image.
 ///
-/// The order of dimensions in the underlying [components.TensorData] follows the typical
-/// row-major, interleaved-pixel image format. Additionally, Rerun orders the
-/// [datatypes.TensorDimension]s within the shape description from outer-most to inner-most.
+/// See also [archetypes.DepthImage] and [archetypes.SegmentationImage].
 ///
-/// As such, the shape of the [components.TensorData] must be mappable to:
-/// - A `HxW` tensor, treated as a grayscale image.
-/// - A `HxWx3` tensor, treated as an RGB image.
-/// - A `HxWx4` tensor, treated as an RGBA image.
+/// Rerun also supports compressed images (JPEG, PNG, …), using [archetypes.EncodedImage].
+/// For images that refer to video frames see [archetypes.VideoFrameReference].
+/// Compressing images or using video data instead can save a lot of bandwidth and memory.
 ///
-/// Leading and trailing unit-dimensions are ignored, so that
-/// `1x480x640x3x1` is treated as a `480x640x3` RGB image.
+/// The raw image data is stored as a single buffer of bytes in a [components.Blob].
+/// The meaning of these bytes is determined by the [components.ImageFormat] which specifies the resolution
+/// and the pixel format (e.g. RGB, RGBA, …).
 ///
-/// Rerun also supports compressed images (JPEG, PNG, …), using [archetypes.ImageEncoded].
-/// Compressing images can save a lot of bandwidth and memory.
+/// The order of dimensions in the underlying [components.Blob] follows the typical
+/// row-major, interleaved-pixel image format.
 ///
-/// \py You can compress an image using [`rerun.Image.compress`][].
-/// \py To pass in a chroma-encoded image (NV12, YUY2), use [`rerun.ImageChromaDownsampled`][].
-///
-/// See also [components.TensorData] and [datatypes.TensorBuffer].
-///
-/// \cpp Since the underlying `rerun::datatypes::TensorData` uses `rerun::Collection` internally,
+/// \cpp Since the underlying [rerun::components::Blob] uses `rerun::Collection` internally,
 /// \cpp data can be passed in without a copy from raw pointers or by reference from `std::vector`/`std::array`/c-arrays.
 /// \cpp If needed, this "borrow-behavior" can be extended by defining your own `rerun::CollectionAdapter`.
 ///
 /// \example archetypes/image_simple image="https://static.rerun.io/image_simple/06ba7f8582acc1ffb42a7fd0006fad7816f3e4e4/1200w.png"
+/// \example archetypes/image_formats title="Logging images with various formats" image="https://static.rerun.io/image_formats/182a233fb4d0680eb31912a82f328ddaaa66324e/1200w.png"
+/// \example archetypes/image_advanced !api title="Image from file, PIL & OpenCV" image="https://static.rerun.io/image_advanced/7ea3e3876858879bf16d6efe6de313f7b2403881/1200w.png"
+/// \example archetypes/image_row_updates !api title="Update an image over time" image="https://static.rerun.io/image_column_updates/8edcdc512f7b97402f03c24d7dcbe01b3651f86d/1200w.png"
+/// \example archetypes/image_column_updates !api title="Update an image over time, in a single operation" image="https://static.rerun.io/image_column_updates/8edcdc512f7b97402f03c24d7dcbe01b3651f86d/1200w.png"
 table Image (
   "attr.rust.derive": "PartialEq",
   "attr.cpp.no_field_ctors",
@@ -36,8 +33,11 @@ table Image (
 ) {
   // --- Required ---
 
-  /// The image data. Should always be a 2- or 3-dimensional tensor.
-  data: rerun.components.TensorData ("attr.rerun.component_required", order: 1000);
+  /// The raw image data.
+  buffer: rerun.components.ImageBuffer ("attr.rerun.component_required", order: 1000);
+
+  /// The format of the image.
+  format: rerun.components.ImageFormat ("attr.rerun.component_required", order: 1100);
 
   // --- Optional ---
 

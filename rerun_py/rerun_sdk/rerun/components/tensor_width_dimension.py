@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["TensorWidthDimension", "TensorWidthDimensionBatch", "TensorWidthDimensionType"]
+__all__ = ["TensorWidthDimension", "TensorWidthDimensionBatch"]
 
 
 class TensorWidthDimension(datatypes.TensorDimensionSelection, ComponentMixin):
@@ -24,12 +25,8 @@ class TensorWidthDimension(datatypes.TensorDimensionSelection, ComponentMixin):
     pass
 
 
-class TensorWidthDimensionType(datatypes.TensorDimensionSelectionType):
-    _TYPE_NAME: str = "rerun.components.TensorWidthDimension"
-
-
 class TensorWidthDimensionBatch(datatypes.TensorDimensionSelectionBatch, ComponentBatchMixin):
-    _ARROW_TYPE = TensorWidthDimensionType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.TensorWidthDimension")
 
 
 # This is patched in late to avoid circular dependencies.

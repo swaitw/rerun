@@ -45,7 +45,7 @@ impl<'a> LabelContent<'a> {
     ///
     /// Note: takes precedence over [`Self::weak`] if set.
     // TODO(ab): this is a hack to implement the behavior of the blueprint tree UI, where active
-    // widget are displayed in a subdued state (container, hidden space views/entities). One
+    // widget are displayed in a subdued state (container, hidden views/entities). One
     // slightly more correct way would be to override the color using a (color, index) pair
     // related to the design system table.
     #[inline]
@@ -229,10 +229,10 @@ impl ListItemContent for LabelContent<'_> {
             || always_show_buttons;
         let button_response = if should_show_buttons {
             if let Some(buttons) = buttons_fn {
-                let mut ui = ui.child_ui(
-                    text_rect,
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    None,
+                let mut ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(text_rect)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
                 );
                 Some(buttons(&mut ui))
             } else {

@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Archetype**: A depth image, i.e. as captured by a depth camera.
@@ -64,16 +64,13 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 ///   <img src="https://static.rerun.io/depth_image_3d/924e9d4d6a39d63d4fdece82582855fdaa62d15e/full.png" width="640">
 /// </picture>
 /// </center>
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct DepthImage {
     /// The raw depth image data.
-    pub data: crate::components::Blob,
+    pub buffer: Option<SerializedComponentBatch>,
 
-    /// The size of the image
-    pub resolution: crate::components::Resolution2D,
-
-    /// The data type of the depth image data (U16, F32, …).
-    pub data_type: crate::components::ChannelDataType,
+    /// The format of the image.
+    pub format: Option<SerializedComponentBatch>,
 
     /// An optional floating point value that specifies how long a meter is in the native depth units.
     ///
@@ -82,12 +79,25 @@ pub struct DepthImage {
     ///
     /// Note that the only effect on 2D views is the physical depth values shown when hovering the image.
     /// In 3D views on the other hand, this affects where the points of the point cloud are placed.
-    pub meter: Option<crate::components::DepthMeter>,
+    pub meter: Option<SerializedComponentBatch>,
 
     /// Colormap to use for rendering the depth image.
     ///
     /// If not set, the depth image will be rendered using the Turbo colormap.
-    pub colormap: Option<crate::components::Colormap>,
+    pub colormap: Option<SerializedComponentBatch>,
+
+    /// The expected range of depth values.
+    ///
+    /// This is typically the expected range of valid values.
+    /// Everything outside of the range is clamped to the range for the purpose of colormpaping.
+    /// Note that point clouds generated from this image will still display all points, regardless of this range.
+    ///
+    /// If not specified, the range will be automatically estimated from the data.
+    /// Note that the Viewer may try to guess a wider range than the minimum/maximum of values
+    /// in the contents of the depth image.
+    /// E.g. if all values are positive, some bigger than 1.0 and all smaller than 255.0,
+    /// the Viewer will guess that the data likely came from an 8bit image, thus assuming a range of 0-255.
+    pub depth_range: Option<SerializedComponentBatch>,
 
     /// Scale the radii of the points in the point cloud generated from this image.
     ///
@@ -96,76 +106,134 @@ pub struct DepthImage {
     /// A fill ratio of 0.5 means that each point touches the edge of its neighbor if it has the same depth.
     ///
     /// TODO(#6744): This applies only to 3D views!
-    pub point_fill_ratio: Option<crate::components::FillRatio>,
+    pub point_fill_ratio: Option<SerializedComponentBatch>,
 
     /// An optional floating point value that specifies the 2D drawing order, used only if the depth image is shown as a 2D image.
     ///
     /// Objects with higher values are drawn on top of those with lower values.
-    pub draw_order: Option<crate::components::DrawOrder>,
+    pub draw_order: Option<SerializedComponentBatch>,
 }
 
-impl ::re_types_core::SizeBytes for DepthImage {
+impl DepthImage {
+    /// Returns the [`ComponentDescriptor`] for [`Self::buffer`].
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.data.heap_size_bytes()
-            + self.resolution.heap_size_bytes()
-            + self.data_type.heap_size_bytes()
-            + self.meter.heap_size_bytes()
-            + self.colormap.heap_size_bytes()
-            + self.point_fill_ratio.heap_size_bytes()
-            + self.draw_order.heap_size_bytes()
+    pub fn descriptor_buffer() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.DepthImage".into()),
+            component_name: "rerun.components.ImageBuffer".into(),
+            archetype_field_name: Some("buffer".into()),
+        }
     }
 
+    /// Returns the [`ComponentDescriptor`] for [`Self::format`].
     #[inline]
-    fn is_pod() -> bool {
-        <crate::components::Blob>::is_pod()
-            && <crate::components::Resolution2D>::is_pod()
-            && <crate::components::ChannelDataType>::is_pod()
-            && <Option<crate::components::DepthMeter>>::is_pod()
-            && <Option<crate::components::Colormap>>::is_pod()
-            && <Option<crate::components::FillRatio>>::is_pod()
-            && <Option<crate::components::DrawOrder>>::is_pod()
+    pub fn descriptor_format() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.DepthImage".into()),
+            component_name: "rerun.components.ImageFormat".into(),
+            archetype_field_name: Some("format".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::meter`].
+    #[inline]
+    pub fn descriptor_meter() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.DepthImage".into()),
+            component_name: "rerun.components.DepthMeter".into(),
+            archetype_field_name: Some("meter".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::colormap`].
+    #[inline]
+    pub fn descriptor_colormap() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.DepthImage".into()),
+            component_name: "rerun.components.Colormap".into(),
+            archetype_field_name: Some("colormap".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::depth_range`].
+    #[inline]
+    pub fn descriptor_depth_range() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.DepthImage".into()),
+            component_name: "rerun.components.ValueRange".into(),
+            archetype_field_name: Some("depth_range".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::point_fill_ratio`].
+    #[inline]
+    pub fn descriptor_point_fill_ratio() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.DepthImage".into()),
+            component_name: "rerun.components.FillRatio".into(),
+            archetype_field_name: Some("point_fill_ratio".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::draw_order`].
+    #[inline]
+    pub fn descriptor_draw_order() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.DepthImage".into()),
+            component_name: "rerun.components.DrawOrder".into(),
+            archetype_field_name: Some("draw_order".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for the associated indicator component.
+    #[inline]
+    pub fn descriptor_indicator() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.DepthImage".into()),
+            component_name: "rerun.components.DepthImageIndicator".into(),
+            archetype_field_name: None,
+        }
     }
 }
 
-static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 3usize]> =
+static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 2usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.Blob".into(),
-            "rerun.components.Resolution2D".into(),
-            "rerun.components.ChannelDataType".into(),
+            DepthImage::descriptor_buffer(),
+            DepthImage::descriptor_format(),
         ]
     });
 
-static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.components.DepthImageIndicator".into()]);
+static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [DepthImage::descriptor_indicator()]);
 
-static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 4usize]> =
+static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 5usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.DepthMeter".into(),
-            "rerun.components.Colormap".into(),
-            "rerun.components.FillRatio".into(),
-            "rerun.components.DrawOrder".into(),
+            DepthImage::descriptor_meter(),
+            DepthImage::descriptor_colormap(),
+            DepthImage::descriptor_depth_range(),
+            DepthImage::descriptor_point_fill_ratio(),
+            DepthImage::descriptor_draw_order(),
         ]
     });
 
-static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 8usize]> =
+static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 8usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.Blob".into(),
-            "rerun.components.Resolution2D".into(),
-            "rerun.components.ChannelDataType".into(),
-            "rerun.components.DepthImageIndicator".into(),
-            "rerun.components.DepthMeter".into(),
-            "rerun.components.Colormap".into(),
-            "rerun.components.FillRatio".into(),
-            "rerun.components.DrawOrder".into(),
+            DepthImage::descriptor_buffer(),
+            DepthImage::descriptor_format(),
+            DepthImage::descriptor_indicator(),
+            DepthImage::descriptor_meter(),
+            DepthImage::descriptor_colormap(),
+            DepthImage::descriptor_depth_range(),
+            DepthImage::descriptor_point_fill_ratio(),
+            DepthImage::descriptor_draw_order(),
         ]
     });
 
 impl DepthImage {
-    /// The total number of components in the archetype: 3 required, 1 recommended, 4 optional
+    /// The total number of components in the archetype: 2 required, 1 recommended, 5 optional
     pub const NUM_COMPONENTS: usize = 8usize;
 }
 
@@ -186,123 +254,71 @@ impl ::re_types_core::Archetype for DepthImage {
     }
 
     #[inline]
-    fn indicator() -> MaybeOwnedComponentBatch<'static> {
-        static INDICATOR: DepthImageIndicator = DepthImageIndicator::DEFAULT;
-        MaybeOwnedComponentBatch::Ref(&INDICATOR)
+    fn indicator() -> SerializedComponentBatch {
+        #[allow(clippy::unwrap_used)]
+        DepthImageIndicator::DEFAULT.serialized().unwrap()
     }
 
     #[inline]
-    fn required_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn required_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         REQUIRED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         RECOMMENDED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         OPTIONAL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn all_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn all_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         ALL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
     fn from_arrow_components(
-        arrow_data: impl IntoIterator<Item = (ComponentName, Box<dyn arrow2::array::Array>)>,
+        arrow_data: impl IntoIterator<Item = (ComponentDescriptor, arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self> {
         re_tracing::profile_function!();
         use ::re_types_core::{Loggable as _, ResultExt as _};
-        let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data
-            .into_iter()
-            .map(|(name, array)| (name.full_name(), array))
-            .collect();
-        let data = {
-            let array = arrays_by_name
-                .get("rerun.components.Blob")
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.DepthImage#data")?;
-            <crate::components::Blob>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.DepthImage#data")?
-                .into_iter()
-                .next()
-                .flatten()
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.DepthImage#data")?
-        };
-        let resolution = {
-            let array = arrays_by_name
-                .get("rerun.components.Resolution2D")
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.DepthImage#resolution")?;
-            <crate::components::Resolution2D>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.DepthImage#resolution")?
-                .into_iter()
-                .next()
-                .flatten()
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.DepthImage#resolution")?
-        };
-        let data_type = {
-            let array = arrays_by_name
-                .get("rerun.components.ChannelDataType")
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.DepthImage#data_type")?;
-            <crate::components::ChannelDataType>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.DepthImage#data_type")?
-                .into_iter()
-                .next()
-                .flatten()
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.DepthImage#data_type")?
-        };
-        let meter = if let Some(array) = arrays_by_name.get("rerun.components.DepthMeter") {
-            <crate::components::DepthMeter>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.DepthImage#meter")?
-                .into_iter()
-                .next()
-                .flatten()
-        } else {
-            None
-        };
-        let colormap = if let Some(array) = arrays_by_name.get("rerun.components.Colormap") {
-            <crate::components::Colormap>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.DepthImage#colormap")?
-                .into_iter()
-                .next()
-                .flatten()
-        } else {
-            None
-        };
-        let point_fill_ratio = if let Some(array) = arrays_by_name.get("rerun.components.FillRatio")
-        {
-            <crate::components::FillRatio>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.DepthImage#point_fill_ratio")?
-                .into_iter()
-                .next()
-                .flatten()
-        } else {
-            None
-        };
-        let draw_order = if let Some(array) = arrays_by_name.get("rerun.components.DrawOrder") {
-            <crate::components::DrawOrder>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.DepthImage#draw_order")?
-                .into_iter()
-                .next()
-                .flatten()
-        } else {
-            None
-        };
+        let arrays_by_descr: ::nohash_hasher::IntMap<_, _> = arrow_data.into_iter().collect();
+        let buffer = arrays_by_descr
+            .get(&Self::descriptor_buffer())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_buffer()));
+        let format = arrays_by_descr
+            .get(&Self::descriptor_format())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_format()));
+        let meter = arrays_by_descr
+            .get(&Self::descriptor_meter())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_meter()));
+        let colormap = arrays_by_descr
+            .get(&Self::descriptor_colormap())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_colormap()));
+        let depth_range = arrays_by_descr
+            .get(&Self::descriptor_depth_range())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_depth_range())
+            });
+        let point_fill_ratio = arrays_by_descr
+            .get(&Self::descriptor_point_fill_ratio())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_point_fill_ratio())
+            });
+        let draw_order = arrays_by_descr
+            .get(&Self::descriptor_draw_order())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_draw_order())
+            });
         Ok(Self {
-            data,
-            resolution,
-            data_type,
+            buffer,
+            format,
             meter,
             colormap,
+            depth_range,
             point_fill_ratio,
             draw_order,
         })
@@ -310,26 +326,18 @@ impl ::re_types_core::Archetype for DepthImage {
 }
 
 impl ::re_types_core::AsComponents for DepthImage {
-    fn as_component_batches(&self) -> Vec<MaybeOwnedComponentBatch<'_>> {
-        re_tracing::profile_function!();
+    #[inline]
+    fn as_serialized_batches(&self) -> Vec<SerializedComponentBatch> {
         use ::re_types_core::Archetype as _;
         [
             Some(Self::indicator()),
-            Some((&self.data as &dyn ComponentBatch).into()),
-            Some((&self.resolution as &dyn ComponentBatch).into()),
-            Some((&self.data_type as &dyn ComponentBatch).into()),
-            self.meter
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.colormap
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.point_fill_ratio
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
-            self.draw_order
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
+            self.buffer.clone(),
+            self.format.clone(),
+            self.meter.clone(),
+            self.colormap.clone(),
+            self.depth_range.clone(),
+            self.point_fill_ratio.clone(),
+            self.draw_order.clone(),
         ]
         .into_iter()
         .flatten()
@@ -337,23 +345,182 @@ impl ::re_types_core::AsComponents for DepthImage {
     }
 }
 
+impl ::re_types_core::ArchetypeReflectionMarker for DepthImage {}
+
 impl DepthImage {
     /// Create a new `DepthImage`.
     #[inline]
     pub fn new(
-        data: impl Into<crate::components::Blob>,
-        resolution: impl Into<crate::components::Resolution2D>,
-        data_type: impl Into<crate::components::ChannelDataType>,
+        buffer: impl Into<crate::components::ImageBuffer>,
+        format: impl Into<crate::components::ImageFormat>,
     ) -> Self {
         Self {
-            data: data.into(),
-            resolution: resolution.into(),
-            data_type: data_type.into(),
+            buffer: try_serialize_field(Self::descriptor_buffer(), [buffer]),
+            format: try_serialize_field(Self::descriptor_format(), [format]),
             meter: None,
             colormap: None,
+            depth_range: None,
             point_fill_ratio: None,
             draw_order: None,
         }
+    }
+
+    /// Update only some specific fields of a `DepthImage`.
+    #[inline]
+    pub fn update_fields() -> Self {
+        Self::default()
+    }
+
+    /// Clear all the fields of a `DepthImage`.
+    #[inline]
+    pub fn clear_fields() -> Self {
+        use ::re_types_core::Loggable as _;
+        Self {
+            buffer: Some(SerializedComponentBatch::new(
+                crate::components::ImageBuffer::arrow_empty(),
+                Self::descriptor_buffer(),
+            )),
+            format: Some(SerializedComponentBatch::new(
+                crate::components::ImageFormat::arrow_empty(),
+                Self::descriptor_format(),
+            )),
+            meter: Some(SerializedComponentBatch::new(
+                crate::components::DepthMeter::arrow_empty(),
+                Self::descriptor_meter(),
+            )),
+            colormap: Some(SerializedComponentBatch::new(
+                crate::components::Colormap::arrow_empty(),
+                Self::descriptor_colormap(),
+            )),
+            depth_range: Some(SerializedComponentBatch::new(
+                crate::components::ValueRange::arrow_empty(),
+                Self::descriptor_depth_range(),
+            )),
+            point_fill_ratio: Some(SerializedComponentBatch::new(
+                crate::components::FillRatio::arrow_empty(),
+                Self::descriptor_point_fill_ratio(),
+            )),
+            draw_order: Some(SerializedComponentBatch::new(
+                crate::components::DrawOrder::arrow_empty(),
+                Self::descriptor_draw_order(),
+            )),
+        }
+    }
+
+    /// Partitions the component data into multiple sub-batches.
+    ///
+    /// Specifically, this transforms the existing [`SerializedComponentBatch`]es data into [`SerializedComponentColumn`]s
+    /// instead, via [`SerializedComponentBatch::partitioned`].
+    ///
+    /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+    ///
+    /// The specified `lengths` must sum to the total length of the component batch.
+    ///
+    /// [`SerializedComponentColumn`]: [::re_types_core::SerializedComponentColumn]
+    #[inline]
+    pub fn columns<I>(
+        self,
+        _lengths: I,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>>
+    where
+        I: IntoIterator<Item = usize> + Clone,
+    {
+        let columns = [
+            self.buffer
+                .map(|buffer| buffer.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.format
+                .map(|format| format.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.meter
+                .map(|meter| meter.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.colormap
+                .map(|colormap| colormap.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.depth_range
+                .map(|depth_range| depth_range.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.point_fill_ratio
+                .map(|point_fill_ratio| point_fill_ratio.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.draw_order
+                .map(|draw_order| draw_order.partitioned(_lengths.clone()))
+                .transpose()?,
+        ];
+        Ok(columns
+            .into_iter()
+            .flatten()
+            .chain([::re_types_core::indicator_column::<Self>(
+                _lengths.into_iter().count(),
+            )?]))
+    }
+
+    /// Helper to partition the component data into unit-length sub-batches.
+    ///
+    /// This is semantically similar to calling [`Self::columns`] with `std::iter::take(1).repeat(n)`,
+    /// where `n` is automatically guessed.
+    #[inline]
+    pub fn columns_of_unit_batches(
+        self,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>> {
+        let len_buffer = self.buffer.as_ref().map(|b| b.array.len());
+        let len_format = self.format.as_ref().map(|b| b.array.len());
+        let len_meter = self.meter.as_ref().map(|b| b.array.len());
+        let len_colormap = self.colormap.as_ref().map(|b| b.array.len());
+        let len_depth_range = self.depth_range.as_ref().map(|b| b.array.len());
+        let len_point_fill_ratio = self.point_fill_ratio.as_ref().map(|b| b.array.len());
+        let len_draw_order = self.draw_order.as_ref().map(|b| b.array.len());
+        let len = None
+            .or(len_buffer)
+            .or(len_format)
+            .or(len_meter)
+            .or(len_colormap)
+            .or(len_depth_range)
+            .or(len_point_fill_ratio)
+            .or(len_draw_order)
+            .unwrap_or(0);
+        self.columns(std::iter::repeat(1).take(len))
+    }
+
+    /// The raw depth image data.
+    #[inline]
+    pub fn with_buffer(mut self, buffer: impl Into<crate::components::ImageBuffer>) -> Self {
+        self.buffer = try_serialize_field(Self::descriptor_buffer(), [buffer]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::ImageBuffer`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_buffer`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_buffer(
+        mut self,
+        buffer: impl IntoIterator<Item = impl Into<crate::components::ImageBuffer>>,
+    ) -> Self {
+        self.buffer = try_serialize_field(Self::descriptor_buffer(), buffer);
+        self
+    }
+
+    /// The format of the image.
+    #[inline]
+    pub fn with_format(mut self, format: impl Into<crate::components::ImageFormat>) -> Self {
+        self.format = try_serialize_field(Self::descriptor_format(), [format]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::ImageFormat`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_format`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_format(
+        mut self,
+        format: impl IntoIterator<Item = impl Into<crate::components::ImageFormat>>,
+    ) -> Self {
+        self.format = try_serialize_field(Self::descriptor_format(), format);
+        self
     }
 
     /// An optional floating point value that specifies how long a meter is in the native depth units.
@@ -365,7 +532,20 @@ impl DepthImage {
     /// In 3D views on the other hand, this affects where the points of the point cloud are placed.
     #[inline]
     pub fn with_meter(mut self, meter: impl Into<crate::components::DepthMeter>) -> Self {
-        self.meter = Some(meter.into());
+        self.meter = try_serialize_field(Self::descriptor_meter(), [meter]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::DepthMeter`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_meter`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_meter(
+        mut self,
+        meter: impl IntoIterator<Item = impl Into<crate::components::DepthMeter>>,
+    ) -> Self {
+        self.meter = try_serialize_field(Self::descriptor_meter(), meter);
         self
     }
 
@@ -374,7 +554,53 @@ impl DepthImage {
     /// If not set, the depth image will be rendered using the Turbo colormap.
     #[inline]
     pub fn with_colormap(mut self, colormap: impl Into<crate::components::Colormap>) -> Self {
-        self.colormap = Some(colormap.into());
+        self.colormap = try_serialize_field(Self::descriptor_colormap(), [colormap]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::Colormap`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_colormap`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_colormap(
+        mut self,
+        colormap: impl IntoIterator<Item = impl Into<crate::components::Colormap>>,
+    ) -> Self {
+        self.colormap = try_serialize_field(Self::descriptor_colormap(), colormap);
+        self
+    }
+
+    /// The expected range of depth values.
+    ///
+    /// This is typically the expected range of valid values.
+    /// Everything outside of the range is clamped to the range for the purpose of colormpaping.
+    /// Note that point clouds generated from this image will still display all points, regardless of this range.
+    ///
+    /// If not specified, the range will be automatically estimated from the data.
+    /// Note that the Viewer may try to guess a wider range than the minimum/maximum of values
+    /// in the contents of the depth image.
+    /// E.g. if all values are positive, some bigger than 1.0 and all smaller than 255.0,
+    /// the Viewer will guess that the data likely came from an 8bit image, thus assuming a range of 0-255.
+    #[inline]
+    pub fn with_depth_range(
+        mut self,
+        depth_range: impl Into<crate::components::ValueRange>,
+    ) -> Self {
+        self.depth_range = try_serialize_field(Self::descriptor_depth_range(), [depth_range]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::ValueRange`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_depth_range`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_depth_range(
+        mut self,
+        depth_range: impl IntoIterator<Item = impl Into<crate::components::ValueRange>>,
+    ) -> Self {
+        self.depth_range = try_serialize_field(Self::descriptor_depth_range(), depth_range);
         self
     }
 
@@ -390,7 +616,22 @@ impl DepthImage {
         mut self,
         point_fill_ratio: impl Into<crate::components::FillRatio>,
     ) -> Self {
-        self.point_fill_ratio = Some(point_fill_ratio.into());
+        self.point_fill_ratio =
+            try_serialize_field(Self::descriptor_point_fill_ratio(), [point_fill_ratio]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::FillRatio`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_point_fill_ratio`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_point_fill_ratio(
+        mut self,
+        point_fill_ratio: impl IntoIterator<Item = impl Into<crate::components::FillRatio>>,
+    ) -> Self {
+        self.point_fill_ratio =
+            try_serialize_field(Self::descriptor_point_fill_ratio(), point_fill_ratio);
         self
     }
 
@@ -399,7 +640,33 @@ impl DepthImage {
     /// Objects with higher values are drawn on top of those with lower values.
     #[inline]
     pub fn with_draw_order(mut self, draw_order: impl Into<crate::components::DrawOrder>) -> Self {
-        self.draw_order = Some(draw_order.into());
+        self.draw_order = try_serialize_field(Self::descriptor_draw_order(), [draw_order]);
         self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::DrawOrder`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_draw_order`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_draw_order(
+        mut self,
+        draw_order: impl IntoIterator<Item = impl Into<crate::components::DrawOrder>>,
+    ) -> Self {
+        self.draw_order = try_serialize_field(Self::descriptor_draw_order(), draw_order);
+        self
+    }
+}
+
+impl ::re_byte_size::SizeBytes for DepthImage {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.buffer.heap_size_bytes()
+            + self.format.heap_size_bytes()
+            + self.meter.heap_size_bytes()
+            + self.colormap.heap_size_bytes()
+            + self.depth_range.heap_size_bytes()
+            + self.point_fill_ratio.heap_size_bytes()
+            + self.draw_order.heap_size_bytes()
     }
 }

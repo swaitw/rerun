@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
   schedule:
     # https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#schedule
-    # 12:15 UTC, every day
-    - cron: "15 12 * * *"
+    # 3am UTC, so 4am-5am CET and evening in east time, basically after everyone's day.
+    - cron: "15 3 * * *"
 
 defaults:
   run:
@@ -15,6 +15,9 @@ permissions:
   contents: "write"
   id-token: "write"
   deployments: "write"
+  # This is needed since the web viewer build has this permission in order to write comments in PRs
+  # (not needed for nightly, but the permission is still active).
+  pull-requests: "write"
 
 jobs:
   checks:
@@ -59,7 +62,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.76.0
+          toolchain: 1.81.0
 
       - run: cargo build -p rerun
 
@@ -429,6 +432,12 @@ jobs:
             ```
 
           prerelease: true
+          # Be explicit about the commit we're releasing/tagging.
+          # Otherwise it can happen that there's a discrepancy between the tag and the commit for which we uploaded & linked artifacts.
+          # It seems to otherwise use the latest commit for the tag. From the actions's docs:
+          # > If the tag of the release you are creating does not yet exist, you should set both the tag and commit action inputs.
+          # We just deleted the previous tag, so this is the case!
+          commit: ${{github.sha}}
           name: "Development Build"
           tag: "prerelease"
           token: ${{ secrets.GITHUB_TOKEN }}

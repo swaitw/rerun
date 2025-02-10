@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../datatypes/tensor_data.hpp"
 #include "../result.hpp"
 
@@ -19,23 +20,15 @@ namespace rerun::components {
     ///
     /// These dimensions are combined with an index to look up values from the `buffer` field,
     /// which stores a contiguous array of typed values.
-    ///
-    /// Note that the buffer may in a format with downsampled chroma, such as NV12 or YUY2.
-    /// For chroma downsampled formats the shape has to be the shape of the decoded image.
     struct TensorData {
         rerun::datatypes::TensorData data;
 
-      public:
-        // Extensions to generated type defined in 'tensor_data_ext.cpp'
-
+      public: // START of extensions from tensor_data_ext.cpp:
         /// New tensor data from shape and tensor buffer.
         ///
         /// \param shape Shape of the tensor.
         /// \param buffer The tensor buffer containing the tensor's data.
-        TensorData(
-            rerun::Collection<rerun::datatypes::TensorDimension> shape,
-            rerun::datatypes::TensorBuffer buffer
-        )
+        TensorData(rerun::Collection<uint64_t> shape, rerun::datatypes::TensorBuffer buffer)
             : data(rerun::datatypes::TensorData(std::move(shape), std::move(buffer))) {}
 
         /// New tensor data from dimensions and pointer to tensor data.
@@ -44,8 +37,10 @@ namespace rerun::components {
         /// \param shape Shape of the tensor. Determines the number of elements expected to be in `data_`.
         /// \param data_ Target of the pointer must outlive the archetype.
         template <typename TElement>
-        explicit TensorData(Collection<datatypes::TensorDimension> shape, const TElement* data_)
+        explicit TensorData(Collection<uint64_t> shape, const TElement* data_)
             : data(rerun::datatypes::TensorData(std::move(shape), data_)) {}
+
+        // END of extensions from tensor_data_ext.cpp, start of generated code:
 
       public:
         TensorData() = default;
@@ -70,7 +65,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::TensorData> {
-        static constexpr const char Name[] = "rerun.components.TensorData";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.TensorData";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -81,10 +76,19 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const components::TensorData* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::TensorData>::to_arrow(
-                &instances->data,
-                num_instances
-            );
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::TensorData>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::TensorData>::to_arrow(
+                    &instances->data,
+                    num_instances
+                );
+            }
         }
     };
 } // namespace rerun

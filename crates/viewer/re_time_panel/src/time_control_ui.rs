@@ -12,7 +12,7 @@ pub struct TimeControlUi;
 impl TimeControlUi {
     #[allow(clippy::unused_self)]
     pub fn timeline_selector_ui(
-        &mut self,
+        &self,
         time_control: &mut TimeControl,
         times_per_timeline: &TimesPerTimeline,
         ui: &mut egui::Ui,
@@ -25,7 +25,7 @@ impl TimeControlUi {
             ui.visuals_mut().widgets.hovered.expansion = 0.0;
             ui.visuals_mut().widgets.open.expansion = 0.0;
 
-            egui::ComboBox::from_id_source("timeline")
+            egui::ComboBox::from_id_salt("timeline")
                 .selected_text(time_control.timeline().name().as_str())
                 .show_ui(ui, |ui| {
                     for timeline in times_per_timeline.timelines() {
@@ -44,7 +44,6 @@ impl TimeControlUi {
                 .on_hover_ui(|ui| {
                     list_item::list_item_scope(ui, "tooltip", |ui| {
                         ui.markdown_ui(
-                            egui::Id::new("timeline_selector_tooltip"),
                             r"
 Select timeline.
 
@@ -69,7 +68,7 @@ You can also define your own timelines, e.g. for sensor time or camera frame num
     }
 
     #[allow(clippy::unused_self)]
-    pub fn fps_ui(&mut self, time_control: &mut TimeControl, ui: &mut egui::Ui) {
+    pub fn fps_ui(&self, time_control: &mut TimeControl, ui: &mut egui::Ui) {
         if time_control.time_type() == TimeType::Sequence {
             if let Some(mut fps) = time_control.fps() {
                 ui.scope(|ui| {
@@ -89,7 +88,7 @@ You can also define your own timelines, e.g. for sensor time or camera frame num
     }
 
     pub fn play_pause_ui(
-        &mut self,
+        &self,
         time_control: &mut TimeControl,
         times_per_timeline: &TimesPerTimeline,
         ui: &mut egui::Ui,
@@ -106,7 +105,7 @@ You can also define your own timelines, e.g. for sensor time or camera frame num
 
     #[allow(clippy::unused_self)]
     fn play_button_ui(
-        &mut self,
+        &self,
         time_control: &mut TimeControl,
         ui: &mut egui::Ui,
         times_per_timeline: &TimesPerTimeline,
@@ -123,7 +122,7 @@ You can also define your own timelines, e.g. for sensor time or camera frame num
 
     #[allow(clippy::unused_self)]
     fn follow_button_ui(
-        &mut self,
+        &self,
         time_control: &mut TimeControl,
         ui: &mut egui::Ui,
         times_per_timeline: &TimesPerTimeline,
@@ -142,7 +141,7 @@ You can also define your own timelines, e.g. for sensor time or camera frame num
     }
 
     #[allow(clippy::unused_self)]
-    fn pause_button_ui(&mut self, time_control: &mut TimeControl, ui: &mut egui::Ui) {
+    fn pause_button_ui(&self, time_control: &mut TimeControl, ui: &mut egui::Ui) {
         let is_paused = time_control.play_state() == PlayState::Paused;
         if ui
             .large_button_selected(&re_ui::icons::PAUSE, is_paused)
@@ -155,7 +154,7 @@ You can also define your own timelines, e.g. for sensor time or camera frame num
 
     #[allow(clippy::unused_self)]
     fn step_time_button_ui(
-        &mut self,
+        &self,
         time_control: &mut TimeControl,
         ui: &mut egui::Ui,
         times_per_timeline: &TimesPerTimeline,
@@ -178,7 +177,7 @@ You can also define your own timelines, e.g. for sensor time or camera frame num
     }
 
     #[allow(clippy::unused_self)]
-    fn loop_button_ui(&mut self, time_control: &mut TimeControl, ui: &mut egui::Ui) {
+    fn loop_button_ui(&self, time_control: &mut TimeControl, ui: &mut egui::Ui) {
         let icon = &re_ui::icons::LOOP;
 
         ui.scope(|ui| {
@@ -220,7 +219,7 @@ You can also define your own timelines, e.g. for sensor time or camera frame num
     }
 
     #[allow(clippy::unused_self)]
-    pub fn playback_speed_ui(&mut self, time_control: &mut TimeControl, ui: &mut egui::Ui) {
+    pub fn playback_speed_ui(&self, time_control: &mut TimeControl, ui: &mut egui::Ui) {
         let mut speed = time_control.speed();
         let drag_speed = (speed * 0.02).at_least(0.01);
         ui.scope(|ui| {
@@ -238,8 +237,10 @@ You can also define your own timelines, e.g. for sensor time or camera frame num
 }
 
 fn toggle_playback_text(egui_ctx: &egui::Context) -> String {
-    if let Some(shortcut) = re_ui::UICommand::PlaybackTogglePlayPause.kb_shortcut() {
-        format!(" Toggle with {}", egui_ctx.format_shortcut(&shortcut))
+    if let Some(shortcut_text) =
+        re_ui::UICommand::PlaybackTogglePlayPause.formatted_kb_shortcut(egui_ctx)
+    {
+        format!(" Toggle with {shortcut_text}")
     } else {
         Default::default()
     }

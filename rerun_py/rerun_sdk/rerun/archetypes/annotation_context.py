@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from attrs import define, field
 
 from .. import components
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
 from ..error_utils import catch_and_log_exceptions
 
@@ -52,11 +54,11 @@ class AnnotationContext(Archetype):
     ```
     <center>
     <picture>
-      <source media="(max-width: 480px)" srcset="https://static.rerun.io/annotation_context_segmentation/0e21c0a04e456fec41d16b0deaa12c00cddf2d9b/480w.png">
-      <source media="(max-width: 768px)" srcset="https://static.rerun.io/annotation_context_segmentation/0e21c0a04e456fec41d16b0deaa12c00cddf2d9b/768w.png">
-      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/annotation_context_segmentation/0e21c0a04e456fec41d16b0deaa12c00cddf2d9b/1024w.png">
-      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/annotation_context_segmentation/0e21c0a04e456fec41d16b0deaa12c00cddf2d9b/1200w.png">
-      <img src="https://static.rerun.io/annotation_context_segmentation/0e21c0a04e456fec41d16b0deaa12c00cddf2d9b/full.png" width="640">
+      <source media="(max-width: 480px)" srcset="https://static.rerun.io/annotation_context_segmentation/6c9e88fc9d44a08031cadd444c2e58a985cc1208/480w.png">
+      <source media="(max-width: 768px)" srcset="https://static.rerun.io/annotation_context_segmentation/6c9e88fc9d44a08031cadd444c2e58a985cc1208/768w.png">
+      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/annotation_context_segmentation/6c9e88fc9d44a08031cadd444c2e58a985cc1208/1024w.png">
+      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/annotation_context_segmentation/6c9e88fc9d44a08031cadd444c2e58a985cc1208/1200w.png">
+      <img src="https://static.rerun.io/annotation_context_segmentation/6c9e88fc9d44a08031cadd444c2e58a985cc1208/full.png" width="640">
     </picture>
     </center>
 
@@ -82,7 +84,7 @@ class AnnotationContext(Archetype):
     def __attrs_clear__(self) -> None:
         """Convenience method for calling `__attrs_init__` with all `None`s."""
         self.__attrs_init__(
-            context=None,  # type: ignore[arg-type]
+            context=None,
         )
 
     @classmethod
@@ -92,9 +94,87 @@ class AnnotationContext(Archetype):
         inst.__attrs_clear__()
         return inst
 
-    context: components.AnnotationContextBatch = field(
-        metadata={"component": "required"},
-        converter=components.AnnotationContextBatch._required,  # type: ignore[misc]
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        clear_unset: bool = False,
+        context: components.AnnotationContextLike | None = None,
+    ) -> AnnotationContext:
+        """
+        Update only some specific fields of a `AnnotationContext`.
+
+        Parameters
+        ----------
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        context:
+            List of class descriptions, mapping class indices to class names, colors etc.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "context": context,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def cleared(cls) -> AnnotationContext:
+        """Clear all the fields of a `AnnotationContext`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        context: components.AnnotationContextArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        context:
+            List of class descriptions, mapping class indices to class names, colors etc.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                context=context,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
+    context: components.AnnotationContextBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.AnnotationContextBatch._converter,  # type: ignore[misc]
     )
     # List of class descriptions, mapping class indices to class names, colors etc.
     #

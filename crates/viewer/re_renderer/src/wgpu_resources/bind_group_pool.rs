@@ -9,7 +9,6 @@ use super::{
     buffer_pool::{GpuBuffer, GpuBufferHandle, GpuBufferPool},
     dynamic_resource_pool::{DynamicResource, DynamicResourcePool, DynamicResourcesDesc},
     sampler_pool::{GpuSamplerHandle, GpuSamplerPool},
-    static_resource_pool::StaticResourcePoolAccessor as _,
     texture_pool::{GpuTexture, GpuTextureHandle, GpuTexturePool},
     WgpuResourcePools,
 };
@@ -33,6 +32,12 @@ impl std::ops::Deref for GpuBindGroup {
     #[inline]
     fn deref(&self) -> &Self::Target {
         &self.resource.inner
+    }
+}
+
+impl<'a> From<&'a GpuBindGroup> for Option<&'a wgpu::BindGroup> {
+    fn from(bind_group: &'a GpuBindGroup) -> Self {
+        Some(&bind_group.resource.inner)
     }
 }
 

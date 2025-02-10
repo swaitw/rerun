@@ -1,10 +1,105 @@
 # This file is read in `compare_snippet_output.py` and the `snippets` command in `re_dev_tools`/`build_examples`.
 
+# These snippets will be excluded from the snippet index, unconditionally.
+[snippets_ref.snippets.opt_out]
+
+# These archetypes will ignore the associated snippets in the snippet index.
+[snippets_ref.archetypes.opt_out]
+"DataframeQuery" = ["reference/dataframe_save_blueprint"]
+
+# These components will ignore the associated snippets in the snippet index.
+[snippets_ref.components.opt_out]
+"ShowLabels" = ["tutorials/data_out"]
+
+# These arbitrary feature names will be indexed exactly as written down.
+# Add anything you can think about!
+#
+# Tip: use UTF8 NBSPs (https://unicode-explorer.com/c/00A0) as needed.
+[snippets_ref]
+features = [
+  [
+    "Update rows",
+    [
+      "archetypes/scalar_row_updates",
+      "archetypes/points3d_row_updates",
+      "archetypes/transform3d_row_updates",
+    ],
+  ],
+  [
+    "Update columns",
+    [
+      "archetypes/scalar_column_updates",
+      "archetypes/points3d_column_updates",
+      "archetypes/transform3d_column_updates",
+      "archetypes/image_column_updates",       # bonus!
+    ],
+  ],
+  [
+    "Partial updates",
+    [
+      "archetypes/points3d_partial_updates",
+      "archetypes/transform3d_partial_updates",
+      "archetypes/mesh3d_partial_updates",
+    ],
+  ],
+  [
+    "Send custom data",
+    [
+      "tutorials/any_values",
+      "tutorials/extra_values",
+      "tutorials/custom_data",
+    ],
+  ],
+  [
+    "Send columns of custom data",
+    [
+      "howto/any_values_column_updates",
+      "howto/any_batch_value_column_updates",
+    ],
+  ],
+  [
+    "Query dataframes",
+    [
+      "reference/dataframe_query",
+      "reference/dataframe_view_query",
+    ],
+  ],
+]
+
 # These entries won't run at all.
 #
 # You should only ever use this if the test isn't implemented and cannot yet be implemented
 # for one or more specific SDKs.
 [opt_out.run]
+"concepts/explicit_recording" = [ # python-specific check
+  "cpp",
+  "rust",
+]
+"concepts/how_helix_was_logged" = [ # pseudo-code
+  "py",
+  "cpp",
+  "rust",
+]
+"concepts/static/log_static" = [ # pseudo-code
+  "py",
+  "cpp",
+  "rust",
+]
+"concepts/static/log_temporal_10x" = [ # pseudo-code
+  "py",
+  "cpp",
+  "rust",
+]
+"concepts/static/send_static" = [ # pseudo-code
+  "py",
+  "cpp",
+  "rust",
+]
+"concepts/static/log_static_10x" = [ # pseudo-code
+  "py",
+  "cpp",
+  "rust",
+]
 "concepts/viscomp-base" = [
   "cpp",  # Blueprint API doesn't exist for C++/Rust
   "rust", # Blueprint API doesn't exist for C++/Rust
@@ -25,12 +120,15 @@
   "cpp",  # Blueprint API doesn't exist for C++/Rust
   "rust", # Blueprint API doesn't exist for C++/Rust
 ]
-views = [
+"concepts/app-model" = [ # Uses a non-standard logging workflow
+  "py",
+  "cpp",
+  "rust",
+]
+"views" = [
   "cpp",  # TODO(#5520): C++ views are not yet implemented
   "rust", # TODO(#5521): Rust views are not yet implemented
 ]
-
-"archetypes/annotation_context_connections" = ["cpp"] # TODO(#6925)
 "archetypes/image_advanced" = [
   "cpp",  # Missing examples
   "rust", # Missing examples
@@ -40,14 +138,30 @@ views = [
   "rust",
   "py",
 ]
-"tutorials/annotation-context" = [ # Not a complete example
+"reference/dataframe_query" = [ # No output
   "cpp",
   "rust",
   "py",
 ]
-"tutorials/any_values" = [ # Not yet implemented
+"reference/dataframe_save_blueprint" = [ # No output
   "cpp",
   "rust",
+  "py",
+]
+"reference/dataframe_view_query" = [ # No output
+  "cpp",
+  "rust",
+  "py",
+]
+"reference/dataframe_view_query_external" = [ # No output
+  "cpp",
+  "rust",
+  "py",
+]
+"tutorials/custom-application-id" = [ # Not a complete examples
+  "cpp",
+  "rust",
+  "py",
 ]
 "tutorials/custom-recording-id" = [ # Not a complete examples
   "cpp",
@@ -59,7 +173,6 @@ views = [
   "rust",
   "py",
 ]
-"tutorials/extra_values" = ["cpp", "rust"] # Missing examples
 "tutorials/log-file" = [ # Not a complete examples
   "cpp",
   "rust",
@@ -75,14 +188,20 @@ views = [
   "rust", # Not implemented
   "py",   # Doesn't terminate
 ]
-"tutorials/temporal_batch" = [
-  "cpp", # Not impolemented yet
-]
 "tutorials/visualizer-overrides" = [
   "cpp",  # Not implemented
   "rust", # Not implemented
 ]
-
+"tutorials/data_out" = [
+  "py",   # Requires context (an RRD file to be exported by the user)
+  "cpp",  # Not implemented
+  "rust", # Not implemented
+]
+"tutorials/visualization" = [
+  "py",   # Requires passing RRD as argument
+  "cpp",  # Not implemented
+  "rust", # Not implemented
+]
 
 # These entries will run but their results won't be compared to the baseline.
 #
@@ -99,35 +218,37 @@ quick_start = [ # These examples don't have exactly the same implementation.
   "py",
   "rust",
 ]
-"archetypes/arrow3d_simple" = [ # TODO(#3206): examples use different RNGs
-  "cpp",
-  "py",
-  "rust",
-]
-"archetypes/asset3d_out_of_tree" = [ # float issues since calculation is done slightly differently (also, Python uses doubles)
-  "cpp",
-  "py",
-  "rust",
+"archetypes/arrows3d_simple" = [
+  "py",  # Python uses doubles
+  "cpp", # Trigonometry doesn't work out the same with all C++ toolchains (*some* Windows machines yield a different result)
 ]
 "archetypes/bar_chart" = [ # On Windows this logs f64 instead of u64 unless a numpy array with explicit type is used.
   "py",
 ]
-"archetypes/mesh3d_partial_updates" = [
+"archetypes/capsules3d_batch" = [ # TODO(#3235): Degree to radian conversion is slightly different.
   "cpp",
   "py",
   "rust",
-] # float precision issues
+]
+"archetypes/ellipsoids3d_simple" = [ # TODO(#3206): examples use different RNGs
+  "cpp",
+  "py",
+  "rust",
+]
+"archetypes/mesh3d_partial_updates" = [ # Python uses doubles
+  "py",
+]
 "archetypes/pinhole_simple" = [ # TODO(#3206): examples use different RNGs
   "cpp",
   "py",
   "rust",
 ]
-"archetypes/point2d_random" = [ # TODO(#3206): examples use different RNGs
+"archetypes/points2d_random" = [ # TODO(#3206): examples use different RNGs
   "cpp",
   "py",
   "rust",
 ]
-"archetypes/point3d_random" = [ # TODO(#3206): examples use different RNGs
+"archetypes/points3d_random" = [ # TODO(#3206): examples use different RNGs
   "cpp",
   "py",
   "rust",
@@ -140,17 +261,7 @@ quick_start = [ # These examples don't have exactly the same implementation.
   "py",
   "rust",
 ]
-"archetypes/series_point_style" = [ # TODO(#5116): trigonometric functions have slightly different outcomes
-  "cpp",
-  "py",
-  "rust",
-]
-"archetypes/series_line_style" = [ # TODO(#5116):trigonometric functions have slightly different outcomes
-  "cpp",
-  "py",
-  "rust",
-]
-"archetypes/text_log_integration" = [ # The entity path will differ because the Rust code is part of a library
+"archetypes/text_log_integration" = [ # The entity path will differ because the integrations work differently
   "cpp",
   "py",
   "rust",
@@ -163,8 +274,28 @@ quick_start = [ # These examples don't have exactly the same implementation.
 "archetypes/transform3d_hierarchy" = [ # Uses a lot of trigonometry which is surprisingly easy to get the same on Rust & C++, but not on Python/Numpy
   "py",
 ]
+"archetypes/instance_poses3d_combined" = [ # TODO(#3235): Slight floating point differences in point grid.
+  "cpp",
+  "py",
+  "rust",
+]
+"archetypes/mesh3d_instancing" = [ # Python uses doubles
+  "py",
+]
+"archetypes/series_line_style" = [
+  "cpp", # somehow, C++ yields a different result, see <https://github.com/rerun-io/rerun/pull/8851>
+]
+"archetypes/series_point_style" = [
+  "cpp", # somehow, C++ yields a different result, see <https://github.com/rerun-io/rerun/pull/8851>
+]
 
 # `$config_dir` will be replaced with the absolute path of `docs/snippets`.
 [extra_args]
-"archetypes/asset3d_simple" = ["$config_dir/../assets/cube.glb"]
-"archetypes/asset3d_out_of_tree" = ["$config_dir/../assets/cube.glb"]
+"archetypes/asset3d_simple" = ["$config_dir/../../tests/assets/cube.glb"]
+"archetypes/asset3d_out_of_tree" = ["$config_dir/../../tests/assets/cube.glb"]
+"archetypes/video_auto_frames" = [
+  "$config_dir/../../tests/assets/video/Big_Buck_Bunny_1080_10s_av1.mp4",
+]
+"archetypes/video_manual_frames" = [
+  "$config_dir/../../tests/assets/video/Sintel_1080_10s_av1.mp4",
+]

@@ -5,39 +5,75 @@
 
 #include "../collection_adapter_builtins.hpp"
 
-namespace rerun::archetypes {}
+namespace rerun::archetypes {
+    TextLog TextLog::clear_fields() {
+        auto archetype = TextLog();
+        archetype.text =
+            ComponentBatch::empty<rerun::components::Text>(Descriptor_text).value_or_throw();
+        archetype.level = ComponentBatch::empty<rerun::components::TextLogLevel>(Descriptor_level)
+                              .value_or_throw();
+        archetype.color =
+            ComponentBatch::empty<rerun::components::Color>(Descriptor_color).value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> TextLog::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(4);
+        if (text.has_value()) {
+            columns.push_back(text.value().partitioned(lengths_).value_or_throw());
+        }
+        if (level.has_value()) {
+            columns.push_back(level.value().partitioned(lengths_).value_or_throw());
+        }
+        if (color.has_value()) {
+            columns.push_back(color.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(
+            ComponentColumn::from_indicators<TextLog>(static_cast<uint32_t>(lengths_.size()))
+                .value_or_throw()
+        );
+        return columns;
+    }
+
+    Collection<ComponentColumn> TextLog::columns() {
+        if (text.has_value()) {
+            return columns(std::vector<uint32_t>(text.value().length(), 1));
+        }
+        if (level.has_value()) {
+            return columns(std::vector<uint32_t>(level.value().length(), 1));
+        }
+        if (color.has_value()) {
+            return columns(std::vector<uint32_t>(color.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<archetypes::TextLog>::serialize(
+    Result<Collection<ComponentBatch>> AsComponents<archetypes::TextLog>::as_batches(
         const archetypes::TextLog& archetype
     ) {
         using namespace archetypes;
-        std::vector<DataCell> cells;
+        std::vector<ComponentBatch> cells;
         cells.reserve(4);
 
-        {
-            auto result = DataCell::from_loggable(archetype.text);
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.text.has_value()) {
+            cells.push_back(archetype.text.value());
         }
         if (archetype.level.has_value()) {
-            auto result = DataCell::from_loggable(archetype.level.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.level.value());
         }
         if (archetype.color.has_value()) {
-            auto result = DataCell::from_loggable(archetype.color.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.color.value());
         }
         {
-            auto indicator = TextLog::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<TextLog>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

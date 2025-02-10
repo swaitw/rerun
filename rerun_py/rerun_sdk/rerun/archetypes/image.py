@@ -5,13 +5,13 @@
 
 from __future__ import annotations
 
-from typing import Any
-
+import numpy as np
 from attrs import define, field
 
 from .. import components, datatypes
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
 from ..error_utils import catch_and_log_exceptions
 from .image_ext import ImageExt
@@ -24,28 +24,21 @@ class Image(ImageExt, Archetype):
     """
     **Archetype**: A monochrome or color image.
 
-    The order of dimensions in the underlying [`components.TensorData`][rerun.components.TensorData] follows the typical
-    row-major, interleaved-pixel image format. Additionally, Rerun orders the
-    [`datatypes.TensorDimension`][rerun.datatypes.TensorDimension]s within the shape description from outer-most to inner-most.
+    See also [`archetypes.DepthImage`][rerun.archetypes.DepthImage] and [`archetypes.SegmentationImage`][rerun.archetypes.SegmentationImage].
 
-    As such, the shape of the [`components.TensorData`][rerun.components.TensorData] must be mappable to:
-    - A `HxW` tensor, treated as a grayscale image.
-    - A `HxWx3` tensor, treated as an RGB image.
-    - A `HxWx4` tensor, treated as an RGBA image.
+    Rerun also supports compressed images (JPEG, PNG, …), using [`archetypes.EncodedImage`][rerun.archetypes.EncodedImage].
+    For images that refer to video frames see [`archetypes.VideoFrameReference`][rerun.archetypes.VideoFrameReference].
+    Compressing images or using video data instead can save a lot of bandwidth and memory.
 
-    Leading and trailing unit-dimensions are ignored, so that
-    `1x480x640x3x1` is treated as a `480x640x3` RGB image.
+    The raw image data is stored as a single buffer of bytes in a [`components.Blob`][rerun.components.Blob].
+    The meaning of these bytes is determined by the [`components.ImageFormat`][rerun.components.ImageFormat] which specifies the resolution
+    and the pixel format (e.g. RGB, RGBA, …).
 
-    Rerun also supports compressed images (JPEG, PNG, …), using [`archetypes.ImageEncoded`][rerun.archetypes.ImageEncoded].
-    Compressing images can save a lot of bandwidth and memory.
+    The order of dimensions in the underlying [`components.Blob`][rerun.components.Blob] follows the typical
+    row-major, interleaved-pixel image format.
 
-    You can compress an image using [`rerun.Image.compress`][].
-    To pass in a chroma-encoded image (NV12, YUY2), use [`rerun.ImageChromaDownsampled`][].
-
-    See also [`components.TensorData`][rerun.components.TensorData] and [`datatypes.TensorBuffer`][rerun.datatypes.TensorBuffer].
-
-    Example
-    -------
+    Examples
+    --------
     ### `image_simple`:
     ```python
     import numpy as np
@@ -70,22 +63,76 @@ class Image(ImageExt, Archetype):
     </picture>
     </center>
 
+    ### Logging images with various formats:
+    ```python
+    import numpy as np
+    import rerun as rr
+
+    rr.init("rerun_example_image_formats", spawn=True)
+
+    # Simple gradient image, logged in different formats.
+    image = np.array([[[x, min(255, x + y), y] for x in range(0, 256)] for y in range(0, 256)], dtype=np.uint8)
+    rr.log("image_rgb", rr.Image(image))
+    rr.log("image_green_only", rr.Image(image[:, :, 1], color_model="l"))  # Luminance only
+    rr.log("image_bgr", rr.Image(image[:, :, ::-1], color_model="bgr"))  # BGR
+
+    # New image with Separate Y/U/V planes with 4:2:2 chroma downsampling
+    y = bytes([128 for y in range(0, 256) for x in range(0, 256)])
+    u = bytes([x * 2 for y in range(0, 256) for x in range(0, 128)])  # Half horizontal resolution for chroma.
+    v = bytes([y for y in range(0, 256) for x in range(0, 128)])
+    rr.log("image_yuv422", rr.Image(bytes=y + u + v, width=256, height=256, pixel_format=rr.PixelFormat.Y_U_V16_FullRange))
+    ```
+    <center>
+    <picture>
+      <source media="(max-width: 480px)" srcset="https://static.rerun.io/image_formats/182a233fb4d0680eb31912a82f328ddaaa66324e/480w.png">
+      <source media="(max-width: 768px)" srcset="https://static.rerun.io/image_formats/182a233fb4d0680eb31912a82f328ddaaa66324e/768w.png">
+      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/image_formats/182a233fb4d0680eb31912a82f328ddaaa66324e/1024w.png">
+      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/image_formats/182a233fb4d0680eb31912a82f328ddaaa66324e/1200w.png">
+      <img src="https://static.rerun.io/image_formats/182a233fb4d0680eb31912a82f328ddaaa66324e/full.png" width="640">
+    </picture>
+    </center>
+
     """
 
-    def __init__(
-        self: Any,
-        data: datatypes.TensorDataLike,
+    # __init__ can be found in image_ext.py
+
+    def __attrs_clear__(self) -> None:
+        """Convenience method for calling `__attrs_init__` with all `None`s."""
+        self.__attrs_init__(
+            buffer=None,
+            format=None,
+            opacity=None,
+            draw_order=None,
+        )
+
+    @classmethod
+    def _clear(cls) -> Image:
+        """Produce an empty Image, bypassing `__init__`."""
+        inst = cls.__new__(cls)
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def from_fields(
+        cls,
         *,
+        clear_unset: bool = False,
+        buffer: datatypes.BlobLike | None = None,
+        format: datatypes.ImageFormatLike | None = None,
         opacity: datatypes.Float32Like | None = None,
         draw_order: datatypes.Float32Like | None = None,
-    ):
+    ) -> Image:
         """
-        Create a new instance of the Image archetype.
+        Update only some specific fields of a `Image`.
 
         Parameters
         ----------
-        data:
-            The image data. Should always be a 2- or 3-dimensional tensor.
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        buffer:
+            The raw image data.
+        format:
+            The format of the image.
         opacity:
             Opacity of the image, useful for layering several images.
 
@@ -97,39 +144,105 @@ class Image(ImageExt, Archetype):
 
         """
 
-        # You can define your own __init__ function as a member of ImageExt in image_ext.py
-        with catch_and_log_exceptions(context=self.__class__.__name__):
-            self.__attrs_init__(data=data, opacity=opacity, draw_order=draw_order)
-            return
-        self.__attrs_clear__()
-
-    def __attrs_clear__(self) -> None:
-        """Convenience method for calling `__attrs_init__` with all `None`s."""
-        self.__attrs_init__(
-            data=None,  # type: ignore[arg-type]
-            opacity=None,  # type: ignore[arg-type]
-            draw_order=None,  # type: ignore[arg-type]
-        )
-
-    @classmethod
-    def _clear(cls) -> Image:
-        """Produce an empty Image, bypassing `__init__`."""
         inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "buffer": buffer,
+                "format": format,
+                "opacity": opacity,
+                "draw_order": draw_order,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
         inst.__attrs_clear__()
         return inst
 
-    data: components.TensorDataBatch = field(
-        metadata={"component": "required"},
-        converter=ImageExt.data__field_converter_override,  # type: ignore[misc]
+    @classmethod
+    def cleared(cls) -> Image:
+        """Clear all the fields of a `Image`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        buffer: datatypes.BlobArrayLike | None = None,
+        format: datatypes.ImageFormatArrayLike | None = None,
+        opacity: datatypes.Float32ArrayLike | None = None,
+        draw_order: datatypes.Float32ArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        buffer:
+            The raw image data.
+        format:
+            The format of the image.
+        opacity:
+            Opacity of the image, useful for layering several images.
+
+            Defaults to 1.0 (fully opaque).
+        draw_order:
+            An optional floating point value that specifies the 2D drawing order.
+
+            Objects with higher values are drawn on top of those with lower values.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                buffer=buffer,
+                format=format,
+                opacity=opacity,
+                draw_order=draw_order,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
+    buffer: components.ImageBufferBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.ImageBufferBatch._converter,  # type: ignore[misc]
     )
-    # The image data. Should always be a 2- or 3-dimensional tensor.
+    # The raw image data.
+    #
+    # (Docstring intentionally commented out to hide this field from the docs)
+
+    format: components.ImageFormatBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.ImageFormatBatch._converter,  # type: ignore[misc]
+    )
+    # The format of the image.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     opacity: components.OpacityBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.OpacityBatch._optional,  # type: ignore[misc]
+        converter=components.OpacityBatch._converter,  # type: ignore[misc]
     )
     # Opacity of the image, useful for layering several images.
     #
@@ -138,9 +251,9 @@ class Image(ImageExt, Archetype):
     # (Docstring intentionally commented out to hide this field from the docs)
 
     draw_order: components.DrawOrderBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.DrawOrderBatch._optional,  # type: ignore[misc]
+        converter=components.DrawOrderBatch._converter,  # type: ignore[misc]
     )
     # An optional floating point value that specifies the 2D drawing order.
     #

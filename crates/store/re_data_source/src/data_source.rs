@@ -1,7 +1,6 @@
+use crate::FileContents;
 use re_log_types::LogMsg;
 use re_smart_channel::{Receiver, SmartChannelSource, SmartMessageSource};
-
-use crate::FileContents;
 
 #[cfg(not(target_arch = "wasm32"))]
 use anyhow::Context as _;
@@ -31,6 +30,15 @@ pub enum DataSource {
     // RRD data streaming in from standard input.
     #[cfg(not(target_arch = "wasm32"))]
     Stdin,
+
+    /// A file or a metadata catalog on a Rerun Data Platform server,
+    /// over `rerun://` gRPC interface.
+    #[cfg(feature = "grpc")]
+    RerunGrpcUrl { url: String },
+
+    /// A stream of messages over gRPC, relayed from the SDK.
+    #[cfg(feature = "grpc")]
+    MessageProxy { url: String },
 }
 
 impl DataSource {
@@ -86,6 +94,17 @@ impl DataSource {
 
         let path = std::path::Path::new(&uri).to_path_buf();
 
+        #[cfg(feature = "grpc")]
+        if uri.starts_with("rerun://") {
+            return Self::RerunGrpcUrl { url: uri };
+        }
+
+        // TODO(#8761): URL prefix
+        #[cfg(feature = "grpc")]
+        if uri.starts_with("temp://") {
+            return Self::MessageProxy { url: uri };
+        }
+
         if uri.starts_with("file://") || path.exists() {
             Self::FilePath(file_source, path)
         } else if uri.starts_with("http://")
@@ -127,6 +146,10 @@ impl DataSource {
             Self::WebSocketAddr(_) => None,
             #[cfg(not(target_arch = "wasm32"))]
             Self::Stdin => None,
+            #[cfg(feature = "grpc")]
+            Self::RerunGrpcUrl { .. } => None, // TODO(jleibs): This needs to come from the server.
+            #[cfg(feature = "grpc")]
+            Self::MessageProxy { .. } => None,
         }
     }
 
@@ -164,7 +187,12 @@ impl DataSource {
                 // or not.
                 let shared_store_id =
                     re_log_types::StoreId::random(re_log_types::StoreKind::Recording);
-                let settings = re_data_loader::DataLoaderSettings::recommended(shared_store_id);
+                let settings = re_data_loader::DataLoaderSettings {
+                    opened_application_id: file_source.recommended_application_id().cloned(),
+                    opened_store_id: file_source.recommended_recording_id().cloned(),
+                    force_store_info: file_source.force_store_info(),
+                    ..re_data_loader::DataLoaderSettings::recommended(shared_store_id)
+                };
                 re_data_loader::load_from_path(&settings, file_source, &path, &tx)
                     .with_context(|| format!("{path:?}"))?;
 
@@ -188,7 +216,12 @@ impl DataSource {
                 // or not.
                 let shared_store_id =
                     re_log_types::StoreId::random(re_log_types::StoreKind::Recording);
-                let settings = re_data_loader::DataLoaderSettings::recommended(shared_store_id);
+                let settings = re_data_loader::DataLoaderSettings {
+                    opened_application_id: file_source.recommended_application_id().cloned(),
+                    opened_store_id: file_source.recommended_recording_id().cloned(),
+                    force_store_info: file_source.force_store_info(),
+                    ..re_data_loader::DataLoaderSettings::recommended(shared_store_id)
+                };
                 re_data_loader::load_from_file_contents(
                     &settings,
                     file_source,
@@ -223,6 +256,16 @@ impl DataSource {
 
                 Ok(rx)
             }
+
+            #[cfg(feature = "grpc")]
+            Self::RerunGrpcUrl { url } => {
+                re_grpc_client::stream_from_redap(url, on_msg).map_err(|err| err.into())
+            }
+
+            #[cfg(feature = "grpc")]
+            Self::MessageProxy { url } => {
+                re_grpc_client::message_proxy::stream(url, on_msg).map_err(|err| err.into())
+            }
         }
     }
 }
@@ -248,12 +291,16 @@ fn test_data_source_from_uri() {
     ];
     let ws = ["ws://foo.zip", "wss://foo.zip", "127.0.0.1"];
 
-    let file_source = FileSource::DragAndDrop;
+    let file_source = FileSource::DragAndDrop {
+        recommended_application_id: None,
+        recommended_recording_id: None,
+        force_store_info: false,
+    };
 
     for uri in file {
         assert!(
             matches!(
-                DataSource::from_uri(file_source, uri.to_owned()),
+                DataSource::from_uri(file_source.clone(), uri.to_owned()),
                 DataSource::FilePath { .. }
             ),
             "Expected {uri:?} to be categorized as FilePath"
@@ -263,7 +310,7 @@ fn test_data_source_from_uri() {
     for uri in http {
         assert!(
             matches!(
-                DataSource::from_uri(file_source, uri.to_owned()),
+                DataSource::from_uri(file_source.clone(), uri.to_owned()),
                 DataSource::RrdHttpUrl { .. }
             ),
             "Expected {uri:?} to be categorized as RrdHttpUrl"
@@ -273,7 +320,7 @@ fn test_data_source_from_uri() {
     for uri in ws {
         assert!(
             matches!(
-                DataSource::from_uri(file_source, uri.to_owned()),
+                DataSource::from_uri(file_source.clone(), uri.to_owned()),
                 DataSource::WebSocketAddr(_)
             ),
             "Expected {uri:?} to be categorized as WebSocketAddr"

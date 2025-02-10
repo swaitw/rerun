@@ -4,13 +4,15 @@
 #pragma once
 
 #include "../collection.hpp"
+#include "../component_batch.hpp"
+#include "../component_column.hpp"
 #include "../components/clear_is_recursive.hpp"
-#include "../data_cell.hpp"
 #include "../indicator_component.hpp"
 #include "../rerun_sdk_export.hpp"
 #include "../result.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -82,29 +84,84 @@ namespace rerun::archetypes {
     /// }
     /// ```
     struct Clear {
-        rerun::components::ClearIsRecursive is_recursive;
+        std::optional<ComponentBatch> is_recursive;
 
       public:
         static constexpr const char IndicatorComponentName[] = "rerun.components.ClearIndicator";
 
         /// Indicator component, used to identify the archetype when converting to a list of components.
         using IndicatorComponent = rerun::components::IndicatorComponent<IndicatorComponentName>;
+        /// The name of the archetype as used in `ComponentDescriptor`s.
+        static constexpr const char ArchetypeName[] = "rerun.archetypes.Clear";
 
-      public:
-        // Extensions to generated type defined in 'clear_ext.cpp'
+        /// `ComponentDescriptor` for the `is_recursive` field.
+        static constexpr auto Descriptor_is_recursive = ComponentDescriptor(
+            ArchetypeName, "is_recursive",
+            Loggable<rerun::components::ClearIsRecursive>::Descriptor.component_name
+        );
 
+      public: // START of extensions from clear_ext.cpp:
         RERUN_SDK_EXPORT static const Clear FLAT;
 
         RERUN_SDK_EXPORT static const Clear RECURSIVE;
 
         Clear(bool _is_recursive = false) : Clear(components::ClearIsRecursive(_is_recursive)) {}
 
+        // END of extensions from clear_ext.cpp, start of generated code:
+
       public:
-        Clear() = default;
         Clear(Clear&& other) = default;
+        Clear(const Clear& other) = default;
+        Clear& operator=(const Clear& other) = default;
+        Clear& operator=(Clear&& other) = default;
 
         explicit Clear(rerun::components::ClearIsRecursive _is_recursive)
-            : is_recursive(std::move(_is_recursive)) {}
+            : is_recursive(
+                  ComponentBatch::from_loggable(std::move(_is_recursive), Descriptor_is_recursive)
+                      .value_or_throw()
+              ) {}
+
+        /// Update only some specific fields of a `Clear`.
+        static Clear update_fields() {
+            return Clear();
+        }
+
+        /// Clear all the fields of a `Clear`.
+        static Clear clear_fields();
+
+        Clear with_is_recursive(const rerun::components::ClearIsRecursive& _is_recursive) && {
+            is_recursive = ComponentBatch::from_loggable(_is_recursive, Descriptor_is_recursive)
+                               .value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `is_recursive` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_is_recursive` should
+        /// be used when logging a single row's worth of data.
+        Clear with_many_is_recursive(
+            const Collection<rerun::components::ClearIsRecursive>& _is_recursive
+        ) && {
+            is_recursive = ComponentBatch::from_loggable(_is_recursive, Descriptor_is_recursive)
+                               .value_or_throw();
+            return std::move(*this);
+        }
+
+        /// Partitions the component data into multiple sub-batches.
+        ///
+        /// Specifically, this transforms the existing `ComponentBatch` data into `ComponentColumn`s
+        /// instead, via `ComponentBatch::partitioned`.
+        ///
+        /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+        ///
+        /// The specified `lengths` must sum to the total length of the component batch.
+        Collection<ComponentColumn> columns(const Collection<uint32_t>& lengths_);
+
+        /// Partitions the component data into unit-length sub-batches.
+        ///
+        /// This is semantically similar to calling `columns` with `std::vector<uint32_t>(n, 1)`,
+        /// where `n` is automatically guessed.
+        Collection<ComponentColumn> columns();
     };
 
 } // namespace rerun::archetypes
@@ -118,6 +175,6 @@ namespace rerun {
     template <>
     struct AsComponents<archetypes::Clear> {
         /// Serialize all set component batches.
-        static Result<std::vector<DataCell>> serialize(const archetypes::Clear& archetype);
+        static Result<Collection<ComponentBatch>> as_batches(const archetypes::Clear& archetype);
     };
 } // namespace rerun

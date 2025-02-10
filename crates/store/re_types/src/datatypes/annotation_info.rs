@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Datatype**: Annotation info annotating a class id or key-point id.
@@ -34,35 +34,14 @@ pub struct AnnotationInfo {
     pub color: Option<crate::datatypes::Rgba32>,
 }
 
-impl ::re_types_core::SizeBytes for AnnotationInfo {
-    #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.id.heap_size_bytes() + self.label.heap_size_bytes() + self.color.heap_size_bytes()
-    }
-
-    #[inline]
-    fn is_pod() -> bool {
-        <u16>::is_pod()
-            && <Option<crate::datatypes::Utf8>>::is_pod()
-            && <Option<crate::datatypes::Rgba32>>::is_pod()
-    }
-}
-
 ::re_types_core::macros::impl_into_cow!(AnnotationInfo);
 
 impl ::re_types_core::Loggable for AnnotationInfo {
-    type Name = ::re_types_core::DatatypeName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.datatypes.AnnotationInfo".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
+    fn arrow_datatype() -> arrow::datatypes::DataType {
         #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
-        DataType::Struct(std::sync::Arc::new(vec![
+        use arrow::datatypes::*;
+        DataType::Struct(Fields::from(vec![
             Field::new("id", DataType::UInt16, false),
             Field::new("label", <crate::datatypes::Utf8>::arrow_datatype(), true),
             Field::new("color", <crate::datatypes::Rgba32>::arrow_datatype(), true),
@@ -71,14 +50,20 @@ impl ::re_types_core::Loggable for AnnotationInfo {
 
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> SerializationResult<arrow::array::ArrayRef>
     where
         Self: Clone + 'a,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
+        #![allow(clippy::manual_is_variant_and)]
+        use ::re_types_core::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
+            let fields = Fields::from(vec![
+                Field::new("id", DataType::UInt16, false),
+                Field::new("label", <crate::datatypes::Utf8>::arrow_datatype(), true),
+                Field::new("color", <crate::datatypes::Rgba32>::arrow_datatype(), true),
+            ]);
             let (somes, data): (Vec<_>, Vec<_>) = data
                 .into_iter()
                 .map(|datum| {
@@ -86,12 +71,12 @@ impl ::re_types_core::Loggable for AnnotationInfo {
                     (datum.is_some(), datum)
                 })
                 .unzip();
-            let bitmap: Option<arrow2::bitmap::Bitmap> = {
+            let validity: Option<arrow::buffer::NullBuffer> = {
                 let any_nones = somes.iter().any(|some| !*some);
                 any_nones.then(|| somes.into())
             };
-            StructArray::new(
-                Self::arrow_datatype(),
+            as_array_ref(StructArray::new(
+                fields,
                 vec![
                     {
                         let (somes, id): (Vec<_>, Vec<_>) = data
@@ -101,16 +86,18 @@ impl ::re_types_core::Loggable for AnnotationInfo {
                                 (datum.is_some(), datum)
                             })
                             .unzip();
-                        let id_bitmap: Option<arrow2::bitmap::Bitmap> = {
+                        let id_validity: Option<arrow::buffer::NullBuffer> = {
                             let any_nones = somes.iter().any(|some| !*some);
                             any_nones.then(|| somes.into())
                         };
-                        PrimitiveArray::new(
-                            DataType::UInt16,
-                            id.into_iter().map(|v| v.unwrap_or_default()).collect(),
-                            id_bitmap,
-                        )
-                        .boxed()
+                        as_array_ref(PrimitiveArray::<UInt16Type>::new(
+                            ScalarBuffer::from(
+                                id.into_iter()
+                                    .map(|v| v.unwrap_or_default())
+                                    .collect::<Vec<_>>(),
+                            ),
+                            id_validity,
+                        ))
                     },
                     {
                         let (somes, label): (Vec<_>, Vec<_>) = data
@@ -121,33 +108,29 @@ impl ::re_types_core::Loggable for AnnotationInfo {
                                 (datum.is_some(), datum)
                             })
                             .unzip();
-                        let label_bitmap: Option<arrow2::bitmap::Bitmap> = {
+                        let label_validity: Option<arrow::buffer::NullBuffer> = {
                             let any_nones = somes.iter().any(|some| !*some);
                             any_nones.then(|| somes.into())
                         };
                         {
-                            let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
+                            let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
                                 label.iter().map(|opt| {
                                     opt.as_ref().map(|datum| datum.0.len()).unwrap_or_default()
                                 }),
-                            )?
-                            .into();
-                            let inner_data: arrow2::buffer::Buffer<u8> = label
-                                .into_iter()
-                                .flatten()
-                                .flat_map(|datum| datum.0 .0)
-                                .collect();
+                            );
+                            #[allow(clippy::unwrap_used)]
+                            let capacity = offsets.last().copied().unwrap() as usize;
+                            let mut buffer_builder =
+                                arrow::array::builder::BufferBuilder::<u8>::new(capacity);
+                            for data in label.iter().flatten() {
+                                buffer_builder.append_slice(data.0.as_bytes());
+                            }
+                            let inner_data: arrow::buffer::Buffer = buffer_builder.finish();
 
                             #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                            unsafe {
-                                Utf8Array::<i32>::new_unchecked(
-                                    DataType::Utf8,
-                                    offsets,
-                                    inner_data,
-                                    label_bitmap,
-                                )
-                            }
-                            .boxed()
+                            as_array_ref(unsafe {
+                                StringArray::new_unchecked(offsets, inner_data, label_validity)
+                            })
                         }
                     },
                     {
@@ -159,40 +142,39 @@ impl ::re_types_core::Loggable for AnnotationInfo {
                                 (datum.is_some(), datum)
                             })
                             .unzip();
-                        let color_bitmap: Option<arrow2::bitmap::Bitmap> = {
+                        let color_validity: Option<arrow::buffer::NullBuffer> = {
                             let any_nones = somes.iter().any(|some| !*some);
                             any_nones.then(|| somes.into())
                         };
-                        PrimitiveArray::new(
-                            DataType::UInt32,
-                            color
-                                .into_iter()
-                                .map(|datum| datum.map(|datum| datum.0).unwrap_or_default())
-                                .collect(),
-                            color_bitmap,
-                        )
-                        .boxed()
+                        as_array_ref(PrimitiveArray::<UInt32Type>::new(
+                            ScalarBuffer::from(
+                                color
+                                    .into_iter()
+                                    .map(|datum| datum.map(|datum| datum.0).unwrap_or_default())
+                                    .collect::<Vec<_>>(),
+                            ),
+                            color_validity,
+                        ))
                     },
                 ],
-                bitmap,
-            )
-            .boxed()
+                validity,
+            ))
         })
     }
 
     fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
+        arrow_data: &dyn arrow::array::Array,
     ) -> DeserializationResult<Vec<Option<Self>>>
     where
         Self: Sized,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
+        use ::re_types_core::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
             let arrow_data = arrow_data
                 .as_any()
-                .downcast_ref::<arrow2::array::StructArray>()
+                .downcast_ref::<arrow::array::StructArray>()
                 .ok_or_else(|| {
                     let expected = Self::arrow_datatype();
                     let actual = arrow_data.data_type().clone();
@@ -203,10 +185,10 @@ impl ::re_types_core::Loggable for AnnotationInfo {
                 Vec::new()
             } else {
                 let (arrow_data_fields, arrow_data_arrays) =
-                    (arrow_data.fields(), arrow_data.values());
+                    (arrow_data.fields(), arrow_data.columns());
                 let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data_fields
                     .iter()
-                    .map(|field| field.name.as_str())
+                    .map(|field| field.name().as_str())
                     .zip(arrow_data_arrays)
                     .collect();
                 let id = {
@@ -228,7 +210,6 @@ impl ::re_types_core::Loggable for AnnotationInfo {
                         })
                         .with_context("rerun.datatypes.AnnotationInfo#id")?
                         .into_iter()
-                        .map(|opt| opt.copied())
                 };
                 let label = {
                     if !arrays_by_name.contains_key("label") {
@@ -242,7 +223,7 @@ impl ::re_types_core::Loggable for AnnotationInfo {
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::Utf8Array<i32>>()
+                            .downcast_ref::<StringArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::Utf8;
                                 let actual = arrow_data.data_type().clone();
@@ -251,38 +232,37 @@ impl ::re_types_core::Loggable for AnnotationInfo {
                             .with_context("rerun.datatypes.AnnotationInfo#label")?;
                         let arrow_data_buf = arrow_data.values();
                         let offsets = arrow_data.offsets();
-                        arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                            offsets.iter().zip(offsets.lengths()),
-                            arrow_data.validity(),
-                        )
-                        .map(|elem| {
-                            elem.map(|(start, len)| {
-                                let start = *start as usize;
-                                let end = start + len;
-                                if end > arrow_data_buf.len() {
-                                    return Err(DeserializationError::offset_slice_oob(
-                                        (start, end),
-                                        arrow_data_buf.len(),
-                                    ));
-                                }
+                        ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                            .map(|elem| {
+                                elem.map(|window| {
+                                    let start = window[0] as usize;
+                                    let end = window[1] as usize;
+                                    let len = end - start;
+                                    if arrow_data_buf.len() < end {
+                                        return Err(DeserializationError::offset_slice_oob(
+                                            (start, end),
+                                            arrow_data_buf.len(),
+                                        ));
+                                    }
 
-                                #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                let data =
-                                    unsafe { arrow_data_buf.clone().sliced_unchecked(start, len) };
-                                Ok(data)
+                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                    let data = arrow_data_buf.slice_with_length(start, len);
+                                    Ok(data)
+                                })
+                                .transpose()
                             })
-                            .transpose()
-                        })
-                        .map(|res_or_opt| {
-                            res_or_opt.map(|res_or_opt| {
-                                res_or_opt.map(|v| {
-                                    crate::datatypes::Utf8(::re_types_core::ArrowString(v))
+                            .map(|res_or_opt| {
+                                res_or_opt.map(|res_or_opt| {
+                                    res_or_opt.map(|v| {
+                                        crate::datatypes::Utf8(::re_types_core::ArrowString::from(
+                                            v,
+                                        ))
+                                    })
                                 })
                             })
-                        })
-                        .collect::<DeserializationResult<Vec<Option<_>>>>()
-                        .with_context("rerun.datatypes.AnnotationInfo#label")?
-                        .into_iter()
+                            .collect::<DeserializationResult<Vec<Option<_>>>>()
+                            .with_context("rerun.datatypes.AnnotationInfo#label")?
+                            .into_iter()
                     }
                 };
                 let color = {
@@ -304,12 +284,11 @@ impl ::re_types_core::Loggable for AnnotationInfo {
                         })
                         .with_context("rerun.datatypes.AnnotationInfo#color")?
                         .into_iter()
-                        .map(|opt| opt.copied())
                         .map(|res_or_opt| res_or_opt.map(crate::datatypes::Rgba32))
                 };
-                arrow2::bitmap::utils::ZipValidity::new_with_validity(
+                ZipValidity::new_with_validity(
                     ::itertools::izip!(id, label, color),
-                    arrow_data.validity(),
+                    arrow_data.nulls(),
                 )
                 .map(|opt| {
                     opt.map(|(id, label, color)| {
@@ -327,5 +306,19 @@ impl ::re_types_core::Loggable for AnnotationInfo {
                 .with_context("rerun.datatypes.AnnotationInfo")?
             }
         })
+    }
+}
+
+impl ::re_byte_size::SizeBytes for AnnotationInfo {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.id.heap_size_bytes() + self.label.heap_size_bytes() + self.color.heap_size_bytes()
+    }
+
+    #[inline]
+    fn is_pod() -> bool {
+        <u16>::is_pod()
+            && <Option<crate::datatypes::Utf8>>::is_pod()
+            && <Option<crate::datatypes::Rgba32>>::is_pod()
     }
 }

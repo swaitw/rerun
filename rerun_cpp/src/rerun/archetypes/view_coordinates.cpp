@@ -5,29 +5,53 @@
 
 #include "../collection_adapter_builtins.hpp"
 
-namespace rerun::archetypes {}
+namespace rerun::archetypes {
+    ViewCoordinates ViewCoordinates::clear_fields() {
+        auto archetype = ViewCoordinates();
+        archetype.xyz = ComponentBatch::empty<rerun::components::ViewCoordinates>(Descriptor_xyz)
+                            .value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> ViewCoordinates::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(2);
+        if (xyz.has_value()) {
+            columns.push_back(xyz.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(ComponentColumn::from_indicators<ViewCoordinates>(
+                              static_cast<uint32_t>(lengths_.size())
+        )
+                              .value_or_throw());
+        return columns;
+    }
+
+    Collection<ComponentColumn> ViewCoordinates::columns() {
+        if (xyz.has_value()) {
+            return columns(std::vector<uint32_t>(xyz.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<archetypes::ViewCoordinates>::serialize(
+    Result<Collection<ComponentBatch>> AsComponents<archetypes::ViewCoordinates>::as_batches(
         const archetypes::ViewCoordinates& archetype
     ) {
         using namespace archetypes;
-        std::vector<DataCell> cells;
+        std::vector<ComponentBatch> cells;
         cells.reserve(2);
 
-        {
-            auto result = DataCell::from_loggable(archetype.xyz);
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.xyz.has_value()) {
+            cells.push_back(archetype.xyz.value());
         }
         {
-            auto indicator = ViewCoordinates::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<ViewCoordinates>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

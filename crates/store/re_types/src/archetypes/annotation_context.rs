@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Archetype**: The annotation context provides additional information on how to display entities.
@@ -62,45 +62,55 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 /// ```
 /// <center>
 /// <picture>
-///   <source media="(max-width: 480px)" srcset="https://static.rerun.io/annotation_context_segmentation/0e21c0a04e456fec41d16b0deaa12c00cddf2d9b/480w.png">
-///   <source media="(max-width: 768px)" srcset="https://static.rerun.io/annotation_context_segmentation/0e21c0a04e456fec41d16b0deaa12c00cddf2d9b/768w.png">
-///   <source media="(max-width: 1024px)" srcset="https://static.rerun.io/annotation_context_segmentation/0e21c0a04e456fec41d16b0deaa12c00cddf2d9b/1024w.png">
-///   <source media="(max-width: 1200px)" srcset="https://static.rerun.io/annotation_context_segmentation/0e21c0a04e456fec41d16b0deaa12c00cddf2d9b/1200w.png">
-///   <img src="https://static.rerun.io/annotation_context_segmentation/0e21c0a04e456fec41d16b0deaa12c00cddf2d9b/full.png" width="640">
+///   <source media="(max-width: 480px)" srcset="https://static.rerun.io/annotation_context_segmentation/6c9e88fc9d44a08031cadd444c2e58a985cc1208/480w.png">
+///   <source media="(max-width: 768px)" srcset="https://static.rerun.io/annotation_context_segmentation/6c9e88fc9d44a08031cadd444c2e58a985cc1208/768w.png">
+///   <source media="(max-width: 1024px)" srcset="https://static.rerun.io/annotation_context_segmentation/6c9e88fc9d44a08031cadd444c2e58a985cc1208/1024w.png">
+///   <source media="(max-width: 1200px)" srcset="https://static.rerun.io/annotation_context_segmentation/6c9e88fc9d44a08031cadd444c2e58a985cc1208/1200w.png">
+///   <img src="https://static.rerun.io/annotation_context_segmentation/6c9e88fc9d44a08031cadd444c2e58a985cc1208/full.png" width="640">
 /// </picture>
 /// </center>
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct AnnotationContext {
     /// List of class descriptions, mapping class indices to class names, colors etc.
-    pub context: crate::components::AnnotationContext,
+    pub context: Option<SerializedComponentBatch>,
 }
 
-impl ::re_types_core::SizeBytes for AnnotationContext {
+impl AnnotationContext {
+    /// Returns the [`ComponentDescriptor`] for [`Self::context`].
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.context.heap_size_bytes()
+    pub fn descriptor_context() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.AnnotationContext".into()),
+            component_name: "rerun.components.AnnotationContext".into(),
+            archetype_field_name: Some("context".into()),
+        }
     }
 
+    /// Returns the [`ComponentDescriptor`] for the associated indicator component.
     #[inline]
-    fn is_pod() -> bool {
-        <crate::components::AnnotationContext>::is_pod()
+    pub fn descriptor_indicator() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.AnnotationContext".into()),
+            component_name: "rerun.components.AnnotationContextIndicator".into(),
+            archetype_field_name: None,
+        }
     }
 }
 
-static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.components.AnnotationContext".into()]);
+static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [AnnotationContext::descriptor_context()]);
 
-static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.components.AnnotationContextIndicator".into()]);
+static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [AnnotationContext::descriptor_indicator()]);
 
-static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 0usize]> =
+static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 0usize]> =
     once_cell::sync::Lazy::new(|| []);
 
-static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 2usize]> =
+static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 2usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.AnnotationContext".into(),
-            "rerun.components.AnnotationContextIndicator".into(),
+            AnnotationContext::descriptor_context(),
+            AnnotationContext::descriptor_indicator(),
         ]
     });
 
@@ -126,78 +136,155 @@ impl ::re_types_core::Archetype for AnnotationContext {
     }
 
     #[inline]
-    fn indicator() -> MaybeOwnedComponentBatch<'static> {
-        static INDICATOR: AnnotationContextIndicator = AnnotationContextIndicator::DEFAULT;
-        MaybeOwnedComponentBatch::Ref(&INDICATOR)
+    fn indicator() -> SerializedComponentBatch {
+        #[allow(clippy::unwrap_used)]
+        AnnotationContextIndicator::DEFAULT.serialized().unwrap()
     }
 
     #[inline]
-    fn required_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn required_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         REQUIRED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         RECOMMENDED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         OPTIONAL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn all_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn all_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         ALL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
     fn from_arrow_components(
-        arrow_data: impl IntoIterator<Item = (ComponentName, Box<dyn arrow2::array::Array>)>,
+        arrow_data: impl IntoIterator<Item = (ComponentDescriptor, arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self> {
         re_tracing::profile_function!();
         use ::re_types_core::{Loggable as _, ResultExt as _};
-        let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data
-            .into_iter()
-            .map(|(name, array)| (name.full_name(), array))
-            .collect();
-        let context = {
-            let array = arrays_by_name
-                .get("rerun.components.AnnotationContext")
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.AnnotationContext#context")?;
-            <crate::components::AnnotationContext>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.AnnotationContext#context")?
-                .into_iter()
-                .next()
-                .flatten()
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.AnnotationContext#context")?
-        };
+        let arrays_by_descr: ::nohash_hasher::IntMap<_, _> = arrow_data.into_iter().collect();
+        let context = arrays_by_descr
+            .get(&Self::descriptor_context())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_context()));
         Ok(Self { context })
     }
 }
 
 impl ::re_types_core::AsComponents for AnnotationContext {
-    fn as_component_batches(&self) -> Vec<MaybeOwnedComponentBatch<'_>> {
-        re_tracing::profile_function!();
+    #[inline]
+    fn as_serialized_batches(&self) -> Vec<SerializedComponentBatch> {
         use ::re_types_core::Archetype as _;
-        [
-            Some(Self::indicator()),
-            Some((&self.context as &dyn ComponentBatch).into()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
+        [Some(Self::indicator()), self.context.clone()]
+            .into_iter()
+            .flatten()
+            .collect()
     }
 }
+
+impl ::re_types_core::ArchetypeReflectionMarker for AnnotationContext {}
 
 impl AnnotationContext {
     /// Create a new `AnnotationContext`.
     #[inline]
     pub fn new(context: impl Into<crate::components::AnnotationContext>) -> Self {
         Self {
-            context: context.into(),
+            context: try_serialize_field(Self::descriptor_context(), [context]),
         }
+    }
+
+    /// Update only some specific fields of a `AnnotationContext`.
+    #[inline]
+    pub fn update_fields() -> Self {
+        Self::default()
+    }
+
+    /// Clear all the fields of a `AnnotationContext`.
+    #[inline]
+    pub fn clear_fields() -> Self {
+        use ::re_types_core::Loggable as _;
+        Self {
+            context: Some(SerializedComponentBatch::new(
+                crate::components::AnnotationContext::arrow_empty(),
+                Self::descriptor_context(),
+            )),
+        }
+    }
+
+    /// Partitions the component data into multiple sub-batches.
+    ///
+    /// Specifically, this transforms the existing [`SerializedComponentBatch`]es data into [`SerializedComponentColumn`]s
+    /// instead, via [`SerializedComponentBatch::partitioned`].
+    ///
+    /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+    ///
+    /// The specified `lengths` must sum to the total length of the component batch.
+    ///
+    /// [`SerializedComponentColumn`]: [::re_types_core::SerializedComponentColumn]
+    #[inline]
+    pub fn columns<I>(
+        self,
+        _lengths: I,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>>
+    where
+        I: IntoIterator<Item = usize> + Clone,
+    {
+        let columns = [self
+            .context
+            .map(|context| context.partitioned(_lengths.clone()))
+            .transpose()?];
+        Ok(columns
+            .into_iter()
+            .flatten()
+            .chain([::re_types_core::indicator_column::<Self>(
+                _lengths.into_iter().count(),
+            )?]))
+    }
+
+    /// Helper to partition the component data into unit-length sub-batches.
+    ///
+    /// This is semantically similar to calling [`Self::columns`] with `std::iter::take(1).repeat(n)`,
+    /// where `n` is automatically guessed.
+    #[inline]
+    pub fn columns_of_unit_batches(
+        self,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>> {
+        let len_context = self.context.as_ref().map(|b| b.array.len());
+        let len = None.or(len_context).unwrap_or(0);
+        self.columns(std::iter::repeat(1).take(len))
+    }
+
+    /// List of class descriptions, mapping class indices to class names, colors etc.
+    #[inline]
+    pub fn with_context(
+        mut self,
+        context: impl Into<crate::components::AnnotationContext>,
+    ) -> Self {
+        self.context = try_serialize_field(Self::descriptor_context(), [context]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::AnnotationContext`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_context`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_context(
+        mut self,
+        context: impl IntoIterator<Item = impl Into<crate::components::AnnotationContext>>,
+    ) -> Self {
+        self.context = try_serialize_field(Self::descriptor_context(), context);
+        self
+    }
+}
+
+impl ::re_byte_size::SizeBytes for AnnotationContext {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.context.heap_size_bytes()
     }
 }

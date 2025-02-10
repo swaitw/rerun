@@ -4,6 +4,7 @@
 #pragma once
 
 #include "../collection.hpp"
+#include "../component_descriptor.hpp"
 #include "../result.hpp"
 #include "annotation_info.hpp"
 #include "keypoint_pair.hpp"
@@ -42,9 +43,7 @@ namespace rerun::datatypes {
         /// The connections between keypoints.
         rerun::Collection<rerun::datatypes::KeypointPair> keypoint_connections;
 
-      public:
-        // Extensions to generated type defined in 'class_description_ext.cpp'
-
+      public: // START of extensions from class_description_ext.cpp:
         /// Create a new `ClassDescription` from a single annotation info.
         ClassDescription(
             uint16_t id, std::optional<std::string> label = std::nullopt,
@@ -60,6 +59,8 @@ namespace rerun::datatypes {
               keypoint_annotations(std::move(keypoint_annotations_)),
               keypoint_connections(std::move(keypoint_connections_)) {}
 
+        // END of extensions from class_description_ext.cpp, start of generated code:
+
       public:
         ClassDescription() = default;
     };
@@ -72,7 +73,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::ClassDescription> {
-        static constexpr const char Name[] = "rerun.datatypes.ClassDescription";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.ClassDescription";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

@@ -12,24 +12,152 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AffixFuzzer11(pub Option<::re_types_core::ArrowBuffer<f32>>);
 
-impl ::re_types_core::SizeBytes for AffixFuzzer11 {
+impl ::re_types_core::Component for AffixFuzzer11 {
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.0.heap_size_bytes()
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("rerun.testing.components.AffixFuzzer11")
+    }
+}
+
+::re_types_core::macros::impl_into_cow!(AffixFuzzer11);
+
+impl ::re_types_core::Loggable for AffixFuzzer11 {
+    #[inline]
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        #![allow(clippy::wildcard_imports)]
+        use arrow::datatypes::*;
+        DataType::List(std::sync::Arc::new(Field::new(
+            "item",
+            DataType::Float32,
+            false,
+        )))
     }
 
-    #[inline]
-    fn is_pod() -> bool {
-        <Option<::re_types_core::ArrowBuffer<f32>>>::is_pod()
+    fn to_arrow_opt<'a>(
+        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+    ) -> SerializationResult<arrow::array::ArrayRef>
+    where
+        Self: Clone + 'a,
+    {
+        #![allow(clippy::wildcard_imports)]
+        #![allow(clippy::manual_is_variant_and)]
+        use ::re_types_core::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
+        Ok({
+            let (somes, data0): (Vec<_>, Vec<_>) = data
+                .into_iter()
+                .map(|datum| {
+                    let datum: Option<::std::borrow::Cow<'a, Self>> = datum.map(Into::into);
+                    let datum = datum.map(|datum| datum.into_owned().0).flatten();
+                    (datum.is_some(), datum)
+                })
+                .unzip();
+            let data0_validity: Option<arrow::buffer::NullBuffer> = {
+                let any_nones = somes.iter().any(|some| !*some);
+                any_nones.then(|| somes.into())
+            };
+            {
+                let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
+                    data0
+                        .iter()
+                        .map(|opt| opt.as_ref().map_or(0, |datum| datum.num_instances())),
+                );
+                let data0_inner_data: ScalarBuffer<_> = data0
+                    .iter()
+                    .flatten()
+                    .map(|b| b.as_slice())
+                    .collect::<Vec<_>>()
+                    .concat()
+                    .into();
+                let data0_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                as_array_ref(ListArray::try_new(
+                    std::sync::Arc::new(Field::new("item", DataType::Float32, false)),
+                    offsets,
+                    as_array_ref(PrimitiveArray::<Float32Type>::new(
+                        data0_inner_data,
+                        data0_inner_validity,
+                    )),
+                    data0_validity,
+                )?)
+            }
+        })
+    }
+
+    fn from_arrow_opt(
+        arrow_data: &dyn arrow::array::Array,
+    ) -> DeserializationResult<Vec<Option<Self>>>
+    where
+        Self: Sized,
+    {
+        #![allow(clippy::wildcard_imports)]
+        use ::re_types_core::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
+        Ok({
+            let arrow_data = arrow_data
+                .as_any()
+                .downcast_ref::<arrow::array::ListArray>()
+                .ok_or_else(|| {
+                    let expected = Self::arrow_datatype();
+                    let actual = arrow_data.data_type().clone();
+                    DeserializationError::datatype_mismatch(expected, actual)
+                })
+                .with_context("rerun.testing.components.AffixFuzzer11#many_floats_optional")?;
+            if arrow_data.is_empty() {
+                Vec::new()
+            } else {
+                let arrow_data_inner = {
+                    let arrow_data_inner = &**arrow_data.values();
+                    arrow_data_inner
+                        .as_any()
+                        .downcast_ref::<Float32Array>()
+                        .ok_or_else(|| {
+                            let expected = DataType::Float32;
+                            let actual = arrow_data_inner.data_type().clone();
+                            DeserializationError::datatype_mismatch(expected, actual)
+                        })
+                        .with_context(
+                            "rerun.testing.components.AffixFuzzer11#many_floats_optional",
+                        )?
+                        .values()
+                };
+                let offsets = arrow_data.offsets();
+                ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                    .map(|elem| {
+                        elem.map(|window| {
+                            let start = window[0] as usize;
+                            let end = window[1] as usize;
+                            if arrow_data_inner.len() < end {
+                                return Err(DeserializationError::offset_slice_oob(
+                                    (start, end),
+                                    arrow_data_inner.len(),
+                                ));
+                            }
+
+                            #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                            let data = arrow_data_inner.clone().slice(start, end - start);
+                            let data = ::re_types_core::ArrowBuffer::from(data);
+                            Ok(data)
+                        })
+                        .transpose()
+                    })
+                    .collect::<DeserializationResult<Vec<Option<_>>>>()?
+            }
+            .into_iter()
+        }
+        .map(Ok)
+        .map(|res| res.map(|v| Some(Self(v))))
+        .collect::<DeserializationResult<Vec<Option<_>>>>()
+        .with_context("rerun.testing.components.AffixFuzzer11#many_floats_optional")
+        .with_context("rerun.testing.components.AffixFuzzer11")?)
     }
 }
 
@@ -63,149 +191,14 @@ impl std::ops::DerefMut for AffixFuzzer11 {
     }
 }
 
-::re_types_core::macros::impl_into_cow!(AffixFuzzer11);
-
-impl ::re_types_core::Loggable for AffixFuzzer11 {
-    type Name = ::re_types_core::ComponentName;
-
+impl ::re_byte_size::SizeBytes for AffixFuzzer11 {
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.testing.components.AffixFuzzer11".into()
+    fn heap_size_bytes(&self) -> u64 {
+        self.0.heap_size_bytes()
     }
 
     #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
-        DataType::List(std::sync::Arc::new(Field::new(
-            "item",
-            DataType::Float32,
-            false,
-        )))
-    }
-
-    fn to_arrow_opt<'a>(
-        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
-    where
-        Self: Clone + 'a,
-    {
-        #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
-        Ok({
-            let (somes, data0): (Vec<_>, Vec<_>) = data
-                .into_iter()
-                .map(|datum| {
-                    let datum: Option<::std::borrow::Cow<'a, Self>> = datum.map(Into::into);
-                    let datum = datum.map(|datum| datum.into_owned().0).flatten();
-                    (datum.is_some(), datum)
-                })
-                .unzip();
-            let data0_bitmap: Option<arrow2::bitmap::Bitmap> = {
-                let any_nones = somes.iter().any(|some| !*some);
-                any_nones.then(|| somes.into())
-            };
-            {
-                use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
-                    data0
-                        .iter()
-                        .map(|opt| opt.as_ref().map_or(0, |datum| datum.num_instances())),
-                )?
-                .into();
-                let data0_inner_data: Buffer<_> = data0
-                    .iter()
-                    .flatten()
-                    .map(|b| b.as_slice())
-                    .collect::<Vec<_>>()
-                    .concat()
-                    .into();
-                let data0_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                ListArray::try_new(
-                    Self::arrow_datatype(),
-                    offsets,
-                    PrimitiveArray::new(DataType::Float32, data0_inner_data, data0_inner_bitmap)
-                        .boxed(),
-                    data0_bitmap,
-                )?
-                .boxed()
-            }
-        })
-    }
-
-    fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
-    ) -> DeserializationResult<Vec<Option<Self>>>
-    where
-        Self: Sized,
-    {
-        #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
-        Ok({
-            let arrow_data = arrow_data
-                .as_any()
-                .downcast_ref::<arrow2::array::ListArray<i32>>()
-                .ok_or_else(|| {
-                    let expected = Self::arrow_datatype();
-                    let actual = arrow_data.data_type().clone();
-                    DeserializationError::datatype_mismatch(expected, actual)
-                })
-                .with_context("rerun.testing.components.AffixFuzzer11#many_floats_optional")?;
-            if arrow_data.is_empty() {
-                Vec::new()
-            } else {
-                let arrow_data_inner = {
-                    let arrow_data_inner = &**arrow_data.values();
-                    arrow_data_inner
-                        .as_any()
-                        .downcast_ref::<Float32Array>()
-                        .ok_or_else(|| {
-                            let expected = DataType::Float32;
-                            let actual = arrow_data_inner.data_type().clone();
-                            DeserializationError::datatype_mismatch(expected, actual)
-                        })
-                        .with_context(
-                            "rerun.testing.components.AffixFuzzer11#many_floats_optional",
-                        )?
-                        .values()
-                };
-                let offsets = arrow_data.offsets();
-                arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                    offsets.iter().zip(offsets.lengths()),
-                    arrow_data.validity(),
-                )
-                .map(|elem| {
-                    elem.map(|(start, len)| {
-                        let start = *start as usize;
-                        let end = start + len;
-                        if end > arrow_data_inner.len() {
-                            return Err(DeserializationError::offset_slice_oob(
-                                (start, end),
-                                arrow_data_inner.len(),
-                            ));
-                        }
-
-                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                        let data = unsafe {
-                            arrow_data_inner
-                                .clone()
-                                .sliced_unchecked(start, end - start)
-                        };
-                        let data = ::re_types_core::ArrowBuffer::from(data);
-                        Ok(data)
-                    })
-                    .transpose()
-                })
-                .collect::<DeserializationResult<Vec<Option<_>>>>()?
-            }
-            .into_iter()
-        }
-        .map(Ok)
-        .map(|res| res.map(|v| Some(Self(v))))
-        .collect::<DeserializationResult<Vec<Option<_>>>>()
-        .with_context("rerun.testing.components.AffixFuzzer11#many_floats_optional")
-        .with_context("rerun.testing.components.AffixFuzzer11")?)
+    fn is_pod() -> bool {
+        <Option<::re_types_core::ArrowBuffer<f32>>>::is_pod()
     }
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -67,6 +68,16 @@ class MediaTypeExt:
     <https://www.iana.org/assignments/media-types/model/stl>
     """
 
+    # --------------------------
+    # Video:
+
+    MP4: MediaType = None  # type: ignore[assignment]
+    """
+    [`mp4`](https://en.wikipedia.org/wiki/MP4_file_format): `video/mp4`.
+
+    <https://www.iana.org/assignments/media-types/video/mp4>
+    """
+
     @staticmethod
     def deferred_patch_class(cls: Any) -> None:
         cls.TEXT = cls("text/plain")
@@ -79,3 +90,33 @@ class MediaTypeExt:
         cls.GLTF = cls("model/gltf+json")
         cls.OBJ = cls("model/obj")
         cls.STL = cls("model/stl")
+
+        cls.MP4 = cls("video/mp4")
+
+    @staticmethod
+    def guess_from_path(path: str | Path) -> MediaType | None:
+        from ..components import MediaType
+
+        ext = Path(path).suffix.lower()
+
+        # Images
+        if ext == ".jpg" or ext == ".jpeg":
+            return MediaType.JPEG
+        elif ext == ".png":
+            return MediaType.PNG
+
+        # 3D Models
+        if ext == ".glb":
+            return MediaType.GLB
+        elif ext == ".gltf":
+            return MediaType.GLTF
+        elif ext == ".obj":
+            return MediaType.OBJ
+        elif ext == ".stl":
+            return MediaType.STL
+
+        # Video
+        if ext == ".mp4":
+            return MediaType.MP4
+
+        return None

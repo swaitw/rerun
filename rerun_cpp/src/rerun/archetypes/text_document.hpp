@@ -4,10 +4,10 @@
 #pragma once
 
 #include "../collection.hpp"
-#include "../compiler_utils.hpp"
+#include "../component_batch.hpp"
+#include "../component_column.hpp"
 #include "../components/media_type.hpp"
 #include "../components/text.hpp"
-#include "../data_cell.hpp"
 #include "../indicator_component.hpp"
 #include "../result.hpp"
 
@@ -76,7 +76,7 @@ namespace rerun::archetypes {
     /// ```
     struct TextDocument {
         /// Contents of the text document.
-        rerun::components::Text text;
+        std::optional<ComponentBatch> text;
 
         /// The Media Type of the text.
         ///
@@ -85,7 +85,7 @@ namespace rerun::archetypes {
         /// * `text/markdown`
         ///
         /// If omitted, `text/plain` is assumed.
-        std::optional<rerun::components::MediaType> media_type;
+        std::optional<ComponentBatch> media_type;
 
       public:
         static constexpr const char IndicatorComponentName[] =
@@ -93,12 +93,52 @@ namespace rerun::archetypes {
 
         /// Indicator component, used to identify the archetype when converting to a list of components.
         using IndicatorComponent = rerun::components::IndicatorComponent<IndicatorComponentName>;
+        /// The name of the archetype as used in `ComponentDescriptor`s.
+        static constexpr const char ArchetypeName[] = "rerun.archetypes.TextDocument";
+
+        /// `ComponentDescriptor` for the `text` field.
+        static constexpr auto Descriptor_text = ComponentDescriptor(
+            ArchetypeName, "text", Loggable<rerun::components::Text>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `media_type` field.
+        static constexpr auto Descriptor_media_type = ComponentDescriptor(
+            ArchetypeName, "media_type",
+            Loggable<rerun::components::MediaType>::Descriptor.component_name
+        );
 
       public:
         TextDocument() = default;
         TextDocument(TextDocument&& other) = default;
+        TextDocument(const TextDocument& other) = default;
+        TextDocument& operator=(const TextDocument& other) = default;
+        TextDocument& operator=(TextDocument&& other) = default;
 
-        explicit TextDocument(rerun::components::Text _text) : text(std::move(_text)) {}
+        explicit TextDocument(rerun::components::Text _text)
+            : text(ComponentBatch::from_loggable(std::move(_text), Descriptor_text).value_or_throw()
+              ) {}
+
+        /// Update only some specific fields of a `TextDocument`.
+        static TextDocument update_fields() {
+            return TextDocument();
+        }
+
+        /// Clear all the fields of a `TextDocument`.
+        static TextDocument clear_fields();
+
+        /// Contents of the text document.
+        TextDocument with_text(const rerun::components::Text& _text) && {
+            text = ComponentBatch::from_loggable(_text, Descriptor_text).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `text` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_text` should
+        /// be used when logging a single row's worth of data.
+        TextDocument with_many_text(const Collection<rerun::components::Text>& _text) && {
+            text = ComponentBatch::from_loggable(_text, Descriptor_text).value_or_throw();
+            return std::move(*this);
+        }
 
         /// The Media Type of the text.
         ///
@@ -107,11 +147,39 @@ namespace rerun::archetypes {
         /// * `text/markdown`
         ///
         /// If omitted, `text/plain` is assumed.
-        TextDocument with_media_type(rerun::components::MediaType _media_type) && {
-            media_type = std::move(_media_type);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        TextDocument with_media_type(const rerun::components::MediaType& _media_type) && {
+            media_type =
+                ComponentBatch::from_loggable(_media_type, Descriptor_media_type).value_or_throw();
+            return std::move(*this);
         }
+
+        /// This method makes it possible to pack multiple `media_type` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_media_type` should
+        /// be used when logging a single row's worth of data.
+        TextDocument with_many_media_type(
+            const Collection<rerun::components::MediaType>& _media_type
+        ) && {
+            media_type =
+                ComponentBatch::from_loggable(_media_type, Descriptor_media_type).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// Partitions the component data into multiple sub-batches.
+        ///
+        /// Specifically, this transforms the existing `ComponentBatch` data into `ComponentColumn`s
+        /// instead, via `ComponentBatch::partitioned`.
+        ///
+        /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+        ///
+        /// The specified `lengths` must sum to the total length of the component batch.
+        Collection<ComponentColumn> columns(const Collection<uint32_t>& lengths_);
+
+        /// Partitions the component data into unit-length sub-batches.
+        ///
+        /// This is semantically similar to calling `columns` with `std::vector<uint32_t>(n, 1)`,
+        /// where `n` is automatically guessed.
+        Collection<ComponentColumn> columns();
     };
 
 } // namespace rerun::archetypes
@@ -125,6 +193,8 @@ namespace rerun {
     template <>
     struct AsComponents<archetypes::TextDocument> {
         /// Serialize all set component batches.
-        static Result<std::vector<DataCell>> serialize(const archetypes::TextDocument& archetype);
+        static Result<Collection<ComponentBatch>> as_batches(
+            const archetypes::TextDocument& archetype
+        );
     };
 } // namespace rerun

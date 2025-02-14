@@ -1,98 +1,81 @@
 //! Methods for handling Arrow datamodel log ingest
 
-use std::collections::BTreeMap;
+use std::borrow::Cow;
 
-use arrow2::{
-    array::{Array, ListArray, PrimitiveArray},
-    datatypes::Field,
-    ffi,
-    offset::Offsets,
+use arrow::{
+    array::{
+        make_array, ArrayData as ArrowArrayData, ArrayRef as ArrowArrayRef,
+        ListArray as ArrowListArray,
+    },
+    buffer::OffsetBuffer as ArrowOffsetBuffer,
+    datatypes::Field as ArrowField,
+    pyarrow::PyArrowType,
 };
 use pyo3::{
-    exceptions::{PyRuntimeError, PyValueError},
-    ffi::Py_uintptr_t,
-    types::{PyDict, PyString},
-    PyAny, PyResult,
+    exceptions::PyRuntimeError,
+    types::{PyAnyMethods, PyDict, PyDictMethods, PyString},
+    Bound, PyAny, PyResult,
 };
 
-use re_chunk::{Chunk, ChunkError, ChunkId, ChunkTimeline, PendingRow, RowId};
+use re_arrow_util::ArrowArrayDowncastRef as _;
+use re_chunk::{Chunk, ChunkError, ChunkId, PendingRow, RowId, TimeColumn, TimelineName};
 use re_log_types::TimePoint;
-use re_sdk::{ComponentName, EntityPath, Timeline};
+use re_sdk::{external::nohash_hasher::IntMap, ComponentDescriptor, EntityPath, Timeline};
 
-/// Perform conversion between a pyarrow array to arrow2 types.
+/// Perform Python-to-Rust conversion for a `ComponentDescriptor`.
+pub fn descriptor_to_rust(component_descr: &Bound<'_, PyAny>) -> PyResult<ComponentDescriptor> {
+    let py = component_descr.py();
+
+    let archetype_name = component_descr.getattr(pyo3::intern!(py, "archetype_name"))?;
+    let archetype_name: Option<Cow<'_, str>> = if !archetype_name.is_none() {
+        Some(archetype_name.extract()?)
+    } else {
+        None
+    };
+
+    let archetype_field_name =
+        component_descr.getattr(pyo3::intern!(py, "archetype_field_name"))?;
+    let archetype_field_name: Option<Cow<'_, str>> = if !archetype_field_name.is_none() {
+        Some(archetype_field_name.extract()?)
+    } else {
+        None
+    };
+
+    let component_name = component_descr.getattr(pyo3::intern!(py, "component_name"))?;
+    let component_name: Cow<'_, str> = component_name.extract()?;
+
+    let descr = ComponentDescriptor {
+        archetype_name: archetype_name.map(|s| s.as_ref().into()),
+        archetype_field_name: archetype_field_name.map(|s| s.as_ref().into()),
+        component_name: component_name.as_ref().into(),
+    };
+    descr.sanity_check();
+    Ok(descr)
+}
+
+/// Perform conversion between a pyarrow array to arrow types.
 ///
 /// `name` is the name of the Rerun component, and the name of the pyarrow `Field` (column name).
-fn array_to_rust(arrow_array: &PyAny, name: Option<&str>) -> PyResult<(Box<dyn Array>, Field)> {
-    // prepare pointers to receive the Array struct
-    let array = Box::new(ffi::ArrowArray::empty());
-    let schema = Box::new(ffi::ArrowSchema::empty());
-
-    let array_ptr = &*array as *const ffi::ArrowArray;
-    let schema_ptr = &*schema as *const ffi::ArrowSchema;
-
-    // make the conversion through PyArrow's private API
-    // this changes the pointer's memory and is thus unsafe. In particular, `_export_to_c` can go out of bounds
-    arrow_array.call_method1(
-        "_export_to_c",
-        (array_ptr as Py_uintptr_t, schema_ptr as Py_uintptr_t),
-    )?;
-
-    #[allow(unsafe_code)]
-    // SAFETY:
-    // TODO(jleibs): Convince ourselves that this is safe
-    // Following pattern from: https://github.com/pola-rs/polars/blob/1c6b7b70e935fe70384fc0d1ca8d07763011d8b8/examples/python_rust_compiled_function/src/ffi.rs
-    unsafe {
-        let mut field = ffi::import_field_from_c(schema.as_ref())
-            .map_err(|err| PyValueError::new_err(format!("Error importing Field: {err}")))?;
-
-        // NOTE: Do not carry the extension metadata beyond the FFI barrier in order the match the
-        // data sent by other SDKs.
-        //
-        // We've stopped using datatype extensions overall, as they generally have been creating more
-        // problems than they have solved.
-        //
-        // With the addition of `Chunk` and `ChunkMetadata`, it is likely that we will get rid of extension types
-        // entirely at some point, since it looks like we won't have any use for them anymore.
-        //
-        // Doing so will require a more extensive refactoring of the Python SDK though, so until we're absolutely
-        // certain where we're going, this is a nice, painless and easily reversible solution.
-        //
-        // See <https://github.com/rerun-io/rerun/issues/6606>.
-        let datatype = field.data_type().to_logical_type().clone();
-
-        let array = ffi::import_array_from_c(*array, datatype)
-            .map_err(|err| PyValueError::new_err(format!("Error importing Array: {err}")))?;
-
-        if let Some(name) = name {
-            field.name = name.to_owned();
-        }
-
-        Ok((array, field))
-    }
+pub fn array_to_rust(arrow_array: &Bound<'_, PyAny>) -> PyResult<ArrowArrayRef> {
+    let py_array: PyArrowType<ArrowArrayData> = arrow_array.extract()?;
+    Ok(make_array(py_array.0))
 }
 
 /// Build a [`PendingRow`] given a '**kwargs'-style dictionary of component arrays.
 pub fn build_row_from_components(
-    components: &PyDict,
+    components_per_descr: &Bound<'_, PyDict>,
     time_point: &TimePoint,
 ) -> PyResult<PendingRow> {
     // Create row-id as early as possible. It has a timestamp and is used to estimate e2e latency.
     // TODO(emilk): move to before we arrow-serialize the data
     let row_id = RowId::new();
 
-    let (arrays, fields): (Vec<Box<dyn Array>>, Vec<Field>) = itertools::process_results(
-        components.iter().map(|(name, array)| {
-            let name = name.downcast::<PyString>()?.to_str()?;
-            array_to_rust(array, Some(name))
-        }),
-        |iter| iter.unzip(),
-    )?;
-
-    let components = arrays
-        .into_iter()
-        .zip(fields)
-        .map(|(value, field)| (field.name.into(), value))
-        .collect();
+    let mut components = IntMap::default();
+    for (component_descr, array) in components_per_descr {
+        let component_descr = descriptor_to_rust(&component_descr)?;
+        let list_array = array_to_rust(&array)?;
+        components.insert(component_descr, list_array);
+    }
 
     Ok(PendingRow {
         row_id,
@@ -104,108 +87,84 @@ pub fn build_row_from_components(
 /// Build a [`Chunk`] given a '**kwargs'-style dictionary of component arrays.
 pub fn build_chunk_from_components(
     entity_path: EntityPath,
-    timelines: &PyDict,
-    components: &PyDict,
+    timelines: &Bound<'_, PyDict>,
+    components_per_descr: &Bound<'_, PyDict>,
 ) -> PyResult<Chunk> {
     // Create chunk-id as early as possible. It has a timestamp and is used to estimate e2e latency.
     let chunk_id = ChunkId::new();
 
     // Extract the timeline data
-    let (arrays, fields): (Vec<Box<dyn Array>>, Vec<Field>) = itertools::process_results(
-        timelines.iter().map(|(name, array)| {
-            let name = name.downcast::<PyString>()?.to_str()?;
-            array_to_rust(array, Some(name))
-        }),
-        |iter| iter.unzip(),
-    )?;
+    let (arrays, timeline_names): (Vec<ArrowArrayRef>, Vec<TimelineName>) =
+        itertools::process_results(
+            timelines.iter().map(|(name, array)| {
+                let py_name = name.downcast::<PyString>()?;
+                let name: std::borrow::Cow<'_, str> = py_name.extract()?;
+                let timeline_name: TimelineName = name.as_ref().into();
+                array_to_rust(&array).map(|array| (array, timeline_name))
+            }),
+            |iter| iter.unzip(),
+        )?;
 
     let timelines: Result<Vec<_>, ChunkError> = arrays
         .into_iter()
-        .zip(fields)
-        .map(|(value, field)| {
-            let timeline = match field.data_type() {
-                arrow2::datatypes::DataType::Int64 => {
-                    Ok(Timeline::new_sequence(field.name.clone()))
-                }
-                arrow2::datatypes::DataType::Timestamp(_, _) => {
-                    Ok(Timeline::new_temporal(field.name.clone()))
-                }
-                _ => Err(ChunkError::Malformed {
-                    reason: format!("Invalid data_type for timeline: {}", field.name),
-                }),
-            }?;
-            let timeline_data = value
-                .as_any()
-                .downcast_ref::<PrimitiveArray<i64>>()
+        .zip(timeline_names)
+        .map(|(array, timeline_name)| {
+            let time_type = re_log_types::TimeType::from_arrow_datatype(array.data_type())
                 .ok_or_else(|| ChunkError::Malformed {
-                    reason: format!("Invalid primitive array for timeline: {}", field.name),
-                })?
-                .clone();
+                    reason: format!("Invalid data_type for timeline: {timeline_name}"),
+                })?;
+            let timeline = Timeline::new(timeline_name, time_type);
+            let timeline_data =
+                TimeColumn::read_array(&ArrowArrayRef::from(array)).map_err(|err| {
+                    ChunkError::Malformed {
+                        reason: format!("Invalid timeline {timeline_name}: {err}"),
+                    }
+                })?;
             Ok((timeline, timeline_data))
         })
         .collect();
 
-    let timelines: BTreeMap<Timeline, ChunkTimeline> = timelines
+    let timelines: IntMap<Timeline, TimeColumn> = timelines
         .map_err(|err| PyRuntimeError::new_err(format!("Error converting temporal data: {err}")))?
         .into_iter()
-        .map(|(timeline, value)| (timeline, ChunkTimeline::new(None, timeline, value)))
+        .map(|(timeline, value)| (timeline, TimeColumn::new(None, timeline, value)))
         .collect();
 
     // Extract the component data
-    let (arrays, fields): (Vec<Box<dyn Array>>, Vec<Field>) = itertools::process_results(
-        components.iter().map(|(name, array)| {
-            let name = name.downcast::<PyString>()?.to_str()?;
-            array_to_rust(array, Some(name))
-        }),
-        |iter| iter.unzip(),
-    )?;
+    let (arrays, component_descrs): (Vec<ArrowArrayRef>, Vec<ComponentDescriptor>) =
+        itertools::process_results(
+            components_per_descr.iter().map(|(component_descr, array)| {
+                let component_descr = descriptor_to_rust(&component_descr)?;
+                array_to_rust(&array).map(|array| (array, component_descr))
+            }),
+            |iter| iter.unzip(),
+        )?;
 
-    let components: Result<Vec<_>, ChunkError> = arrays
+    let components: Result<Vec<(ComponentDescriptor, _)>, ChunkError> = arrays
         .into_iter()
-        .zip(fields)
-        .map(|(value, field)| {
-            let batch = if let Some(batch) = value.as_any().downcast_ref::<ListArray<i32>>() {
+        .zip(component_descrs)
+        .map(|(list_array, descr)| {
+            let batch = if let Some(batch) = list_array.downcast_array_ref::<ArrowListArray>() {
                 batch.clone()
             } else {
-                let offsets = Offsets::try_from_lengths(std::iter::repeat(1).take(value.len()))
-                    .map_err(|err| ChunkError::Malformed {
-                        reason: format!("Failed to create offsets: {err}"),
-                    })?;
-                let data_type = ListArray::<i32>::default_datatype(value.data_type().clone());
-                ListArray::<i32>::try_new(data_type, offsets.into(), value, None).map_err(
-                    |err| ChunkError::Malformed {
+                let offsets =
+                    ArrowOffsetBuffer::from_lengths(std::iter::repeat(1).take(list_array.len()));
+                let field = ArrowField::new("item", list_array.data_type().clone(), true).into();
+                ArrowListArray::try_new(field, offsets, list_array, None).map_err(|err| {
+                    ChunkError::Malformed {
                         reason: format!("Failed to wrap in List array: {err}"),
-                    },
-                )?
+                    }
+                })?
             };
 
-            Ok((field.name.into(), batch))
+            Ok((descr, batch))
         })
         .collect();
 
-    let components: BTreeMap<ComponentName, ListArray<i32>> = components
+    let components = components
         .map_err(|err| PyRuntimeError::new_err(format!("Error converting component data: {err}")))?
         .into_iter()
         .collect();
-
-    let mut all_lengths = timelines
-        .values()
-        .map(|timeline| (timeline.name(), timeline.num_rows()))
-        .chain(
-            components
-                .iter()
-                .map(|(component, array)| (component.as_str(), array.len())),
-        );
-
-    if let Some((_, expected)) = all_lengths.next() {
-        for (name, len) in all_lengths {
-            if len != expected {
-                return Err(PyRuntimeError::new_err(format!(
-                    "Mismatched lengths: '{name}' has length {len} but expected {expected}",
-                )));
-            }
-        }
-    }
 
     let chunk = Chunk::from_auto_row_ids(chunk_id, entity_path, timelines, components)
         .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;

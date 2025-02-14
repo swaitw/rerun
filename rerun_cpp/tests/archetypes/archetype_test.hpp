@@ -5,13 +5,13 @@
 
 #include <rerun/as_components.hpp>
 #include <rerun/collection.hpp>
-#include <rerun/data_cell.hpp>
+#include <rerun/component_batch.hpp>
 
 template <typename T>
 void test_compare_archetype_serialization(const T& arch_a, const T& arch_b) {
     THEN("convert to component lists") {
-        auto arch_b_serialized_result = rerun::AsComponents<T>::serialize(arch_b);
-        auto arch_a_serialized_result = rerun::AsComponents<T>::serialize(arch_a);
+        auto arch_b_serialized_result = rerun::AsComponents<T>::as_batches(arch_b);
+        auto arch_a_serialized_result = rerun::AsComponents<T>::as_batches(arch_a);
 
         AND_THEN("serializing each list succeeds") {
             REQUIRE(arch_b_serialized_result.is_ok());
@@ -24,9 +24,8 @@ void test_compare_archetype_serialization(const T& arch_a, const T& arch_b) {
             AND_THEN("the serialized data is the same") {
                 for (size_t i = 0; i < arch_b_serialized.size(); ++i) {
                     INFO("Component batch #" << i);
-                    CHECK(arch_b_serialized[i].num_instances == arch_a_serialized[i].num_instances);
                     CHECK(
-                        arch_b_serialized[i].component_type == arch_a_serialized[i].component_type
+                        arch_a_serialized[i].component_type == arch_b_serialized[i].component_type
                     );
                     INFO(
                         "Array diff: "

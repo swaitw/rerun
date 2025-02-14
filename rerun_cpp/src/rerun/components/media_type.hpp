@@ -3,10 +3,12 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../datatypes/utf8.hpp"
 #include "../result.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <utility>
@@ -19,9 +21,7 @@ namespace rerun::components {
     struct MediaType {
         rerun::datatypes::Utf8 value;
 
-      public:
-        // Extensions to generated type defined in 'media_type_ext.cpp'
-
+      public: // START of extensions from media_type_ext.cpp:
         /// Construct media type from a null-terminated UTF8 string.
         MediaType(const char* media_type) : value(media_type) {}
 
@@ -87,6 +87,20 @@ namespace rerun::components {
             return "model/stl";
         }
 
+        // -------------------------------------------------------
+        /// Videos:
+
+        /// [MP4 video](https://en.wikipedia.org/wiki/MP4_file_format): `video/mp4`.
+        ///
+        /// <https://www.iana.org/assignments/media-types/video/mp4>
+        static MediaType mp4() {
+            return "video/mp4";
+        }
+
+        static std::optional<MediaType> guess_from_path(const std::filesystem::path& path);
+
+        // END of extensions from media_type_ext.cpp, start of generated code:
+
       public:
         MediaType() = default;
 
@@ -117,7 +131,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::MediaType> {
-        static constexpr const char Name[] = "rerun.components.MediaType";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.MediaType";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -128,7 +142,16 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const components::MediaType* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::Utf8>::to_arrow(&instances->value, num_instances);
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::Utf8>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::Utf8>::to_arrow(&instances->value, num_instances);
+            }
         }
     };
 } // namespace rerun

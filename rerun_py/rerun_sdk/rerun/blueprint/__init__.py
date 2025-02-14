@@ -23,9 +23,9 @@ from .api import (
     PanelState as PanelState,
     PanelStateLike as PanelStateLike,
     SelectionPanel as SelectionPanel,
-    SpaceView as SpaceView,
     TimePanel as TimePanel,
     TopPanel as TopPanel,
+    View as View,
 )
 from .archetypes import (
     Background as Background,
@@ -40,6 +40,7 @@ from .components import (
     BackgroundKind as BackgroundKind,
     Corner2D as Corner2D,
     LockRangeDuringZoom as LockRangeDuringZoom,
+    MapProvider as MapProvider,
     VisibleTimeRange as VisibleTimeRange,
     VisualizerOverrides as VisualizerOverrides,
 )
@@ -51,6 +52,9 @@ from .containers import (
 )
 from .views import (
     BarChartView as BarChartView,
+    DataframeView as DataframeView,
+    GraphView as GraphView,
+    MapView as MapView,
     Spatial2DView as Spatial2DView,
     Spatial3DView as Spatial3DView,
     TensorView as TensorView,

@@ -50,25 +50,6 @@ pub fn is_tuple_struct_from_obj(obj: &Object) -> bool {
     is_tuple_struct
 }
 
-pub fn iter_archetype_components<'a>(
-    obj: &'a Object,
-    requirement_attr_value: &'static str,
-) -> impl Iterator<Item = String> + 'a {
-    assert_eq!(ObjectKind::Archetype, obj.kind);
-
-    obj.fields.iter().filter_map(move |field| {
-        field
-            .try_get_attr::<String>(requirement_attr_value)
-            .map(|_| {
-                if let Some(fqname) = field.typ.fqname() {
-                    fqname.to_owned()
-                } else {
-                    panic!("Archetype field must be an object/union or an array/vector of such")
-                }
-            })
-    })
-}
-
 pub fn string_from_quoted(
     reporter: &Reporter,
     acc: &TokenStream,
@@ -152,6 +133,8 @@ pub fn string_from_quoted(
 
         let line_is_attr = trimmed.starts_with("#[allow(")
             || trimmed.starts_with("#[inline]")
+            || trimmed.starts_with("#[doc(hidden)]")
+            || trimmed.starts_with("#[rustfmt::skip]")
             || trimmed.starts_with("#[derive");
 
         if line_is_attr && (!prev_line_was_attr && !prev_line_was_docstring) {
@@ -317,8 +300,16 @@ pub fn doc_as_lines(
     fqname: &str,
     docs: &Docs,
     target: Target,
+    is_experimental: bool,
 ) -> Vec<String> {
-    let mut lines = docs.lines_for(objects, target);
+    let mut lines = docs.lines_for(reporter, objects, target);
+
+    if is_experimental {
+        lines.push(String::new());
+        lines.push(
+            "⚠️ **This type is experimental and may be removed in future versions**".to_owned(),
+        );
+    }
 
     let examples = if !fqname.starts_with("rerun.blueprint.views") {
         collect_snippets_for_api_docs(docs, "rs", true)

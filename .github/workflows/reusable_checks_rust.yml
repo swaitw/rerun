@@ -15,7 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PYTHON_VERSION: "3.8"
   # web_sys_unstable_apis is required to enable the web_sys clipboard API which egui_web uses
   # https://rustwasm.github.io/wasm-bindgen/api/web_sys/struct.Clipboard.html
   # https://rustwasm.github.io/docs/wasm-bindgen/web-sys/unstable-apis.html
@@ -34,6 +33,16 @@ env:
   # these incremental artifacts when running on CI.
   CARGO_INCREMENTAL: "0"
 
+  # Improve diagnostics for crashes.
+  RUST_BACKTRACE: full
+
+  # Sourced from https://vulkan.lunarg.com/sdk/home#linux
+  VULKAN_SDK_VERSION: "1.3.290.0"
+
+  # Via: https://nexte.st/docs/installation/pre-built-binaries/#using-nextest-in-github-actions
+  # ANSI color codes should be supported by default on GitHub Actions.
+  CARGO_TERM_COLOR: always
+
 defaults:
   run:
     shell: bash
@@ -47,11 +56,13 @@ jobs:
 
   rs-lints:
     name: Rust lints (fmt, check, clippy, tests, doc)
-    runs-on: ubuntu-latest-16-cores
+    # TODO(andreas): setup-vulkan doesn't work on 24.4 right now due to missing .so
+    runs-on: ubuntu-22.04-large
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || '' }}
+          lfs: true
 
       - name: Set up Rust
         uses: ./.github/actions/setup-rust
@@ -63,15 +74,28 @@ jobs:
 
       - uses: prefix-dev/setup-pixi@v0.8.1
         with:
-          pixi-version: v0.25.0
+          pixi-version: v0.39.0
 
-      - name: Rust checks & tests
+      # Install the Vulkan SDK, so we can use the software rasterizer.
+      # TODO(andreas): It would be nice if `setup_software_rasterizer.py` could do that for us as well (note though that this action here is very fast when cached!)
+      - name: Install Vulkan SDK
+        uses: rerun-io/install-vulkan-sdk-action@v1.1.0
+        with:
+          vulkan_version: ${{ env.VULKAN_SDK_VERSION }}
+          install_runtime: true
+          cache: true
+          stripdown: true
+
+      - name: Setup software rasterizer
+        run: pixi run python ./scripts/ci/setup_software_rasterizer.py
+
+      - name: Rust checks (PR subset)
         if: ${{ inputs.CHANNEL == 'pr' }}
-        run: pixi run rs-check --skip individual_crates tests
+        run: pixi run rs-check --only base_checks sdk_variations cargo_deny wasm docs tests
 
-      - name: Rust checks & tests
+      - name: Rust most checks & tests
         if: ${{ inputs.CHANNEL == 'main' }}
-        run: pixi run rs-check --skip individual_crates
+        run: pixi run rs-check --skip individual_crates docs_slow
 
       - name: Rust all checks & tests
         if: ${{ inputs.CHANNEL == 'nightly' }}
@@ -79,18 +103,22 @@ jobs:
 
   # Run some basics tests on Mac and Windows
   mac-windows-tests:
-    name: Test on macOS and Windows
-    if: ${{ inputs.CHANNEL == 'nightly' }}
+    name: Test on ${{ matrix.name }}
     strategy:
       matrix:
         include:
-          - os: macos-latest
-            name: macos
-          - os: windows-latest-8-cores
-            name: windows
+          - os: "macos-latest"
+            name: "macos"
+          - os: "windows-latest-8-cores"
+            name: "windows"
+
+    # Note: we can't use `matrix.os` here because its evaluated before the matrix stuff.
+    if: ${{ inputs.CHANNEL == 'main' || inputs.CHANNEL == 'nightly' }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Set up Rust
         uses: ./.github/actions/setup-rust
@@ -100,5 +128,29 @@ jobs:
           workload_identity_provider: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
 
-      - name: cargo test --all-targets --all-features
-        run: cargo test --all-targets --all-features
+      # Building with `--all-features` requires extra build tools like `nasm`.
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.39.0
+
+      # Install the Vulkan SDK, so we can use the software rasterizer.
+      # TODO(andreas): It would be nice if `setup_software_rasterizer.py` could do that for us as well (note though that this action here is very fast when cached!)
+      - name: Install Vulkan SDK
+        if: ${{ matrix.name != 'macos' }}
+        uses: rerun-io/install-vulkan-sdk-action@v1.1.0
+        with:
+          vulkan_version: ${{ env.VULKAN_SDK_VERSION }}
+          install_runtime: true
+          cache: true
+          stripdown: true
+
+      - name: Setup software rasterizer
+        run: pixi run python ./scripts/ci/setup_software_rasterizer.py
+
+      - name: Run tests (`cargo test --all-targets --all-features`)
+        if: ${{ inputs.CHANNEL == 'main' }}
+        run: pixi run rs-check --only tests
+
+      - name: Rust all checks & tests
+        if: ${{ inputs.CHANNEL == 'nightly' }}
+        run: pixi run rs-check

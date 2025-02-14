@@ -8,10 +8,11 @@ from __future__ import annotations
 from ... import datatypes
 from ..._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["IncludedContent", "IncludedContentBatch", "IncludedContentType"]
+__all__ = ["IncludedContent", "IncludedContentBatch"]
 
 
 class IncludedContent(datatypes.EntityPath, ComponentMixin):
@@ -24,12 +25,8 @@ class IncludedContent(datatypes.EntityPath, ComponentMixin):
     pass
 
 
-class IncludedContentType(datatypes.EntityPathType):
-    _TYPE_NAME: str = "rerun.blueprint.components.IncludedContent"
-
-
 class IncludedContentBatch(datatypes.EntityPathBatch, ComponentBatchMixin):
-    _ARROW_TYPE = IncludedContentType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.blueprint.components.IncludedContent")
 
 
 # This is patched in late to avoid circular dependencies.

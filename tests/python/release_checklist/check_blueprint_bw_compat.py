@@ -50,16 +50,13 @@ Anything else is a failure (e.g. deserialization failure spam).
 
 
 def log_readme() -> None:
-    rr.log("readme", rr.TextDocument(README, media_type=rr.MediaType.MARKDOWN), timeless=True)
+    rr.log("readme", rr.TextDocument(README, media_type=rr.MediaType.MARKDOWN), static=True)
 
 
 def run(args: Namespace) -> None:
-    rr.script_setup(
-        args,
-        f"{os.path.basename(__file__)}",
-        recording_id=uuid4(),
-        default_blueprint=rrb.Grid(rrb.TextDocumentView(origin="readme")),
-    )
+    rr.script_setup(args, f"{os.path.basename(__file__)}", recording_id=uuid4())
+
+    rr.send_blueprint(rrb.Grid(rrb.TextDocumentView(origin="readme")), make_active=True, make_default=True)
 
     log_readme()
 

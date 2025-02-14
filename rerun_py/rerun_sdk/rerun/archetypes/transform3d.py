@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import numpy as np
 from attrs import define, field
 
-from .. import components
+from .. import components, datatypes
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
+from ..error_utils import catch_and_log_exceptions
 from .transform3d_ext import Transform3DExt
 
 __all__ = ["Transform3D"]
@@ -21,13 +24,16 @@ class Transform3D(Transform3DExt, Archetype):
     """
     **Archetype**: A transform between two 3D spaces, i.e. a pose.
 
-    All components are applied in the inverse order they are listed here.
-    E.g. if both a 4x4 matrix with a translation and a translation vector are present,
-    the translation is applied first, followed by the matrix.
+    From the point of view of the entity's coordinate system,
+    all components are applied in the inverse order they are listed here.
+    E.g. if both a translation and a max3x3 transform are present,
+    the 3x3 matrix is applied first, followed by the translation.
 
-    Each transform component can be listed multiple times, but transform tree propagation is only possible
-    if there's only one instance for each transform component.
-    TODO(#6831): write more about the exact interaction with the to be written `OutOfTreeTransform` component.
+    Whenever you log this archetype, it will write all components, even if you do not explicitly set them.
+    This means that if you first log a transform with only a translation, and then log one with only a rotation,
+    it will be resolved to a transform with only a rotation.
+
+    For transforms that affect only a single entity and do not propagate along the entity tree refer to [`archetypes.InstancePoses3D`][rerun.archetypes.InstancePoses3D].
 
     Examples
     --------
@@ -130,6 +136,151 @@ class Transform3D(Transform3DExt, Archetype):
     </picture>
     </center>
 
+    ### Update a transform over time:
+    ```python
+    import math
+
+    import rerun as rr
+
+
+    def truncated_radians(deg: float) -> float:
+        return float(int(math.radians(deg) * 1000.0)) / 1000.0
+
+
+    rr.init("rerun_example_transform3d_row_updates", spawn=True)
+
+    rr.set_time_sequence("tick", 0)
+    rr.log(
+        "box",
+        rr.Boxes3D(half_sizes=[4.0, 2.0, 1.0], fill_mode=rr.components.FillMode.Solid),
+        rr.Transform3D(clear=False, axis_length=10),
+    )
+
+    for t in range(100):
+        rr.set_time_sequence("tick", t + 1)
+        rr.log(
+            "box",
+            rr.Transform3D(
+                clear=False,
+                translation=[0, 0, t / 10.0],
+                rotation_axis_angle=rr.RotationAxisAngle(axis=[0.0, 1.0, 0.0], radians=truncated_radians(t * 4)),
+            ),
+        )
+    ```
+    <center>
+    <picture>
+      <source media="(max-width: 480px)" srcset="https://static.rerun.io/transform3d_column_updates/80634e1c7c7a505387e975f25ea8b6bc1d4eb9db/480w.png">
+      <source media="(max-width: 768px)" srcset="https://static.rerun.io/transform3d_column_updates/80634e1c7c7a505387e975f25ea8b6bc1d4eb9db/768w.png">
+      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/transform3d_column_updates/80634e1c7c7a505387e975f25ea8b6bc1d4eb9db/1024w.png">
+      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/transform3d_column_updates/80634e1c7c7a505387e975f25ea8b6bc1d4eb9db/1200w.png">
+      <img src="https://static.rerun.io/transform3d_column_updates/80634e1c7c7a505387e975f25ea8b6bc1d4eb9db/full.png" width="640">
+    </picture>
+    </center>
+
+    ### Update a transform over time, in a single operation:
+    ```python
+    import math
+
+    import rerun as rr
+
+
+    def truncated_radians(deg: float) -> float:
+        return float(int(math.radians(deg) * 1000.0)) / 1000.0
+
+
+    rr.init("rerun_example_transform3d_column_updates", spawn=True)
+
+    rr.set_time_sequence("tick", 0)
+    rr.log(
+        "box",
+        rr.Boxes3D(half_sizes=[4.0, 2.0, 1.0], fill_mode=rr.components.FillMode.Solid),
+        rr.Transform3D(clear=False, axis_length=10),
+    )
+
+    rr.send_columns(
+        "box",
+        indexes=[rr.TimeSequenceColumn("tick", range(1, 101))],
+        columns=rr.Transform3D.columns(
+            translation=[[0, 0, t / 10.0] for t in range(100)],
+            rotation_axis_angle=[
+                rr.RotationAxisAngle(axis=[0.0, 1.0, 0.0], radians=truncated_radians(t * 4)) for t in range(100)
+            ],
+        ),
+    )
+    ```
+    <center>
+    <picture>
+      <source media="(max-width: 480px)" srcset="https://static.rerun.io/transform3d_column_updates/80634e1c7c7a505387e975f25ea8b6bc1d4eb9db/480w.png">
+      <source media="(max-width: 768px)" srcset="https://static.rerun.io/transform3d_column_updates/80634e1c7c7a505387e975f25ea8b6bc1d4eb9db/768w.png">
+      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/transform3d_column_updates/80634e1c7c7a505387e975f25ea8b6bc1d4eb9db/1024w.png">
+      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/transform3d_column_updates/80634e1c7c7a505387e975f25ea8b6bc1d4eb9db/1200w.png">
+      <img src="https://static.rerun.io/transform3d_column_updates/80634e1c7c7a505387e975f25ea8b6bc1d4eb9db/full.png" width="640">
+    </picture>
+    </center>
+
+    ### Update specific properties of a transform over time:
+    ```python
+    import math
+
+    import rerun as rr
+
+
+    def truncated_radians(deg: float) -> float:
+        return float(int(math.radians(deg) * 1000.0)) / 1000.0
+
+
+    rr.init("rerun_example_transform3d_partial_updates", spawn=True)
+
+    # Set up a 3D box.
+    rr.log(
+        "box",
+        rr.Boxes3D(half_sizes=[4.0, 2.0, 1.0], fill_mode=rr.components.FillMode.Solid),
+        rr.Transform3D(clear=False, axis_length=10),
+    )
+
+    # Update only the rotation of the box.
+    for deg in range(46):
+        rad = truncated_radians(deg * 4)
+        rr.log(
+            "box",
+            rr.Transform3D.from_fields(
+                rotation_axis_angle=rr.RotationAxisAngle(axis=[0.0, 1.0, 0.0], radians=rad),
+            ),
+        )
+
+    # Update only the position of the box.
+    for t in range(51):
+        rr.log(
+            "box",
+            rr.Transform3D.from_fields(translation=[0, 0, t / 10.0]),
+        )
+
+    # Update only the rotation of the box.
+    for deg in range(46):
+        rad = truncated_radians((deg + 45) * 4)
+        rr.log(
+            "box",
+            rr.Transform3D.from_fields(
+                rotation_axis_angle=rr.RotationAxisAngle(axis=[0.0, 1.0, 0.0], radians=rad),
+            ),
+        )
+
+    # Clear all of the box's attributes, and reset its axis length.
+    rr.log(
+        "box",
+        rr.Transform3D.from_fields(clear_unset=True, axis_length=15),
+    )
+    ```
+    <center>
+    <picture>
+      <source media="(max-width: 480px)" srcset="https://static.rerun.io/transform3d_partial_updates/11815bebc69ae400847896372b496cdd3e9b19fb/480w.png">
+      <source media="(max-width: 768px)" srcset="https://static.rerun.io/transform3d_partial_updates/11815bebc69ae400847896372b496cdd3e9b19fb/768w.png">
+      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/transform3d_partial_updates/11815bebc69ae400847896372b496cdd3e9b19fb/1024w.png">
+      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/transform3d_partial_updates/11815bebc69ae400847896372b496cdd3e9b19fb/1200w.png">
+      <img src="https://static.rerun.io/transform3d_partial_updates/11815bebc69ae400847896372b496cdd3e9b19fb/full.png" width="640">
+    </picture>
+    </center>
+
     """
 
     # __init__ can be found in transform3d_ext.py
@@ -137,11 +288,13 @@ class Transform3D(Transform3DExt, Archetype):
     def __attrs_clear__(self) -> None:
         """Convenience method for calling `__attrs_init__` with all `None`s."""
         self.__attrs_init__(
-            transform=None,  # type: ignore[arg-type]
-            translation=None,  # type: ignore[arg-type]
-            scale=None,  # type: ignore[arg-type]
-            mat3x3=None,  # type: ignore[arg-type]
-            axis_length=None,  # type: ignore[arg-type]
+            translation=None,
+            rotation_axis_angle=None,
+            quaternion=None,
+            scale=None,
+            mat3x3=None,
+            relation=None,
+            axis_length=None,
         )
 
     @classmethod
@@ -151,45 +304,195 @@ class Transform3D(Transform3DExt, Archetype):
         inst.__attrs_clear__()
         return inst
 
-    transform: components.Transform3DBatch = field(
-        metadata={"component": "required"},
-        converter=components.Transform3DBatch._required,  # type: ignore[misc]
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        clear_unset: bool = False,
+        translation: datatypes.Vec3DLike | None = None,
+        rotation_axis_angle: datatypes.RotationAxisAngleLike | None = None,
+        quaternion: datatypes.QuaternionLike | None = None,
+        scale: datatypes.Vec3DLike | None = None,
+        mat3x3: datatypes.Mat3x3Like | None = None,
+        relation: components.TransformRelationLike | None = None,
+        axis_length: datatypes.Float32Like | None = None,
+    ) -> Transform3D:
+        """
+        Update only some specific fields of a `Transform3D`.
+
+        Parameters
+        ----------
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        translation:
+            Translation vector.
+        rotation_axis_angle:
+            Rotation via axis + angle.
+        quaternion:
+            Rotation via quaternion.
+        scale:
+            Scaling factor.
+        mat3x3:
+            3x3 transformation matrix.
+        relation:
+            Specifies the relation this transform establishes between this entity and its parent.
+        axis_length:
+            Visual length of the 3 axes.
+
+            The length is interpreted in the local coordinate system of the transform.
+            If the transform is scaled, the axes will be scaled accordingly.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "translation": translation,
+                "rotation_axis_angle": rotation_axis_angle,
+                "quaternion": quaternion,
+                "scale": scale,
+                "mat3x3": mat3x3,
+                "relation": relation,
+                "axis_length": axis_length,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def cleared(cls) -> Transform3D:
+        """Clear all the fields of a `Transform3D`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        translation: datatypes.Vec3DArrayLike | None = None,
+        rotation_axis_angle: datatypes.RotationAxisAngleArrayLike | None = None,
+        quaternion: datatypes.QuaternionArrayLike | None = None,
+        scale: datatypes.Vec3DArrayLike | None = None,
+        mat3x3: datatypes.Mat3x3ArrayLike | None = None,
+        relation: components.TransformRelationArrayLike | None = None,
+        axis_length: datatypes.Float32ArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        translation:
+            Translation vector.
+        rotation_axis_angle:
+            Rotation via axis + angle.
+        quaternion:
+            Rotation via quaternion.
+        scale:
+            Scaling factor.
+        mat3x3:
+            3x3 transformation matrix.
+        relation:
+            Specifies the relation this transform establishes between this entity and its parent.
+        axis_length:
+            Visual length of the 3 axes.
+
+            The length is interpreted in the local coordinate system of the transform.
+            If the transform is scaled, the axes will be scaled accordingly.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                translation=translation,
+                rotation_axis_angle=rotation_axis_angle,
+                quaternion=quaternion,
+                scale=scale,
+                mat3x3=mat3x3,
+                relation=relation,
+                axis_length=axis_length,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
+    translation: components.Translation3DBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.Translation3DBatch._converter,  # type: ignore[misc]
     )
-    # The transform
+    # Translation vector.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
-    translation: components.Translation3DBatch | None = field(
-        metadata={"component": "optional"},
+    rotation_axis_angle: components.RotationAxisAngleBatch | None = field(
+        metadata={"component": True},
         default=None,
-        converter=components.Translation3DBatch._optional,  # type: ignore[misc]
+        converter=components.RotationAxisAngleBatch._converter,  # type: ignore[misc]
     )
-    # Translation vectors.
+    # Rotation via axis + angle.
+    #
+    # (Docstring intentionally commented out to hide this field from the docs)
+
+    quaternion: components.RotationQuatBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.RotationQuatBatch._converter,  # type: ignore[misc]
+    )
+    # Rotation via quaternion.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     scale: components.Scale3DBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.Scale3DBatch._optional,  # type: ignore[misc]
+        converter=components.Scale3DBatch._converter,  # type: ignore[misc]
     )
     # Scaling factor.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     mat3x3: components.TransformMat3x3Batch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.TransformMat3x3Batch._optional,  # type: ignore[misc]
+        converter=components.TransformMat3x3Batch._converter,  # type: ignore[misc]
     )
-    # 3x3 transformation matrices.
+    # 3x3 transformation matrix.
+    #
+    # (Docstring intentionally commented out to hide this field from the docs)
+
+    relation: components.TransformRelationBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.TransformRelationBatch._converter,  # type: ignore[misc]
+    )
+    # Specifies the relation this transform establishes between this entity and its parent.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     axis_length: components.AxisLengthBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.AxisLengthBatch._optional,  # type: ignore[misc]
+        converter=components.AxisLengthBatch._converter,  # type: ignore[misc]
     )
     # Visual length of the 3 axes.
     #

@@ -21,6 +21,9 @@ struct PendingReadbackRange {
 pub enum GpuReadbackError {
     #[error("Texture format {0:?} is not supported for readback.")]
     UnsupportedTextureFormatForReadback(wgpu::TextureFormat),
+
+    #[error("Texture or buffer does not have the required copy-source usage flag.")]
+    MissingSrcCopyUsage,
 }
 
 /// A reserved slice for GPU readback.
@@ -41,7 +44,7 @@ impl GpuReadbackBuffer {
     pub fn read_texture2d(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        source: wgpu::ImageCopyTexture<'_>,
+        source: wgpu::TexelCopyTextureInfo<'_>,
         copy_extents: wgpu::Extent3d,
     ) -> Result<(), GpuReadbackError> {
         self.read_multiple_texture2d(encoder, &[(source, copy_extents)])
@@ -60,13 +63,17 @@ impl GpuReadbackBuffer {
     pub fn read_multiple_texture2d(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        sources_and_extents: &[(wgpu::ImageCopyTexture<'_>, wgpu::Extent3d)],
+        sources_and_extents: &[(wgpu::TexelCopyTextureInfo<'_>, wgpu::Extent3d)],
     ) -> Result<(), GpuReadbackError> {
         for (source, copy_extents) in sources_and_extents {
+            let src_texture = source.texture;
+            if !src_texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+                return Err(GpuReadbackError::MissingSrcCopyUsage);
+            }
+
             let start_offset = wgpu::util::align_to(
                 self.range_in_chunk.start,
-                source
-                    .texture
+                src_texture
                     .format()
                     .block_copy_size(Some(source.aspect))
                     .ok_or(GpuReadbackError::UnsupportedTextureFormatForReadback(
@@ -74,7 +81,7 @@ impl GpuReadbackBuffer {
                     ))? as u64,
             );
 
-            let buffer_info = Texture2DBufferInfo::new(source.texture.format(), *copy_extents);
+            let buffer_info = Texture2DBufferInfo::new(src_texture.format(), *copy_extents);
 
             // Validate that stay within the slice (wgpu can't fully know our intention here, so we have to check).
             debug_assert!(
@@ -84,9 +91,9 @@ impl GpuReadbackBuffer {
 
             encoder.copy_texture_to_buffer(
                 *source,
-                wgpu::ImageCopyBuffer {
+                wgpu::TexelCopyBufferInfo {
                     buffer: &self.chunk_buffer,
-                    layout: wgpu::ImageDataLayout {
+                    layout: wgpu::TexelCopyBufferLayout {
                         offset: start_offset,
                         bytes_per_row: Some(buffer_info.bytes_per_row_padded),
                         rows_per_image: None,
@@ -139,7 +146,7 @@ struct Chunk {
     /// All ranges that are currently in use, i.e. there is a GPU write to it scheduled.
     ranges_in_use: Vec<PendingReadbackRange>,
 
-    /// Last frame this chunk was received, i.e. the last time a map_async action operation finished with it.
+    /// Last frame this chunk was received, i.e. the last time a `map_async` action operation finished with it.
     last_received_frame_index: u64,
 }
 
@@ -267,8 +274,7 @@ impl GpuReadbackBelt {
             } else {
                 // Allocation might be bigger than a chunk!
                 let buffer_size = self.chunk_size.max(size_in_bytes);
-                // Happens relatively rarely, this is a noteworthy event!
-                re_log::debug!(
+                re_log::trace!(
                     "Allocating new GpuReadbackBelt chunk of size {:.1} MiB",
                     buffer_size as f32 / (1024.0 * 1024.0)
                 );

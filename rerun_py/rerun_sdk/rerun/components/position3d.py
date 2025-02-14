@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["Position3D", "Position3DBatch", "Position3DType"]
+__all__ = ["Position3D", "Position3DBatch"]
 
 
 class Position3D(datatypes.Vec3D, ComponentMixin):
@@ -24,12 +25,8 @@ class Position3D(datatypes.Vec3D, ComponentMixin):
     pass
 
 
-class Position3DType(datatypes.Vec3DType):
-    _TYPE_NAME: str = "rerun.components.Position3D"
-
-
 class Position3DBatch(datatypes.Vec3DBatch, ComponentBatchMixin):
-    _ARROW_TYPE = Position3DType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.Position3D")
 
 
 # This is patched in late to avoid circular dependencies.

@@ -1,5 +1,5 @@
 use re_types::reflection::Enum as _;
-use re_ui::{list_item, UiExt};
+use re_ui::list_item;
 
 use crate::{
     gpu_bridge::{get_or_create_texture, render_image},
@@ -34,12 +34,11 @@ fn colormap_preview_ui(
             })
             .collect();
 
-        re_renderer::resource_managers::Texture2DCreationDesc {
+        re_renderer::resource_managers::ImageDataDesc {
             label: "horizontal_gradient".into(),
             data: data.into(),
-            format: wgpu::TextureFormat::R16Float,
-            width,
-            height,
+            format: wgpu::TextureFormat::R16Float.into(),
+            width_height: [width, height],
         }
     })
     .map_err(|err| anyhow::anyhow!("Failed to create horizontal gradient texture: {err}"))?;
@@ -63,34 +62,30 @@ fn colormap_preview_ui(
         rect,
         colormapped_texture,
         egui::TextureOptions::LINEAR,
-        &debug_name,
+        debug_name.into(),
     )?;
 
     Ok(response)
 }
 
 fn colormap_variant_ui(
-    render_ctx: Option<&re_renderer::RenderContext>,
+    render_ctx: &re_renderer::RenderContext,
     ui: &mut egui::Ui,
     option: &re_types::components::Colormap,
     map: &mut re_types::components::Colormap,
 ) -> egui::Response {
     let list_item = list_item::ListItem::new().selected(option == map);
 
-    let mut response = if let Some(render_ctx) = render_ctx {
-        list_item.show_flat(
-            ui,
-            list_item::PropertyContent::new(option.to_string())
-                .min_desired_width(MIN_WIDTH)
-                .value_fn(|ui, _| {
-                    if let Err(err) = colormap_preview_ui(render_ctx, ui, *option) {
-                        re_log::error_once!("Failed to paint colormap preview: {err}");
-                    }
-                }),
-        )
-    } else {
-        list_item.show_flat(ui, list_item::LabelContent::new(option.to_string()))
-    };
+    let mut response = list_item.show_flat(
+        ui,
+        list_item::PropertyContent::new(option.to_string())
+            .min_desired_width(MIN_WIDTH)
+            .value_fn(|ui, _| {
+                if let Err(err) = colormap_preview_ui(render_ctx, ui, *option) {
+                    re_log::error_once!("Failed to paint colormap preview: {err}");
+                }
+            }),
+    );
 
     if response.clicked() {
         *map = *option;
@@ -101,7 +96,7 @@ fn colormap_variant_ui(
 }
 
 pub fn colormap_edit_or_view_ui(
-    render_ctx: Option<&re_renderer::RenderContext>,
+    ctx: &crate::ViewerContext<'_>,
     ui: &mut egui::Ui,
     map: &mut MaybeMutRef<'_, re_types::components::Colormap>,
 ) -> egui::Response {
@@ -114,16 +109,16 @@ pub fn colormap_edit_or_view_ui(
                 return ui.label("<no variants>");
             };
 
-            let mut response = colormap_variant_ui(render_ctx, ui, first, map);
+            let mut response = colormap_variant_ui(ctx.render_ctx, ui, first, map);
 
             for option in iter {
-                response |= colormap_variant_ui(render_ctx, ui, option, map);
+                response |= colormap_variant_ui(ctx.render_ctx, ui, option, map);
             }
 
             response
         };
 
-        let mut inner_response = egui::ComboBox::from_id_source("color map select")
+        let mut inner_response = egui::ComboBox::from_id_salt("color map select")
             .selected_text(selected_text)
             .show_ui(ui, |ui| {
                 list_item::list_item_scope(ui, "inner_scope", content_ui)
@@ -136,18 +131,19 @@ pub fn colormap_edit_or_view_ui(
         inner_response.response
     } else {
         let map: re_types::components::Colormap = **map;
-        if let Some(render_ctx) = render_ctx {
-            ui.list_item_flat_noninteractive(
-                list_item::PropertyContent::new(map.to_string())
-                    .min_desired_width(MIN_WIDTH)
-                    .value_fn(|ui, _| {
-                        if let Err(err) = colormap_preview_ui(render_ctx, ui, map) {
-                            re_log::error_once!("Failed to paint colormap preview: {err}");
-                        }
-                    }),
-            )
-        } else {
-            ui.list_item_flat_noninteractive(list_item::LabelContent::new(map.to_string()))
+        let colormap_response = {
+            let result = colormap_preview_ui(ctx.render_ctx, ui, map);
+            if let Err(err) = &result {
+                re_log::error_once!("Failed to paint colormap preview: {err}");
+            }
+            result.ok()
+        };
+
+        let label_response = ui.add(egui::Label::new(map.to_string()).truncate());
+
+        match colormap_response {
+            Some(colormap_response) => colormap_response | label_response,
+            None => label_response,
         }
     }
 }
@@ -160,5 +156,6 @@ pub fn colormap_to_re_renderer(colormap: re_types::components::Colormap) -> re_r
         re_types::components::Colormap::Plasma => re_renderer::Colormap::Plasma,
         re_types::components::Colormap::Turbo => re_renderer::Colormap::Turbo,
         re_types::components::Colormap::Viridis => re_renderer::Colormap::Viridis,
+        re_types::components::Colormap::CyanToYellow => re_renderer::Colormap::CyanToYellow,
     }
 }

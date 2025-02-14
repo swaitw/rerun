@@ -84,7 +84,7 @@ impl RightPanel {
         });
 
         egui::ScrollArea::both()
-            .id_source("example_right_panel")
+            .id_salt("example_right_panel")
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 ui.panel_content(|ui| {
@@ -137,7 +137,7 @@ impl RightPanel {
                 ui.list_item().show_hierarchical(
                     ui,
                     list_item::LabelContent::new("LabelContent with icon")
-                        .with_icon(&re_ui::icons::SPACE_VIEW_TEXT),
+                        .with_icon(&re_ui::icons::VIEW_TEXT),
                 );
 
                 ui.list_item().show_hierarchical(
@@ -153,13 +153,33 @@ impl RightPanel {
                         }),
                 );
 
+                ui.list_item().show_hierarchical(
+                    ui,
+                    list_item::LabelContent::new("Fake radio button").with_icon_fn(
+                        |ui, rect, _visuals| {
+                            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                            ui.re_radio_value(&mut self.boolean, true, "");
+                        },
+                    ),
+                );
+
+                ui.list_item().show_hierarchical(
+                    ui,
+                    list_item::LabelContent::new("Fake radio button").with_icon_fn(
+                        |ui, rect, _visuals| {
+                            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                            ui.re_radio_value(&mut self.boolean, false, "");
+                        },
+                    ),
+                );
+
                 ui.list_item()
                     .show_hierarchical(
                         ui,
                         list_item::LabelContent::new("LabelContent with custom styling")
                             .subdued(true)
                             .italics(true)
-                            .with_icon(&re_ui::icons::SPACE_VIEW_2D),
+                            .with_icon(&re_ui::icons::VIEW_2D),
                     )
                     .on_hover_text("The styling applies to the icon.");
 
@@ -168,7 +188,7 @@ impl RightPanel {
                         ui,
                         list_item::LabelContent::new("LabelContent with LabelStyle")
                             .label_style(re_ui::LabelStyle::Unnamed)
-                            .with_icon(&re_ui::icons::SPACE_VIEW_2D),
+                            .with_icon(&re_ui::icons::VIEW_2D),
                     )
                     .on_hover_text("The LabelStyle doesn't apply to the icon.");
 
@@ -227,7 +247,7 @@ impl RightPanel {
                     ui.list_item().show_hierarchical(
                         ui,
                         list_item::PropertyContent::new("Color")
-                            .with_icon(&re_ui::icons::SPACE_VIEW_TEXT)
+                            .with_icon(&re_ui::icons::VIEW_TEXT)
                             .action_button(&re_ui::icons::ADD, || {
                                 re_log::warn!("Add button clicked");
                             })
@@ -237,7 +257,7 @@ impl RightPanel {
                     ui.list_item().show_hierarchical(
                         ui,
                         list_item::PropertyContent::new("Color (editable)")
-                            .with_icon(&re_ui::icons::SPACE_VIEW_TEXT)
+                            .with_icon(&re_ui::icons::VIEW_TEXT)
                             .action_button(&re_ui::icons::ADD, || {
                                 re_log::warn!("Add button clicked");
                             })
@@ -304,14 +324,28 @@ impl RightPanel {
 
                 ui.list_item().show_hierarchical(
                     ui,
-                    list_item::CustomContent::new(|ui, context| {
+                    list_item::CustomContent::new(|ui, _| {
                         ui.ctx().debug_painter().debug_rect(
-                            context.rect,
+                            ui.max_rect(),
                             egui::Color32::LIGHT_RED,
                             "CustomContent delegates to a closure",
                         );
                     }),
-                )
+                );
+
+                ui.list_item().show_hierarchical(
+                    ui,
+                    list_item::CustomContent::new(|ui, _| {
+                        ui.ctx().debug_painter().debug_rect(
+                            ui.max_rect(),
+                            egui::Color32::LIGHT_RED,
+                            "CustomContent with an action button",
+                        );
+                    })
+                    .action_button(&re_ui::icons::ADD, || {
+                        re_log::warn!("Add button clicked");
+                    }),
+                );
             },
         );
     }

@@ -5,59 +5,122 @@
 
 #include "../collection_adapter_builtins.hpp"
 
-namespace rerun::archetypes {}
+namespace rerun::archetypes {
+    DepthImage DepthImage::clear_fields() {
+        auto archetype = DepthImage();
+        archetype.buffer = ComponentBatch::empty<rerun::components::ImageBuffer>(Descriptor_buffer)
+                               .value_or_throw();
+        archetype.format = ComponentBatch::empty<rerun::components::ImageFormat>(Descriptor_format)
+                               .value_or_throw();
+        archetype.meter =
+            ComponentBatch::empty<rerun::components::DepthMeter>(Descriptor_meter).value_or_throw();
+        archetype.colormap = ComponentBatch::empty<rerun::components::Colormap>(Descriptor_colormap)
+                                 .value_or_throw();
+        archetype.depth_range =
+            ComponentBatch::empty<rerun::components::ValueRange>(Descriptor_depth_range)
+                .value_or_throw();
+        archetype.point_fill_ratio =
+            ComponentBatch::empty<rerun::components::FillRatio>(Descriptor_point_fill_ratio)
+                .value_or_throw();
+        archetype.draw_order =
+            ComponentBatch::empty<rerun::components::DrawOrder>(Descriptor_draw_order)
+                .value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> DepthImage::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(8);
+        if (buffer.has_value()) {
+            columns.push_back(buffer.value().partitioned(lengths_).value_or_throw());
+        }
+        if (format.has_value()) {
+            columns.push_back(format.value().partitioned(lengths_).value_or_throw());
+        }
+        if (meter.has_value()) {
+            columns.push_back(meter.value().partitioned(lengths_).value_or_throw());
+        }
+        if (colormap.has_value()) {
+            columns.push_back(colormap.value().partitioned(lengths_).value_or_throw());
+        }
+        if (depth_range.has_value()) {
+            columns.push_back(depth_range.value().partitioned(lengths_).value_or_throw());
+        }
+        if (point_fill_ratio.has_value()) {
+            columns.push_back(point_fill_ratio.value().partitioned(lengths_).value_or_throw());
+        }
+        if (draw_order.has_value()) {
+            columns.push_back(draw_order.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(
+            ComponentColumn::from_indicators<DepthImage>(static_cast<uint32_t>(lengths_.size()))
+                .value_or_throw()
+        );
+        return columns;
+    }
+
+    Collection<ComponentColumn> DepthImage::columns() {
+        if (buffer.has_value()) {
+            return columns(std::vector<uint32_t>(buffer.value().length(), 1));
+        }
+        if (format.has_value()) {
+            return columns(std::vector<uint32_t>(format.value().length(), 1));
+        }
+        if (meter.has_value()) {
+            return columns(std::vector<uint32_t>(meter.value().length(), 1));
+        }
+        if (colormap.has_value()) {
+            return columns(std::vector<uint32_t>(colormap.value().length(), 1));
+        }
+        if (depth_range.has_value()) {
+            return columns(std::vector<uint32_t>(depth_range.value().length(), 1));
+        }
+        if (point_fill_ratio.has_value()) {
+            return columns(std::vector<uint32_t>(point_fill_ratio.value().length(), 1));
+        }
+        if (draw_order.has_value()) {
+            return columns(std::vector<uint32_t>(draw_order.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<archetypes::DepthImage>::serialize(
+    Result<Collection<ComponentBatch>> AsComponents<archetypes::DepthImage>::as_batches(
         const archetypes::DepthImage& archetype
     ) {
         using namespace archetypes;
-        std::vector<DataCell> cells;
+        std::vector<ComponentBatch> cells;
         cells.reserve(8);
 
-        {
-            auto result = DataCell::from_loggable(archetype.data);
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.buffer.has_value()) {
+            cells.push_back(archetype.buffer.value());
         }
-        {
-            auto result = DataCell::from_loggable(archetype.resolution);
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
-        }
-        {
-            auto result = DataCell::from_loggable(archetype.data_type);
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.format.has_value()) {
+            cells.push_back(archetype.format.value());
         }
         if (archetype.meter.has_value()) {
-            auto result = DataCell::from_loggable(archetype.meter.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.meter.value());
         }
         if (archetype.colormap.has_value()) {
-            auto result = DataCell::from_loggable(archetype.colormap.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.colormap.value());
+        }
+        if (archetype.depth_range.has_value()) {
+            cells.push_back(archetype.depth_range.value());
         }
         if (archetype.point_fill_ratio.has_value()) {
-            auto result = DataCell::from_loggable(archetype.point_fill_ratio.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.point_fill_ratio.value());
         }
         if (archetype.draw_order.has_value()) {
-            auto result = DataCell::from_loggable(archetype.draw_order.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.draw_order.value());
         }
         {
-            auto indicator = DepthImage::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<DepthImage>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

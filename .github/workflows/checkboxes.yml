@@ -20,7 +20,7 @@ defaults:
 
 permissions:
   contents: "read"
-  pull-requests: "write"
+  pull-requests: "read"
 
 jobs:
   pr-checkboxes:
@@ -32,7 +32,7 @@ jobs:
 
       - uses: prefix-dev/setup-pixi@v0.8.1
         with:
-          pixi-version: v0.25.0
+          pixi-version: v0.39.0
 
       - name: Check PR checkboxes
         run: |

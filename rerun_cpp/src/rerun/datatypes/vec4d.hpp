@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../result.hpp"
 
 #include <array>
@@ -20,9 +21,7 @@ namespace rerun::datatypes {
     struct Vec4D {
         std::array<float, 4> xyzw;
 
-      public:
-        // Extensions to generated type defined in 'vec4d_ext.cpp'
-
+      public: // START of extensions from vec4d_ext.cpp:
         /// Construct Vec4D from x/y/z/w values.
         Vec4D(float x, float y, float z, float w) : xyzw{x, y, z, w} {}
 
@@ -45,6 +44,8 @@ namespace rerun::datatypes {
             return xyzw[3];
         }
 
+        // END of extensions from vec4d_ext.cpp, start of generated code:
+
       public:
         Vec4D() = default;
 
@@ -64,7 +65,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::Vec4D> {
-        static constexpr const char Name[] = "rerun.datatypes.Vec4D";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.Vec4D";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

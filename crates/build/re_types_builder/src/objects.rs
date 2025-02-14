@@ -11,7 +11,8 @@ use itertools::Itertools;
 
 use crate::{
     root_as_schema, Docs, FbsBaseType, FbsEnum, FbsEnumVal, FbsField, FbsKeyValue, FbsObject,
-    FbsSchema, FbsType, Reporter, ATTR_RERUN_OVERRIDE_TYPE,
+    FbsSchema, FbsType, Reporter, ATTR_RERUN_COMPONENT_OPTIONAL, ATTR_RERUN_COMPONENT_RECOMMENDED,
+    ATTR_RERUN_COMPONENT_REQUIRED, ATTR_RERUN_OVERRIDE_TYPE,
 };
 
 // ---
@@ -91,6 +92,8 @@ impl Objects {
                             if field_obj.kind != ObjectKind::Component {
                                 reporter.error(virtpath, field_type_fqname, "Is part of an archetypes but is not a component. Only components are allowed as fields on an archetype.");
                             }
+
+                            validate_archetype_field_attributes(reporter, obj);
                         }
                         ObjectKind::View => {
                             if field_obj.kind != ObjectKind::Archetype {
@@ -171,6 +174,32 @@ impl Objects {
         this.objects.retain(|_, obj| !obj.is_transparent());
 
         this
+    }
+}
+
+/// Ensure that each field of an archetype has exactly one of the
+/// `attr.rerun.component_{required|recommended|optional}` attributes.
+fn validate_archetype_field_attributes(reporter: &Reporter, obj: &Object) {
+    assert_eq!(obj.kind, ObjectKind::Archetype);
+
+    for field in &obj.fields {
+        if [
+            ATTR_RERUN_COMPONENT_OPTIONAL,
+            ATTR_RERUN_COMPONENT_RECOMMENDED,
+            ATTR_RERUN_COMPONENT_REQUIRED,
+        ]
+        .iter()
+        .filter(|attr| field.try_get_attr::<String>(attr).is_some())
+        .count()
+            != 1
+        {
+            reporter.error(
+                &field.virtpath,
+                &field.fqname,
+                "field must have exactly one of the \"attr.rerun.component_{{required|recommended|\
+                optional}}\" attributes",
+            );
+        }
     }
 }
 
@@ -280,11 +309,18 @@ impl ObjectKind {
     }
 }
 
+pub struct ViewReference {
+    /// Typename of the view. Not a fully qualified name, just the name as specified on the attribute.
+    pub view_name: String,
+
+    pub explanation: Option<String>,
+}
+
 /// A high-level representation of a flatbuffers object, which can be either a struct, a union or
 /// an enum.
 #[derive(Debug, Clone)]
 pub struct Object {
-    /// Utf8Path of the associated fbs definition in the Flatbuffers hierarchy, e.g. `//rerun/components/point2d.fbs`.
+    /// `Utf8Path` of the associated fbs definition in the Flatbuffers hierarchy, e.g. `//rerun/components/point2d.fbs`.
     pub virtpath: String,
 
     /// Absolute filepath of the associated fbs definition.
@@ -296,7 +332,7 @@ pub struct Object {
     /// Fully-qualified package name of the object, e.g. `rerun.components`.
     pub pkg_name: String,
 
-    /// PascalCase name of the object type, e.g. `Position2D`.
+    /// `PascalCase` name of the object type, e.g. `Position2D`.
     pub name: String,
 
     /// The object's multiple layers of documentation.
@@ -322,6 +358,26 @@ pub struct Object {
     /// This is lazily computed when the parent object gets registered into the Arrow registry and
     /// will be `None` until then.
     pub datatype: Option<crate::LazyDatatype>,
+}
+
+impl PartialEq for Object {
+    fn eq(&self, other: &Self) -> bool {
+        self.fqname == other.fqname
+    }
+}
+
+impl Eq for Object {}
+
+impl Ord for Object {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.fqname.cmp(&other.fqname)
+    }
+}
+
+impl PartialOrd for Object {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl Object {
@@ -355,7 +411,7 @@ impl Object {
             "Bad filepath: {filepath:?}"
         );
 
-        let docs = Docs::from_raw_docs(obj.documentation());
+        let docs = Docs::from_raw_docs(reporter, &virtpath, obj.name(), obj.documentation());
         let attrs = Attributes::from_raw_attrs(obj.attributes());
         let kind = ObjectKind::from_pkg_name(&pkg_name, &attrs);
 
@@ -442,13 +498,13 @@ impl Object {
             .unwrap();
         let filepath = filepath_from_declaration_file(include_dir_path, &virtpath);
 
-        let docs = Docs::from_raw_docs(enm.documentation());
+        let docs = Docs::from_raw_docs(reporter, &virtpath, enm.name(), enm.documentation());
         let attrs = Attributes::from_raw_attrs(enm.attributes());
         let kind = ObjectKind::from_pkg_name(&pkg_name, &attrs);
 
         let is_enum = enm.underlying_type().base_type() != FbsBaseType::UType;
 
-        let fields: Vec<_> = enm
+        let mut fields: Vec<_> = enm
             .values()
             .iter()
             .filter(|val| {
@@ -463,6 +519,34 @@ impl Object {
                 ObjectField::from_raw_enum_value(reporter, include_dir_path, enums, objs, enm, &val)
             })
             .collect();
+
+        if is_enum {
+            // We want to reserve the value of 0 in all of our enums as an Invalid type variant.
+            //
+            // The reasoning behind this is twofold:
+            // - 0 is a very common accidental value to end up with if processing an incorrectly constructed buffer.
+            // - The way the .fbs compiler works, declaring an enum as a member of a struct field either requires the
+            //   enum to have a 0 value, or every struct to specify it's contextual default for that enum. This way the
+            //   fbs schema definitions are always valid.
+            //
+            // However, we then remove this field out of our generated types. This means we don't actually have to deal with
+            // invalid arms in our enums. Instead we get a deserialization error if someone accidentally uses the invalid 0
+            // value in an arrow payload.
+            assert!(
+                !fields.is_empty(),
+                "enums must have at least one variant, but {fqname} has none",
+            );
+
+            assert!(
+                fields[0].name == "Invalid" && fields[0].enum_value == Some(0),
+                "enums must start with 'Invalid' variant with value 0, but {fqname} starts with {} = {:?}",
+                fields[0].name,
+                fields[0].enum_value,
+            );
+
+            // Now remove the invalid variant so that it doesn't make it into our native enum definitions.
+            fields.remove(0);
+        }
 
         Self {
             virtpath,
@@ -501,6 +585,25 @@ impl Object {
 
     pub fn is_attr_set(&self, name: impl AsRef<str>) -> bool {
         self.attrs.has(name)
+    }
+
+    pub fn archetype_view_types(&self) -> Option<Vec<ViewReference>> {
+        let view_types = self.try_get_attr::<String>(crate::ATTR_DOCS_VIEW_TYPES)?;
+
+        Some(
+            view_types
+                .split(',')
+                .map(|view_type| {
+                    let mut parts = view_type.splitn(2, ':');
+                    let view_name = parts.next().unwrap().trim().to_owned();
+                    let explanation = parts.next().map(|s| s.trim().to_owned());
+                    ViewReference {
+                        view_name,
+                        explanation,
+                    }
+                })
+                .collect(),
+        )
     }
 
     pub fn is_struct(&self) -> bool {
@@ -559,6 +662,10 @@ impl Object {
         self.try_get_attr::<String>(crate::ATTR_RERUN_DEPRECATED)
     }
 
+    pub fn is_experimental(&self) -> bool {
+        self.is_attr_set(crate::ATTR_RERUN_EXPERIMENTAL)
+    }
+
     pub fn doc_category(&self) -> Option<String> {
         self.try_get_attr::<String>(crate::ATTR_DOCS_CATEGORY)
     }
@@ -578,6 +685,10 @@ impl Object {
         } else {
             self.kind.plural_snake_case().to_owned()
         }
+    }
+
+    pub fn is_archetype(&self) -> bool {
+        self.kind == ObjectKind::Archetype
     }
 }
 
@@ -618,7 +729,7 @@ pub enum ObjectClass {
 /// union value.
 #[derive(Debug, Clone)]
 pub struct ObjectField {
-    /// Utf8Path of the associated fbs definition in the Flatbuffers hierarchy, e.g. `//rerun/components/point2d.fbs`.
+    /// `Utf8Path` of the associated fbs definition in the Flatbuffers hierarchy, e.g. `//rerun/components/point2d.fbs`.
     pub virtpath: String,
 
     /// Absolute filepath of the associated fbs definition.
@@ -635,6 +746,9 @@ pub struct ObjectField {
     /// For struct fields this is usually `snake_case`,
     /// but for enums it is usually `PascalCase`.
     pub name: String,
+
+    /// The value of an enum type
+    pub enum_value: Option<u8>,
 
     /// The field's multiple layers of documentation.
     pub docs: Docs,
@@ -682,7 +796,7 @@ impl ObjectField {
             .unwrap();
         let filepath = filepath_from_declaration_file(include_dir_path, &virtpath);
 
-        let docs = Docs::from_raw_docs(field.documentation());
+        let docs = Docs::from_raw_docs(reporter, &virtpath, field.name(), field.documentation());
 
         let attrs = Attributes::from_raw_attrs(field.attributes());
 
@@ -702,12 +816,15 @@ impl ObjectField {
             );
         }
 
+        let enum_value = None;
+
         Self {
             virtpath,
             filepath,
             fqname,
             pkg_name,
             name,
+            enum_value,
             docs,
             typ,
             attrs,
@@ -739,7 +856,7 @@ impl ObjectField {
             .unwrap();
         let filepath = filepath_from_declaration_file(include_dir_path, &virtpath);
 
-        let docs = Docs::from_raw_docs(val.documentation());
+        let docs = Docs::from_raw_docs(reporter, &virtpath, val.name(), val.documentation());
 
         let attrs = Attributes::from_raw_attrs(val.attributes());
 
@@ -762,12 +879,15 @@ impl ObjectField {
             );
         }
 
+        let enum_value = Some(val.value() as u8);
+
         Self {
             virtpath,
             filepath,
             fqname,
             pkg_name,
             name,
+            enum_value,
             docs,
             typ,
             attrs,
@@ -826,6 +946,13 @@ impl ObjectField {
         } else {
             None
         }
+    }
+
+    pub fn make_plural(&self) -> Option<Self> {
+        self.typ.make_plural().map(|typ| Self {
+            typ,
+            ..self.clone()
+        })
     }
 }
 
@@ -929,8 +1056,8 @@ impl Type {
             if enum_index < enums.len() {
                 // It is an enum.
                 assert!(
-                    typ == FbsBaseType::Byte,
-                    "{virtpath}: For consistency, enums must be declared as the `byte` type"
+                    typ == FbsBaseType::UByte,
+                    "{virtpath}: For consistency, enums must be declared as the `ubyte` type"
                 );
 
                 let enum_ = &enums[field_type.index() as usize];
@@ -990,6 +1117,61 @@ impl Type {
 
             // NOTE: `FbsBaseType` isn't actually an enum, it's just a bunch of constants…
             _ => unreachable!("{typ:#?}"),
+        }
+    }
+
+    pub fn make_plural(&self) -> Option<Self> {
+        match self {
+            Self::Vector { elem_type: _ }
+            | Self::Array {
+                elem_type: _,
+                length: _,
+            } => Some(self.clone()),
+
+            Self::UInt8 => Some(Self::Vector {
+                elem_type: ElementType::UInt8,
+            }),
+            Self::UInt16 => Some(Self::Vector {
+                elem_type: ElementType::UInt16,
+            }),
+            Self::UInt32 => Some(Self::Vector {
+                elem_type: ElementType::UInt32,
+            }),
+            Self::UInt64 => Some(Self::Vector {
+                elem_type: ElementType::UInt64,
+            }),
+            Self::Int8 => Some(Self::Vector {
+                elem_type: ElementType::Int8,
+            }),
+            Self::Int16 => Some(Self::Vector {
+                elem_type: ElementType::Int16,
+            }),
+            Self::Int32 => Some(Self::Vector {
+                elem_type: ElementType::Int32,
+            }),
+            Self::Int64 => Some(Self::Vector {
+                elem_type: ElementType::Int64,
+            }),
+            Self::Bool => Some(Self::Vector {
+                elem_type: ElementType::Bool,
+            }),
+            Self::Float16 => Some(Self::Vector {
+                elem_type: ElementType::Float16,
+            }),
+            Self::Float32 => Some(Self::Vector {
+                elem_type: ElementType::Float32,
+            }),
+            Self::Float64 => Some(Self::Vector {
+                elem_type: ElementType::Float64,
+            }),
+            Self::String => Some(Self::Vector {
+                elem_type: ElementType::String,
+            }),
+            Self::Object(obj) => Some(Self::Vector {
+                elem_type: ElementType::Object(obj.clone()),
+            }),
+
+            Self::Unit => None,
         }
     }
 
@@ -1065,6 +1247,19 @@ impl Type {
             Self::Array { elem_type, .. } => elem_type.has_default_destructor(objects),
 
             Self::Object(fqname) => objects[fqname].has_default_destructor(objects),
+        }
+    }
+
+    pub fn is_union(&self, objects: &Objects) -> bool {
+        if let Self::Object(fqname) = self {
+            let obj = &objects[fqname];
+            if obj.is_arrow_transparent() {
+                obj.fields[0].typ.is_union(objects)
+            } else {
+                obj.class == ObjectClass::Union
+            }
+        } else {
+            false
         }
     }
 }
@@ -1191,6 +1386,19 @@ impl ElementType {
             Self::Bool | Self::Object(_) | Self::String => false,
         }
     }
+
+    pub fn is_union(&self, objects: &Objects) -> bool {
+        if let Self::Object(fqname) = self {
+            let obj = &objects[fqname];
+            if obj.is_arrow_transparent() {
+                obj.fields[0].typ.is_union(objects)
+            } else {
+                obj.class == ObjectClass::Union
+            }
+        } else {
+            false
+        }
+    }
 }
 
 // --- Common ---
@@ -1275,6 +1483,10 @@ impl Attributes {
 
     pub fn has(&self, name: impl AsRef<str>) -> bool {
         self.0.contains_key(name.as_ref())
+    }
+
+    pub fn remove(&mut self, name: impl AsRef<str>) {
+        self.0.remove(name.as_ref());
     }
 }
 

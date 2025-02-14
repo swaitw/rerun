@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Archetype**: A text element intended to be displayed in its own text box.
@@ -87,10 +87,10 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 ///   <img src="https://static.rerun.io/textdocument/babda19558ee32ed8d730495b595aee7a5e2c174/full.png" width="640">
 /// </picture>
 /// </center>
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct TextDocument {
     /// Contents of the text document.
-    pub text: crate::components::Text,
+    pub text: Option<SerializedComponentBatch>,
 
     /// The Media Type of the text.
     ///
@@ -99,36 +99,56 @@ pub struct TextDocument {
     /// * `text/markdown`
     ///
     /// If omitted, `text/plain` is assumed.
-    pub media_type: Option<crate::components::MediaType>,
+    pub media_type: Option<SerializedComponentBatch>,
 }
 
-impl ::re_types_core::SizeBytes for TextDocument {
+impl TextDocument {
+    /// Returns the [`ComponentDescriptor`] for [`Self::text`].
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.text.heap_size_bytes() + self.media_type.heap_size_bytes()
+    pub fn descriptor_text() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.TextDocument".into()),
+            component_name: "rerun.components.Text".into(),
+            archetype_field_name: Some("text".into()),
+        }
     }
 
+    /// Returns the [`ComponentDescriptor`] for [`Self::media_type`].
     #[inline]
-    fn is_pod() -> bool {
-        <crate::components::Text>::is_pod() && <Option<crate::components::MediaType>>::is_pod()
+    pub fn descriptor_media_type() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.TextDocument".into()),
+            component_name: "rerun.components.MediaType".into(),
+            archetype_field_name: Some("media_type".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for the associated indicator component.
+    #[inline]
+    pub fn descriptor_indicator() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.TextDocument".into()),
+            component_name: "rerun.components.TextDocumentIndicator".into(),
+            archetype_field_name: None,
+        }
     }
 }
 
-static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.components.Text".into()]);
+static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [TextDocument::descriptor_text()]);
 
-static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.components.TextDocumentIndicator".into()]);
+static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [TextDocument::descriptor_indicator()]);
 
-static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.components.MediaType".into()]);
+static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [TextDocument::descriptor_media_type()]);
 
-static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 3usize]> =
+static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 3usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.Text".into(),
-            "rerun.components.TextDocumentIndicator".into(),
-            "rerun.components.MediaType".into(),
+            TextDocument::descriptor_text(),
+            TextDocument::descriptor_indicator(),
+            TextDocument::descriptor_media_type(),
         ]
     });
 
@@ -154,77 +174,58 @@ impl ::re_types_core::Archetype for TextDocument {
     }
 
     #[inline]
-    fn indicator() -> MaybeOwnedComponentBatch<'static> {
-        static INDICATOR: TextDocumentIndicator = TextDocumentIndicator::DEFAULT;
-        MaybeOwnedComponentBatch::Ref(&INDICATOR)
+    fn indicator() -> SerializedComponentBatch {
+        #[allow(clippy::unwrap_used)]
+        TextDocumentIndicator::DEFAULT.serialized().unwrap()
     }
 
     #[inline]
-    fn required_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn required_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         REQUIRED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         RECOMMENDED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         OPTIONAL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn all_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn all_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         ALL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
     fn from_arrow_components(
-        arrow_data: impl IntoIterator<Item = (ComponentName, Box<dyn arrow2::array::Array>)>,
+        arrow_data: impl IntoIterator<Item = (ComponentDescriptor, arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self> {
         re_tracing::profile_function!();
         use ::re_types_core::{Loggable as _, ResultExt as _};
-        let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data
-            .into_iter()
-            .map(|(name, array)| (name.full_name(), array))
-            .collect();
-        let text = {
-            let array = arrays_by_name
-                .get("rerun.components.Text")
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.TextDocument#text")?;
-            <crate::components::Text>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.TextDocument#text")?
-                .into_iter()
-                .next()
-                .flatten()
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.TextDocument#text")?
-        };
-        let media_type = if let Some(array) = arrays_by_name.get("rerun.components.MediaType") {
-            <crate::components::MediaType>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.TextDocument#media_type")?
-                .into_iter()
-                .next()
-                .flatten()
-        } else {
-            None
-        };
+        let arrays_by_descr: ::nohash_hasher::IntMap<_, _> = arrow_data.into_iter().collect();
+        let text = arrays_by_descr
+            .get(&Self::descriptor_text())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_text()));
+        let media_type = arrays_by_descr
+            .get(&Self::descriptor_media_type())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_media_type())
+            });
         Ok(Self { text, media_type })
     }
 }
 
 impl ::re_types_core::AsComponents for TextDocument {
-    fn as_component_batches(&self) -> Vec<MaybeOwnedComponentBatch<'_>> {
-        re_tracing::profile_function!();
+    #[inline]
+    fn as_serialized_batches(&self) -> Vec<SerializedComponentBatch> {
         use ::re_types_core::Archetype as _;
         [
             Some(Self::indicator()),
-            Some((&self.text as &dyn ComponentBatch).into()),
-            self.media_type
-                .as_ref()
-                .map(|comp| (comp as &dyn ComponentBatch).into()),
+            self.text.clone(),
+            self.media_type.clone(),
         ]
         .into_iter()
         .flatten()
@@ -232,14 +233,106 @@ impl ::re_types_core::AsComponents for TextDocument {
     }
 }
 
+impl ::re_types_core::ArchetypeReflectionMarker for TextDocument {}
+
 impl TextDocument {
     /// Create a new `TextDocument`.
     #[inline]
     pub fn new(text: impl Into<crate::components::Text>) -> Self {
         Self {
-            text: text.into(),
+            text: try_serialize_field(Self::descriptor_text(), [text]),
             media_type: None,
         }
+    }
+
+    /// Update only some specific fields of a `TextDocument`.
+    #[inline]
+    pub fn update_fields() -> Self {
+        Self::default()
+    }
+
+    /// Clear all the fields of a `TextDocument`.
+    #[inline]
+    pub fn clear_fields() -> Self {
+        use ::re_types_core::Loggable as _;
+        Self {
+            text: Some(SerializedComponentBatch::new(
+                crate::components::Text::arrow_empty(),
+                Self::descriptor_text(),
+            )),
+            media_type: Some(SerializedComponentBatch::new(
+                crate::components::MediaType::arrow_empty(),
+                Self::descriptor_media_type(),
+            )),
+        }
+    }
+
+    /// Partitions the component data into multiple sub-batches.
+    ///
+    /// Specifically, this transforms the existing [`SerializedComponentBatch`]es data into [`SerializedComponentColumn`]s
+    /// instead, via [`SerializedComponentBatch::partitioned`].
+    ///
+    /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+    ///
+    /// The specified `lengths` must sum to the total length of the component batch.
+    ///
+    /// [`SerializedComponentColumn`]: [::re_types_core::SerializedComponentColumn]
+    #[inline]
+    pub fn columns<I>(
+        self,
+        _lengths: I,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>>
+    where
+        I: IntoIterator<Item = usize> + Clone,
+    {
+        let columns = [
+            self.text
+                .map(|text| text.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.media_type
+                .map(|media_type| media_type.partitioned(_lengths.clone()))
+                .transpose()?,
+        ];
+        Ok(columns
+            .into_iter()
+            .flatten()
+            .chain([::re_types_core::indicator_column::<Self>(
+                _lengths.into_iter().count(),
+            )?]))
+    }
+
+    /// Helper to partition the component data into unit-length sub-batches.
+    ///
+    /// This is semantically similar to calling [`Self::columns`] with `std::iter::take(1).repeat(n)`,
+    /// where `n` is automatically guessed.
+    #[inline]
+    pub fn columns_of_unit_batches(
+        self,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>> {
+        let len_text = self.text.as_ref().map(|b| b.array.len());
+        let len_media_type = self.media_type.as_ref().map(|b| b.array.len());
+        let len = None.or(len_text).or(len_media_type).unwrap_or(0);
+        self.columns(std::iter::repeat(1).take(len))
+    }
+
+    /// Contents of the text document.
+    #[inline]
+    pub fn with_text(mut self, text: impl Into<crate::components::Text>) -> Self {
+        self.text = try_serialize_field(Self::descriptor_text(), [text]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::Text`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_text`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_text(
+        mut self,
+        text: impl IntoIterator<Item = impl Into<crate::components::Text>>,
+    ) -> Self {
+        self.text = try_serialize_field(Self::descriptor_text(), text);
+        self
     }
 
     /// The Media Type of the text.
@@ -251,7 +344,27 @@ impl TextDocument {
     /// If omitted, `text/plain` is assumed.
     #[inline]
     pub fn with_media_type(mut self, media_type: impl Into<crate::components::MediaType>) -> Self {
-        self.media_type = Some(media_type.into());
+        self.media_type = try_serialize_field(Self::descriptor_media_type(), [media_type]);
         self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::MediaType`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_media_type`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_media_type(
+        mut self,
+        media_type: impl IntoIterator<Item = impl Into<crate::components::MediaType>>,
+    ) -> Self {
+        self.media_type = try_serialize_field(Self::descriptor_media_type(), media_type);
+        self
+    }
+}
+
+impl ::re_byte_size::SizeBytes for TextDocument {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.text.heap_size_bytes() + self.media_type.heap_size_bytes()
     }
 }

@@ -1,130 +1,77 @@
 use std::sync::Arc;
 
-use crate::{DeserializationError, Loggable, SizeBytes};
-use arrow2::{
-    array::{StructArray, UInt64Array},
-    datatypes::{DataType, Field},
+use arrow::{
+    array::{ArrayRef, AsArray, FixedSizeBinaryArray, FixedSizeBinaryBuilder},
+    datatypes::DataType,
 };
 
 use re_tuid::Tuid;
 
+use crate::{DeserializationError, Loggable};
+
 // ---
 
-impl SizeBytes for Tuid {
-    #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        Self::heap_size_bytes(self)
-    }
+const BYTE_WIDTH: i32 = std::mem::size_of::<Tuid>() as i32;
+
+pub fn tuids_to_arrow(tuids: &[Tuid]) -> FixedSizeBinaryArray {
+    #[allow(clippy::unwrap_used)] // Can't fail
+    <Tuid as Loggable>::to_arrow(tuids.iter())
+        .unwrap()
+        .as_fixed_size_binary()
+        .clone()
 }
 
 impl Loggable for Tuid {
-    type Name = crate::ComponentName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.controls.TUID".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        DataType::Struct(Arc::new(vec![
-            Field::new("time_ns", DataType::UInt64, false),
-            Field::new("inc", DataType::UInt64, false),
-        ]))
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        DataType::FixedSizeBinary(BYTE_WIDTH)
     }
 
     fn to_arrow_opt<'a>(
         _data: impl IntoIterator<Item = Option<impl Into<std::borrow::Cow<'a, Self>>>>,
-    ) -> crate::SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> crate::SerializationResult<ArrayRef>
     where
         Self: 'a,
     {
         Err(crate::SerializationError::not_implemented(
-            Self::name(),
+            Self::ARROW_EXTENSION_NAME,
             "TUIDs are never nullable, use `to_arrow()` instead",
         ))
     }
 
     #[inline]
     fn to_arrow<'a>(
-        data: impl IntoIterator<Item = impl Into<std::borrow::Cow<'a, Self>>>,
-    ) -> crate::SerializationResult<Box<dyn ::arrow2::array::Array>>
+        iter: impl IntoIterator<Item = impl Into<std::borrow::Cow<'a, Self>>>,
+    ) -> crate::SerializationResult<ArrayRef>
     where
         Self: 'a,
     {
-        let (time_ns_values, inc_values): (Vec<_>, Vec<_>) = data
-            .into_iter()
-            .map(Into::into)
-            .map(|tuid| (tuid.nanoseconds_since_epoch(), tuid.inc()))
-            .unzip();
+        let iter = iter.into_iter();
 
-        let values = vec![
-            UInt64Array::from_vec(time_ns_values).boxed(),
-            UInt64Array::from_vec(inc_values).boxed(),
-        ];
-        let validity = None;
+        let mut builder = FixedSizeBinaryBuilder::with_capacity(iter.size_hint().0, BYTE_WIDTH);
+        for tuid in iter {
+            #[allow(clippy::unwrap_used)] // Can't fail because `BYTE_WIDTH` is correct.
+            builder.append_value(tuid.into().as_bytes()).unwrap();
+        }
 
-        // TODO(#3360): We use the extended type here because we rely on it for formatting.
-        Ok(StructArray::new(Self::extended_arrow_datatype(), values, validity).boxed())
+        Ok(Arc::new(builder.finish()))
     }
 
-    fn from_arrow(array: &dyn ::arrow2::array::Array) -> crate::DeserializationResult<Vec<Self>> {
-        let expected_datatype = Self::arrow_datatype();
-        let actual_datatype = array.data_type().to_logical_type();
-        if actual_datatype != &expected_datatype {
+    fn from_arrow(array: &dyn ::arrow::array::Array) -> crate::DeserializationResult<Vec<Self>> {
+        let Some(array) = array.as_fixed_size_binary_opt() else {
             return Err(DeserializationError::datatype_mismatch(
-                expected_datatype,
-                actual_datatype.clone(),
+                Self::arrow_datatype(),
+                array.data_type().clone(),
             ));
-        }
+        };
 
-        // NOTE: Unwrap is safe everywhere below, datatype is checked above.
         // NOTE: We don't even look at the validity, our datatype says we don't care.
 
-        let array = array.as_any().downcast_ref::<StructArray>().unwrap();
+        let uuids: &[Self] = bytemuck::try_cast_slice(array.value_data()).map_err(|err| {
+            DeserializationError::ValidationError(format!("Bad length of Tuid array: {err}"))
+        })?;
 
-        // TODO(cmc): Can we rely on the fields ordering from the datatype? I would assume not
-        // since we generally cannot rely on anything when it comes to arrow…
-        // If we could, that would also impact our codegen deserialization path.
-        let (time_ns_index, inc_index) = {
-            let mut time_ns_index = None;
-            let mut inc_index = None;
-            for (i, field) in array.fields().iter().enumerate() {
-                if field.name == "time_ns" {
-                    time_ns_index = Some(i);
-                } else if field.name == "inc" {
-                    inc_index = Some(i);
-                }
-            }
-            (time_ns_index.unwrap(), inc_index.unwrap())
-        };
-
-        let get_buffer = |field_index: usize| {
-            array.values()[field_index]
-                .as_any()
-                .downcast_ref::<UInt64Array>()
-                .unwrap()
-                .values()
-        };
-
-        let time_ns_buffer = get_buffer(time_ns_index);
-        let inc_buffer = get_buffer(inc_index);
-
-        if time_ns_buffer.len() != inc_buffer.len() {
-            return Err(DeserializationError::mismatched_struct_field_lengths(
-                "time_ns",
-                time_ns_buffer.len(),
-                "inc",
-                inc_buffer.len(),
-            ));
-        }
-
-        Ok(time_ns_buffer
-            .iter()
-            .copied()
-            .zip(inc_buffer.iter().copied())
-            .map(|(time_ns, inc)| Self::from_nanos_and_inc(time_ns, inc))
-            .collect())
+        Ok(uuids.to_vec())
     }
 }
 
@@ -141,27 +88,20 @@ macro_rules! delegate_arrow_tuid {
         $crate::macros::impl_into_cow!($typ);
 
         impl $crate::Loggable for $typ {
-            type Name = $crate::ComponentName;
-
             #[inline]
-            fn name() -> Self::Name {
-                $fqname.into()
-            }
-
-            #[inline]
-            fn arrow_datatype() -> ::arrow2::datatypes::DataType {
+            fn arrow_datatype() -> ::arrow::datatypes::DataType {
                 $crate::external::re_tuid::Tuid::arrow_datatype()
             }
 
             #[inline]
             fn to_arrow_opt<'a>(
-                values: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-            ) -> $crate::SerializationResult<Box<dyn ::arrow2::array::Array>>
+                _values: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+            ) -> $crate::SerializationResult<arrow::array::ArrayRef>
             where
                 Self: 'a,
             {
                 Err($crate::SerializationError::not_implemented(
-                    Self::name(),
+                    <Self as $crate::Component>::name(),
                     "TUIDs are never nullable, use `to_arrow()` instead",
                 ))
             }
@@ -169,7 +109,7 @@ macro_rules! delegate_arrow_tuid {
             #[inline]
             fn to_arrow<'a>(
                 values: impl IntoIterator<Item = impl Into<std::borrow::Cow<'a, Self>>>,
-            ) -> $crate::SerializationResult<Box<dyn ::arrow2::array::Array>> {
+            ) -> $crate::SerializationResult<arrow::array::ArrayRef> {
                 let values = values.into_iter().map(|value| {
                     let value: ::std::borrow::Cow<'a, Self> = value.into();
                     value.into_owned()
@@ -181,7 +121,7 @@ macro_rules! delegate_arrow_tuid {
 
             #[inline]
             fn from_arrow(
-                array: &dyn arrow2::array::Array,
+                array: &dyn arrow::array::Array,
             ) -> $crate::DeserializationResult<Vec<Self>> {
                 Ok(
                     <$crate::external::re_tuid::Tuid as $crate::Loggable>::from_arrow(array)?
@@ -189,6 +129,18 @@ macro_rules! delegate_arrow_tuid {
                         .map(|tuid| Self(tuid))
                         .collect(),
                 )
+            }
+        }
+
+        impl $crate::Component for $typ {
+            #[inline]
+            fn name() -> $crate::ComponentName {
+                $fqname.into()
+            }
+
+            #[inline]
+            fn descriptor() -> $crate::ComponentDescriptor {
+                $crate::ComponentDescriptor::new($fqname)
             }
         }
     };

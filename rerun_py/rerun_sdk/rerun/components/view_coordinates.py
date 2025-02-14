@@ -8,23 +8,26 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 from .view_coordinates_ext import ViewCoordinatesExt
 
-__all__ = ["ViewCoordinates", "ViewCoordinatesBatch", "ViewCoordinatesType"]
+__all__ = ["ViewCoordinates", "ViewCoordinatesBatch"]
 
 
 class ViewCoordinates(ViewCoordinatesExt, datatypes.ViewCoordinates, ComponentMixin):
     """
     **Component**: How we interpret the coordinate system of an entity/space.
 
-    For instance: What is "up"? What does the Z axis mean? Is this right-handed or left-handed?
+    For instance: What is "up"? What does the Z axis mean?
 
     The three coordinates are always ordered as [x, y, z].
 
     For example [Right, Down, Forward] means that the X axis points to the right, the Y axis points
     down, and the Z axis points forward.
+
+    ⚠ [Rerun does not yet support left-handed coordinate systems](https://github.com/rerun-io/rerun/issues/5032).
 
     The following constants are used to represent the different directions:
      * Up = 1
@@ -42,12 +45,8 @@ class ViewCoordinates(ViewCoordinatesExt, datatypes.ViewCoordinates, ComponentMi
     pass
 
 
-class ViewCoordinatesType(datatypes.ViewCoordinatesType):
-    _TYPE_NAME: str = "rerun.components.ViewCoordinates"
-
-
 class ViewCoordinatesBatch(datatypes.ViewCoordinatesBatch, ComponentBatchMixin):
-    _ARROW_TYPE = ViewCoordinatesType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.ViewCoordinates")
 
 
 # This is patched in late to avoid circular dependencies.

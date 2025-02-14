@@ -15,7 +15,7 @@ This checks that the container hierarchy behaves as expected.
 
 TODO(ab): setup the container hierarchy with the blueprint API when available.
 
-* Organize the space views in a non-trivial hierarchy of containers.
+* Organize the views in a non-trivial hierarchy of containers.
 * As a starting point, ensure that the hierarchy is "sane" (i.e. no leaf/single-child containers, etc.).
 
 
@@ -61,7 +61,7 @@ def log_readme() -> None:
     rr.log("readme", rr.TextDocument(README, media_type=rr.MediaType.MARKDOWN), static=True)
 
 
-def log_some_space_views() -> None:
+def log_some_views() -> None:
     from math import cos, sin, tau
 
     rr.set_time_sequence("frame_nr", 0)
@@ -72,8 +72,8 @@ def log_some_space_views() -> None:
     rr.log("points2d", rr.Points2D([[0, 0], [1, 1], [3, 2]], labels=["a", "b", "c"]))
     rr.log("points2d/bbx", rr.Boxes2D(centers=[1, 1], half_sizes=[3, 3]))
 
-    rr.log("plots/sin", rr.SeriesLine(color=[255, 0, 0], name="sin(0.01t)"), timeless=True)
-    rr.log("plots/cos", rr.SeriesLine(color=[0, 255, 0], name="cos(0.01t)"), timeless=True)
+    rr.log("plots/sin", rr.SeriesLine(color=[255, 0, 0], name="sin(0.01t)"), static=True)
+    rr.log("plots/cos", rr.SeriesLine(color=[0, 255, 0], name="cos(0.01t)"), static=True)
 
     for t in range(0, int(tau * 2 * 10.0)):
         rr.set_time_sequence("frame_nr", t)
@@ -89,7 +89,9 @@ def run(args: Namespace) -> None:
     rr.script_setup(args, f"{os.path.basename(__file__)}", recording_id=uuid4())
 
     log_readme()
-    log_some_space_views()
+    log_some_views()
+
+    rr.send_blueprint(rr.blueprint.Blueprint(auto_layout=True, auto_views=True), make_active=True, make_default=True)
 
 
 if __name__ == "__main__":

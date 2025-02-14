@@ -63,12 +63,12 @@ exclude_path = [
   "venv",
 
   # Actually ignored files beyond .gitignore
-  "crates/utils/re_analytics/src/event.rs",        # Contains test with malformed urls
-  "scripts/lint.py",                               # Contains url-matching regexes that aren't actual urls
+  "crates/utils/re_analytics/src/event.rs",           # Contains test with malformed urls
+  "scripts/lint.py",                                  # Contains url-matching regexes that aren't actual urls
   "scripts/screenshot_compare/assets/templates/",
-  "crates/viewer/re_viewer/src/reflection/mod.rs", # Checker struggles how links from examples are escaped here. They are all checked elsewhere, so not an issue.
+  "crates/viewer/re_viewer/src/reflection/mod.rs",    # Checker struggles how links from examples are escaped here. They are all checked elsewhere, so not an issue.
+  "crates/store/re_grpc_client/src/redap/address.rs", # Contains some malformed URLs, but they are not actual links.
 ]
-
 # Exclude URLs and mail addresses from checking (supports regex).
 exclude = [
   # Skip speculative links
@@ -83,21 +83,26 @@ exclude = [
   '%7B.+%7D',             # Ignore strings that look like ready to use links but contain a replacement strings. The URL escaping is for '{.+}' (this seems to be needed for html embedded urls since lychee assumes they use this encoding).
   '%7B%7D',               # Ignore links with string interpolation, escaped variant.
 
+  # Ignore storage-node example links
+  'rerun:/.*',
+
   # Local links that require further setup.
   'http://127.0.0.1',
   'http://localhost',
-  'recording:/',      # rrd recording link.
+  'recording:/',          # rrd recording link.
   'ws:/',
-  're_viewer.js',     # Build artifact that html is linking to.
+  're_viewer.js',         # Build artifact that html is linking to.
+  'http://0.0.0.0:51234',
 
   # Api endpoints.
   'https://fonts.googleapis.com/',                                               # Font API entrypoint, not a link.
   'https://fonts.gstatic.com/',                                                  # Font API entrypoint, not a link.
   'https://tel.rerun.io/',                                                       # Analytics endpoint.
   'https://docs-assets.developer.apple.com/ml-research/datasets/arkitscenes/v1', # Used by arkit_scenes.
+  'https://overpass-api.de/api/interpreter',                                     # Used by openstreetmap_data example
 
   # Avoid rate limiting.
-  'https://crates.io/crates/.*',                  # Avoid crates.io rate-limiting
+  'https://crates.io/crates/w\+',                 # Avoid crates.io rate-limiting
   'https://github.com/rerun-io/rerun/commit/\.*', # Ignore links to our own commits (typically in changelog).
   'https://github.com/rerun-io/rerun/pull/\.*',   # Ignore links to our own pull requests (typically in changelog).
   'https://github.com/rerun-io/rerun/issues/\.*', # Ignore links to our own issues.
@@ -106,8 +111,14 @@ exclude = [
   'file://foo',
   'http://foo.com/',
   'https://link.to',
+  'https://rerun.rs',
   'https://static.rerun.io/my_screenshot/',
   'https://your-hosted-asset-url.com/widget.js',
+  'file:///path/to/file',
+  'rerun://localhost:51234/recording/some-recording-id',
+  'http://foo.zip',
+  'https://foo.zip',
+  'https://redap.rerun.io',
 
   # Link fragments and data links in examples.
   'https://raw.githubusercontent.com/googlefonts/noto-emoji/', # URL fragment.
@@ -130,7 +141,9 @@ exclude = [
 
   # Needs authentication
   'https://edge.meilisearch.com',
-  'https://eu.posthog.com/project/', # Requires to be logged in on PostHog.
+  'https://eu.posthog.com/project/',                      # Requires to be logged in on PostHog.
+  'https://github.com/rerun-io/internal-test-assets/\.*',
+  'https://github.com/google/mediapipe/issues/5188',      # For some reason that link has always failed.
 
   # Temporarily down or not accessible.
   'https://cs.nyu.edu/~silberman/datasets/nyu_depth_v2.html',       # Nyud links are down every now and then.
@@ -141,5 +154,25 @@ exclude = [
   'https://openaccess.thecvf.com/content/CVPR2023/html/Du_Learning_To_Render_Novel_Views_From_Wide-Baseline_Stereo_Pairs_CVPR_2023_paper.html',
   'https://anaconda.org/conda-forge/arrow-cpp',
 
-  #'^file:///',                                  # Ignore local file links. They need to be tested, but it's useful for external links we have to ping.
+  # '^file:///',                                  # Ignore local file links. They need to be tested, but it's useful for external links we have to ping.
+
+  # Snippets that haven't been released yet.
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/archetypes/points3d_column_updates.rs',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/archetypes/points3d_partial_updates.cpp',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/archetypes/points3d_partial_updates.py',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/archetypes/points3d_partial_updates.rs',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/archetypes/points3d_partial_updates_legacy.cpp',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/archetypes/points3d_partial_updates_legacy.py',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/archetypes/points3d_partial_updates_legacy.rs',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/archetypes/transform3d_partial_updates.cpp',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/archetypes/transform3d_partial_updates.py',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/archetypes/transform3d_partial_updates.rs',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/howto/any_batch_value_column_updates.cpp',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/howto/any_batch_value_column_updates.rs',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/howto/any_values_column_updates.cpp',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/howto/any_values_column_updates.rs',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/tutorials/any_values.cpp',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/tutorials/any_values.rs',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/tutorials/extra_values.cpp',
+  'https://github.com/rerun-io/rerun/blob/main/docs/snippets/all/tutorials/extra_values.rs',
 ]

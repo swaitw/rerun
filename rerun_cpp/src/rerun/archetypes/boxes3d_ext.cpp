@@ -12,20 +12,17 @@ namespace rerun {
 
         /// Creates new `Boxes3D` with `half_sizes` centered around the local origin.
         static Boxes3D from_half_sizes(Collection<components::HalfSize3D> half_sizes) {
-            Boxes3D boxes;
-            boxes.half_sizes = std::move(half_sizes);
-            return boxes;
+            return Boxes3D().with_half_sizes(std::move(half_sizes));
         }
 
         /// Creates new `Boxes3D` with `centers` and `half_sizes`.
         static Boxes3D from_centers_and_half_sizes(
-            Collection<components::Position3D> centers,
+            Collection<components::PoseTranslation3D> centers,
             Collection<components::HalfSize3D> half_sizes
         ) {
-            Boxes3D boxes;
-            boxes.half_sizes = std::move(half_sizes);
-            boxes.centers = std::move(centers);
-            return boxes;
+            return Boxes3D()
+                .with_half_sizes(std::move(half_sizes))
+                .with_centers(std::move(centers));
         }
 
         /// Creates new `Boxes3D` with `half_sizes` created from (full) sizes.
@@ -42,11 +39,10 @@ namespace rerun {
         /// from the input data.
         /// TODO(andreas): This should not take an std::vector.
         static Boxes3D from_centers_and_sizes(
-            Collection<components::Position3D> centers, const std::vector<datatypes::Vec3D>& sizes
+            Collection<components::PoseTranslation3D> centers,
+            const std::vector<datatypes::Vec3D>& sizes
         ) {
-            Boxes3D boxes = from_sizes(std::move(sizes));
-            boxes.centers = std::move(centers);
-            return boxes;
+            return from_sizes(std::move(sizes)).with_centers(std::move(centers));
         }
 
         /// Creates new `Boxes3D` with `half_sizes` and `centers` created from minimums and (full)
@@ -78,7 +74,7 @@ namespace rerun {
             auto num_components = std::min(mins.size(), sizes.size());
 
             std::vector<components::HalfSize3D> half_sizes;
-            std::vector<components::Position3D> centers;
+            std::vector<components::PoseTranslation3D> centers;
             half_sizes.reserve(num_components);
             centers.reserve(num_components);
 
@@ -95,10 +91,9 @@ namespace rerun {
                 );
             }
 
-            Boxes3D boxes;
-            boxes.half_sizes = std::move(half_sizes);
-            boxes.centers = std::move(centers);
-            return boxes;
+            return Boxes3D()
+                .with_half_sizes(std::move(half_sizes))
+                .with_centers(std::move(centers));
         }
     } // namespace archetypes
 } // namespace rerun

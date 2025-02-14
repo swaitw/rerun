@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import numpy as np
 from attrs import define, field
 
-from .. import components
+from .. import components, datatypes
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
+from ..error_utils import catch_and_log_exceptions
 from .segmentation_image_ext import SegmentationImageExt
 
 __all__ = ["SegmentationImage"]
@@ -49,11 +52,11 @@ class SegmentationImage(SegmentationImageExt, Archetype):
     ```
     <center>
     <picture>
-      <source media="(max-width: 480px)" srcset="https://static.rerun.io/segmentation_image_simple/eb49e0b8cb870c75a69e2a47a2d202e5353115f6/480w.png">
-      <source media="(max-width: 768px)" srcset="https://static.rerun.io/segmentation_image_simple/eb49e0b8cb870c75a69e2a47a2d202e5353115f6/768w.png">
-      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/segmentation_image_simple/eb49e0b8cb870c75a69e2a47a2d202e5353115f6/1024w.png">
-      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/segmentation_image_simple/eb49e0b8cb870c75a69e2a47a2d202e5353115f6/1200w.png">
-      <img src="https://static.rerun.io/segmentation_image_simple/eb49e0b8cb870c75a69e2a47a2d202e5353115f6/full.png" width="640">
+      <source media="(max-width: 480px)" srcset="https://static.rerun.io/segmentation_image_simple/f8aac62abcf4c59c5d62f9ebc2d86fd0285c1736/480w.png">
+      <source media="(max-width: 768px)" srcset="https://static.rerun.io/segmentation_image_simple/f8aac62abcf4c59c5d62f9ebc2d86fd0285c1736/768w.png">
+      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/segmentation_image_simple/f8aac62abcf4c59c5d62f9ebc2d86fd0285c1736/1024w.png">
+      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/segmentation_image_simple/f8aac62abcf4c59c5d62f9ebc2d86fd0285c1736/1200w.png">
+      <img src="https://static.rerun.io/segmentation_image_simple/f8aac62abcf4c59c5d62f9ebc2d86fd0285c1736/full.png" width="640">
     </picture>
     </center>
 
@@ -64,11 +67,10 @@ class SegmentationImage(SegmentationImageExt, Archetype):
     def __attrs_clear__(self) -> None:
         """Convenience method for calling `__attrs_init__` with all `None`s."""
         self.__attrs_init__(
-            data=None,  # type: ignore[arg-type]
-            resolution=None,  # type: ignore[arg-type]
-            data_type=None,  # type: ignore[arg-type]
-            opacity=None,  # type: ignore[arg-type]
-            draw_order=None,  # type: ignore[arg-type]
+            buffer=None,
+            format=None,
+            opacity=None,
+            draw_order=None,
         )
 
     @classmethod
@@ -78,34 +80,137 @@ class SegmentationImage(SegmentationImageExt, Archetype):
         inst.__attrs_clear__()
         return inst
 
-    data: components.BlobBatch = field(
-        metadata={"component": "required"},
-        converter=components.BlobBatch._required,  # type: ignore[misc]
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        clear_unset: bool = False,
+        buffer: datatypes.BlobLike | None = None,
+        format: datatypes.ImageFormatLike | None = None,
+        opacity: datatypes.Float32Like | None = None,
+        draw_order: datatypes.Float32Like | None = None,
+    ) -> SegmentationImage:
+        """
+        Update only some specific fields of a `SegmentationImage`.
+
+        Parameters
+        ----------
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        buffer:
+            The raw image data.
+        format:
+            The format of the image.
+        opacity:
+            Opacity of the image, useful for layering the segmentation image on top of another image.
+
+            Defaults to 0.5 if there's any other images in the scene, otherwise 1.0.
+        draw_order:
+            An optional floating point value that specifies the 2D drawing order.
+
+            Objects with higher values are drawn on top of those with lower values.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "buffer": buffer,
+                "format": format,
+                "opacity": opacity,
+                "draw_order": draw_order,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def cleared(cls) -> SegmentationImage:
+        """Clear all the fields of a `SegmentationImage`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        buffer: datatypes.BlobArrayLike | None = None,
+        format: datatypes.ImageFormatArrayLike | None = None,
+        opacity: datatypes.Float32ArrayLike | None = None,
+        draw_order: datatypes.Float32ArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        buffer:
+            The raw image data.
+        format:
+            The format of the image.
+        opacity:
+            Opacity of the image, useful for layering the segmentation image on top of another image.
+
+            Defaults to 0.5 if there's any other images in the scene, otherwise 1.0.
+        draw_order:
+            An optional floating point value that specifies the 2D drawing order.
+
+            Objects with higher values are drawn on top of those with lower values.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                buffer=buffer,
+                format=format,
+                opacity=opacity,
+                draw_order=draw_order,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
+    buffer: components.ImageBufferBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.ImageBufferBatch._converter,  # type: ignore[misc]
     )
     # The raw image data.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
-    resolution: components.Resolution2DBatch = field(
-        metadata={"component": "required"},
-        converter=components.Resolution2DBatch._required,  # type: ignore[misc]
+    format: components.ImageFormatBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.ImageFormatBatch._converter,  # type: ignore[misc]
     )
-    # The size of the image.
-    #
-    # (Docstring intentionally commented out to hide this field from the docs)
-
-    data_type: components.ChannelDataTypeBatch = field(
-        metadata={"component": "required"},
-        converter=components.ChannelDataTypeBatch._required,  # type: ignore[misc]
-    )
-    # The data type of the segmentation image data (U16, U32, …).
+    # The format of the image.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     opacity: components.OpacityBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.OpacityBatch._optional,  # type: ignore[misc]
+        converter=components.OpacityBatch._converter,  # type: ignore[misc]
     )
     # Opacity of the image, useful for layering the segmentation image on top of another image.
     #
@@ -114,9 +219,9 @@ class SegmentationImage(SegmentationImageExt, Archetype):
     # (Docstring intentionally commented out to hide this field from the docs)
 
     draw_order: components.DrawOrderBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.DrawOrderBatch._optional,  # type: ignore[misc]
+        converter=components.DrawOrderBatch._converter,  # type: ignore[misc]
     )
     # An optional floating point value that specifies the 2D drawing order.
     #

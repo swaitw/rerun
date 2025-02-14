@@ -1,4 +1,4 @@
-use arrow2::array::Array as ArrowArray;
+use arrow::array::Array as ArrowArray;
 
 use re_log_types::{TimeInt, Timeline};
 use re_types_core::ComponentName;
@@ -19,7 +19,7 @@ pub struct LatestAtQuery {
 impl std::fmt::Debug for LatestAtQuery {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
-            "<latest at {} on {:?}>",
+            "<latest-at {} on {:?}>",
             self.timeline.typ().format_utc(self.at),
             self.timeline.name(),
         ))
@@ -77,7 +77,7 @@ impl Chunk {
 
         re_tracing::profile_function!(format!("{query:?}"));
 
-        let Some(component_list_array) = self.components.get(&component_name) else {
+        let Some(component_list_array) = self.get_first_component(&component_name) else {
             return self.emptied();
         };
 
@@ -117,12 +117,12 @@ impl Chunk {
                 }
             }
         } else {
-            let Some(time_chunk) = self.timelines.get(&query.timeline()) else {
+            let Some(time_column) = self.timelines.get(&query.timeline()) else {
                 return self.emptied();
             };
 
-            let is_sorted_by_time = time_chunk.is_sorted();
-            let times = time_chunk.times_raw();
+            let is_sorted_by_time = time_column.is_sorted();
+            let times = time_column.times_raw();
 
             if is_sorted_by_time {
                 // Temporal, row-sorted, time-sorted chunk

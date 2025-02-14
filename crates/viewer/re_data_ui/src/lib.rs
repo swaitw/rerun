@@ -2,39 +2,31 @@
 //!
 //! This crate provides ui elements for Rerun component data for the Rerun Viewer.
 
-use re_log_types::{EntityPath, TimePoint};
+use re_log_types::EntityPath;
 use re_types::ComponentName;
 use re_viewer_context::{UiLayout, ViewerContext};
 
 mod annotation_context;
 mod app_id;
-mod blueprint_data;
-mod blueprint_types;
+mod blob;
 mod component;
 mod component_name;
 mod component_path;
 mod component_ui_registry;
-mod data;
 mod data_source;
 mod entity_db;
 mod entity_path;
 mod image;
-mod image_meaning;
 mod instance_path;
-mod log_msg;
-mod pinhole;
-mod rotation3d;
 mod store_id;
-mod transform3d;
+mod tensor;
+mod video;
 
 pub mod item_ui;
 
-pub use crate::image::{
-    show_zoomed_image_region, show_zoomed_image_region_area_outline, show_zoomed_tensor_region,
-    tensor_summary_ui_grid_contents,
-};
-pub use component::EntityLatestAtResults;
-pub use component_ui_registry::{add_to_registry, create_component_ui_registry};
+pub use crate::tensor::tensor_summary_ui_grid_contents;
+pub use component::ComponentPathLatestAtResults;
+pub use component_ui_registry::{add_to_registry, register_component_uis};
 
 /// Sort components for display in the UI.
 pub fn sorted_component_list_for_ui<'a>(
@@ -72,12 +64,14 @@ pub trait DataUi {
 /// This is given the context of the entity it is part of so it can do queries.
 pub trait EntityDataUi {
     /// If you need to lookup something in the chunk store, use the given query to do so.
+    #[allow(clippy::too_many_arguments)]
     fn entity_data_ui(
         &self,
         ctx: &ViewerContext<'_>,
         ui: &mut egui::Ui,
         ui_layout: UiLayout,
         entity_path: &EntityPath,
+        row_id: Option<re_chunk_store::RowId>,
         query: &re_chunk_store::LatestAtQuery,
         db: &re_entity_db::EntityDb,
     );
@@ -93,6 +87,7 @@ where
         ui: &mut egui::Ui,
         ui_layout: UiLayout,
         entity_path: &EntityPath,
+        _row_id: Option<re_chunk_store::RowId>,
         query: &re_chunk_store::LatestAtQuery,
         db: &re_entity_db::EntityDb,
     ) {
@@ -100,30 +95,6 @@ where
         // `AnnotationContext` component is not saved by all instances of the component.
         ui.push_id(entity_path.hash(), |ui| {
             self.data_ui(ctx, ui, ui_layout, query, db);
-        });
-    }
-}
-
-// ----------------------------------------------------------------------------
-
-impl DataUi for TimePoint {
-    fn data_ui(
-        &self,
-        ctx: &ViewerContext<'_>,
-        ui: &mut egui::Ui,
-        _ui_layout: UiLayout,
-        _query: &re_chunk_store::LatestAtQuery,
-        _db: &re_entity_db::EntityDb,
-    ) {
-        ui.vertical(|ui| {
-            egui::Grid::new("time_point").num_columns(2).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                for (timeline, value) in self.iter() {
-                    item_ui::timeline_button_to(ctx, ui, format!("{}:", timeline.name()), timeline);
-                    item_ui::time_button(ctx, ui, timeline, *value);
-                    ui.end_row();
-                }
-            });
         });
     }
 }

@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import numpy as np
 from attrs import define, field
 
-from .. import components
+from .. import components, datatypes
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
+from ..error_utils import catch_and_log_exceptions
 from .boxes3d_ext import Boxes3DExt
 
 __all__ = ["Boxes3D"]
@@ -21,12 +24,15 @@ class Boxes3D(Boxes3DExt, Archetype):
     """
     **Archetype**: 3D boxes with half-extents and optional center, rotations, colors etc.
 
+    Note that orienting and placing the box is handled via `[archetypes.InstancePoses3D]`.
+    Some of its component are repeated here for convenience.
+    If there's more instance poses than half sizes, the last half size will be repeated for the remaining poses.
+
     Example
     -------
     ### Batch of 3D boxes:
     ```python
     import rerun as rr
-    from rerun.datatypes import Angle, Quaternion, Rotation3D, RotationAxisAngle
 
     rr.init("rerun_example_box3d_batch", spawn=True)
 
@@ -35,24 +41,24 @@ class Boxes3D(Boxes3DExt, Archetype):
         rr.Boxes3D(
             centers=[[2, 0, 0], [-2, 0, 0], [0, 0, 2]],
             half_sizes=[[2.0, 2.0, 1.0], [1.0, 1.0, 0.5], [2.0, 0.5, 1.0]],
-            rotations=[
-                Rotation3D.identity(),
-                Quaternion(xyzw=[0.0, 0.0, 0.382683, 0.923880]),  # 45 degrees around Z
-                RotationAxisAngle(axis=[0, 1, 0], angle=Angle(deg=30)),
+            quaternions=[
+                rr.Quaternion.identity(),
+                rr.Quaternion(xyzw=[0.0, 0.0, 0.382683, 0.923880]),  # 45 degrees around Z
             ],
             radii=0.025,
             colors=[(255, 0, 0), (0, 255, 0), (0, 0, 255)],
+            fill_mode="solid",
             labels=["red", "green", "blue"],
         ),
     )
     ```
     <center>
     <picture>
-      <source media="(max-width: 480px)" srcset="https://static.rerun.io/box3d_batch/6d3e453c3a0201ae42bbae9de941198513535f1d/480w.png">
-      <source media="(max-width: 768px)" srcset="https://static.rerun.io/box3d_batch/6d3e453c3a0201ae42bbae9de941198513535f1d/768w.png">
-      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/box3d_batch/6d3e453c3a0201ae42bbae9de941198513535f1d/1024w.png">
-      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/box3d_batch/6d3e453c3a0201ae42bbae9de941198513535f1d/1200w.png">
-      <img src="https://static.rerun.io/box3d_batch/6d3e453c3a0201ae42bbae9de941198513535f1d/full.png" width="640">
+      <source media="(max-width: 480px)" srcset="https://static.rerun.io/box3d_batch/5aac5b5d29c9f2ecd572c93f6970fcec17f4984b/480w.png">
+      <source media="(max-width: 768px)" srcset="https://static.rerun.io/box3d_batch/5aac5b5d29c9f2ecd572c93f6970fcec17f4984b/768w.png">
+      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/box3d_batch/5aac5b5d29c9f2ecd572c93f6970fcec17f4984b/1024w.png">
+      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/box3d_batch/5aac5b5d29c9f2ecd572c93f6970fcec17f4984b/1200w.png">
+      <img src="https://static.rerun.io/box3d_batch/5aac5b5d29c9f2ecd572c93f6970fcec17f4984b/full.png" width="640">
     </picture>
     </center>
 
@@ -63,13 +69,16 @@ class Boxes3D(Boxes3DExt, Archetype):
     def __attrs_clear__(self) -> None:
         """Convenience method for calling `__attrs_init__` with all `None`s."""
         self.__attrs_init__(
-            half_sizes=None,  # type: ignore[arg-type]
-            centers=None,  # type: ignore[arg-type]
-            rotations=None,  # type: ignore[arg-type]
-            colors=None,  # type: ignore[arg-type]
-            radii=None,  # type: ignore[arg-type]
-            labels=None,  # type: ignore[arg-type]
-            class_ids=None,  # type: ignore[arg-type]
+            half_sizes=None,
+            centers=None,
+            rotation_axis_angles=None,
+            quaternions=None,
+            colors=None,
+            radii=None,
+            fill_mode=None,
+            labels=None,
+            show_labels=None,
+            class_ids=None,
         )
 
     @classmethod
@@ -79,54 +88,259 @@ class Boxes3D(Boxes3DExt, Archetype):
         inst.__attrs_clear__()
         return inst
 
-    half_sizes: components.HalfSize3DBatch = field(
-        metadata={"component": "required"},
-        converter=components.HalfSize3DBatch._required,  # type: ignore[misc]
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        clear_unset: bool = False,
+        half_sizes: datatypes.Vec3DArrayLike | None = None,
+        centers: datatypes.Vec3DArrayLike | None = None,
+        rotation_axis_angles: datatypes.RotationAxisAngleArrayLike | None = None,
+        quaternions: datatypes.QuaternionArrayLike | None = None,
+        colors: datatypes.Rgba32ArrayLike | None = None,
+        radii: datatypes.Float32ArrayLike | None = None,
+        fill_mode: components.FillModeLike | None = None,
+        labels: datatypes.Utf8ArrayLike | None = None,
+        show_labels: datatypes.BoolLike | None = None,
+        class_ids: datatypes.ClassIdArrayLike | None = None,
+    ) -> Boxes3D:
+        """
+        Update only some specific fields of a `Boxes3D`.
+
+        Parameters
+        ----------
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        half_sizes:
+            All half-extents that make up the batch of boxes.
+        centers:
+            Optional center positions of the boxes.
+
+            If not specified, the centers will be at (0, 0, 0).
+            Note that this uses a [`components.PoseTranslation3D`][rerun.components.PoseTranslation3D] which is also used by [`archetypes.InstancePoses3D`][rerun.archetypes.InstancePoses3D].
+        rotation_axis_angles:
+            Rotations via axis + angle.
+
+            If no rotation is specified, the axes of the boxes align with the axes of the local coordinate system.
+            Note that this uses a [`components.PoseRotationAxisAngle`][rerun.components.PoseRotationAxisAngle] which is also used by [`archetypes.InstancePoses3D`][rerun.archetypes.InstancePoses3D].
+        quaternions:
+            Rotations via quaternion.
+
+            If no rotation is specified, the axes of the boxes align with the axes of the local coordinate system.
+            Note that this uses a [`components.PoseRotationQuat`][rerun.components.PoseRotationQuat] which is also used by [`archetypes.InstancePoses3D`][rerun.archetypes.InstancePoses3D].
+        colors:
+            Optional colors for the boxes.
+        radii:
+            Optional radii for the lines that make up the boxes.
+        fill_mode:
+            Optionally choose whether the boxes are drawn with lines or solid.
+        labels:
+            Optional text labels for the boxes.
+
+            If there's a single label present, it will be placed at the center of the entity.
+            Otherwise, each instance will have its own label.
+        show_labels:
+            Optional choice of whether the text labels should be shown by default.
+        class_ids:
+            Optional [`components.ClassId`][rerun.components.ClassId]s for the boxes.
+
+            The [`components.ClassId`][rerun.components.ClassId] provides colors and labels if not specified explicitly.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "half_sizes": half_sizes,
+                "centers": centers,
+                "rotation_axis_angles": rotation_axis_angles,
+                "quaternions": quaternions,
+                "colors": colors,
+                "radii": radii,
+                "fill_mode": fill_mode,
+                "labels": labels,
+                "show_labels": show_labels,
+                "class_ids": class_ids,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def cleared(cls) -> Boxes3D:
+        """Clear all the fields of a `Boxes3D`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        half_sizes: datatypes.Vec3DArrayLike | None = None,
+        centers: datatypes.Vec3DArrayLike | None = None,
+        rotation_axis_angles: datatypes.RotationAxisAngleArrayLike | None = None,
+        quaternions: datatypes.QuaternionArrayLike | None = None,
+        colors: datatypes.Rgba32ArrayLike | None = None,
+        radii: datatypes.Float32ArrayLike | None = None,
+        fill_mode: components.FillModeArrayLike | None = None,
+        labels: datatypes.Utf8ArrayLike | None = None,
+        show_labels: datatypes.BoolArrayLike | None = None,
+        class_ids: datatypes.ClassIdArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        half_sizes:
+            All half-extents that make up the batch of boxes.
+        centers:
+            Optional center positions of the boxes.
+
+            If not specified, the centers will be at (0, 0, 0).
+            Note that this uses a [`components.PoseTranslation3D`][rerun.components.PoseTranslation3D] which is also used by [`archetypes.InstancePoses3D`][rerun.archetypes.InstancePoses3D].
+        rotation_axis_angles:
+            Rotations via axis + angle.
+
+            If no rotation is specified, the axes of the boxes align with the axes of the local coordinate system.
+            Note that this uses a [`components.PoseRotationAxisAngle`][rerun.components.PoseRotationAxisAngle] which is also used by [`archetypes.InstancePoses3D`][rerun.archetypes.InstancePoses3D].
+        quaternions:
+            Rotations via quaternion.
+
+            If no rotation is specified, the axes of the boxes align with the axes of the local coordinate system.
+            Note that this uses a [`components.PoseRotationQuat`][rerun.components.PoseRotationQuat] which is also used by [`archetypes.InstancePoses3D`][rerun.archetypes.InstancePoses3D].
+        colors:
+            Optional colors for the boxes.
+        radii:
+            Optional radii for the lines that make up the boxes.
+        fill_mode:
+            Optionally choose whether the boxes are drawn with lines or solid.
+        labels:
+            Optional text labels for the boxes.
+
+            If there's a single label present, it will be placed at the center of the entity.
+            Otherwise, each instance will have its own label.
+        show_labels:
+            Optional choice of whether the text labels should be shown by default.
+        class_ids:
+            Optional [`components.ClassId`][rerun.components.ClassId]s for the boxes.
+
+            The [`components.ClassId`][rerun.components.ClassId] provides colors and labels if not specified explicitly.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                half_sizes=half_sizes,
+                centers=centers,
+                rotation_axis_angles=rotation_axis_angles,
+                quaternions=quaternions,
+                colors=colors,
+                radii=radii,
+                fill_mode=fill_mode,
+                labels=labels,
+                show_labels=show_labels,
+                class_ids=class_ids,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
+    half_sizes: components.HalfSize3DBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.HalfSize3DBatch._converter,  # type: ignore[misc]
     )
     # All half-extents that make up the batch of boxes.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
-    centers: components.Position3DBatch | None = field(
-        metadata={"component": "optional"},
+    centers: components.PoseTranslation3DBatch | None = field(
+        metadata={"component": True},
         default=None,
-        converter=components.Position3DBatch._optional,  # type: ignore[misc]
+        converter=components.PoseTranslation3DBatch._converter,  # type: ignore[misc]
     )
     # Optional center positions of the boxes.
     #
+    # If not specified, the centers will be at (0, 0, 0).
+    # Note that this uses a [`components.PoseTranslation3D`][rerun.components.PoseTranslation3D] which is also used by [`archetypes.InstancePoses3D`][rerun.archetypes.InstancePoses3D].
+    #
     # (Docstring intentionally commented out to hide this field from the docs)
 
-    rotations: components.Rotation3DBatch | None = field(
-        metadata={"component": "optional"},
+    rotation_axis_angles: components.PoseRotationAxisAngleBatch | None = field(
+        metadata={"component": True},
         default=None,
-        converter=components.Rotation3DBatch._optional,  # type: ignore[misc]
+        converter=components.PoseRotationAxisAngleBatch._converter,  # type: ignore[misc]
     )
-    # Optional rotations of the boxes.
+    # Rotations via axis + angle.
+    #
+    # If no rotation is specified, the axes of the boxes align with the axes of the local coordinate system.
+    # Note that this uses a [`components.PoseRotationAxisAngle`][rerun.components.PoseRotationAxisAngle] which is also used by [`archetypes.InstancePoses3D`][rerun.archetypes.InstancePoses3D].
+    #
+    # (Docstring intentionally commented out to hide this field from the docs)
+
+    quaternions: components.PoseRotationQuatBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.PoseRotationQuatBatch._converter,  # type: ignore[misc]
+    )
+    # Rotations via quaternion.
+    #
+    # If no rotation is specified, the axes of the boxes align with the axes of the local coordinate system.
+    # Note that this uses a [`components.PoseRotationQuat`][rerun.components.PoseRotationQuat] which is also used by [`archetypes.InstancePoses3D`][rerun.archetypes.InstancePoses3D].
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     colors: components.ColorBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.ColorBatch._optional,  # type: ignore[misc]
+        converter=components.ColorBatch._converter,  # type: ignore[misc]
     )
     # Optional colors for the boxes.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     radii: components.RadiusBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.RadiusBatch._optional,  # type: ignore[misc]
+        converter=components.RadiusBatch._converter,  # type: ignore[misc]
     )
     # Optional radii for the lines that make up the boxes.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
-    labels: components.TextBatch | None = field(
-        metadata={"component": "optional"},
+    fill_mode: components.FillModeBatch | None = field(
+        metadata={"component": True},
         default=None,
-        converter=components.TextBatch._optional,  # type: ignore[misc]
+        converter=components.FillModeBatch._converter,  # type: ignore[misc]
+    )
+    # Optionally choose whether the boxes are drawn with lines or solid.
+    #
+    # (Docstring intentionally commented out to hide this field from the docs)
+
+    labels: components.TextBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.TextBatch._converter,  # type: ignore[misc]
     )
     # Optional text labels for the boxes.
     #
@@ -135,10 +349,19 @@ class Boxes3D(Boxes3DExt, Archetype):
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
-    class_ids: components.ClassIdBatch | None = field(
-        metadata={"component": "optional"},
+    show_labels: components.ShowLabelsBatch | None = field(
+        metadata={"component": True},
         default=None,
-        converter=components.ClassIdBatch._optional,  # type: ignore[misc]
+        converter=components.ShowLabelsBatch._converter,  # type: ignore[misc]
+    )
+    # Optional choice of whether the text labels should be shown by default.
+    #
+    # (Docstring intentionally commented out to hide this field from the docs)
+
+    class_ids: components.ClassIdBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.ClassIdBatch._converter,  # type: ignore[misc]
     )
     # Optional [`components.ClassId`][rerun.components.ClassId]s for the boxes.
     #

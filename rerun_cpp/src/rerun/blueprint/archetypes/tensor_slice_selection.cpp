@@ -5,45 +5,95 @@
 
 #include "../../collection_adapter_builtins.hpp"
 
-namespace rerun::blueprint::archetypes {}
+namespace rerun::blueprint::archetypes {
+    TensorSliceSelection TensorSliceSelection::clear_fields() {
+        auto archetype = TensorSliceSelection();
+        archetype.width =
+            ComponentBatch::empty<rerun::components::TensorWidthDimension>(Descriptor_width)
+                .value_or_throw();
+        archetype.height =
+            ComponentBatch::empty<rerun::components::TensorHeightDimension>(Descriptor_height)
+                .value_or_throw();
+        archetype.indices = ComponentBatch::empty<rerun::components::TensorDimensionIndexSelection>(
+                                Descriptor_indices
+        )
+                                .value_or_throw();
+        archetype.slider =
+            ComponentBatch::empty<rerun::blueprint::components::TensorDimensionIndexSlider>(
+                Descriptor_slider
+            )
+                .value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> TensorSliceSelection::columns(const Collection<uint32_t>& lengths_
+    ) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(5);
+        if (width.has_value()) {
+            columns.push_back(width.value().partitioned(lengths_).value_or_throw());
+        }
+        if (height.has_value()) {
+            columns.push_back(height.value().partitioned(lengths_).value_or_throw());
+        }
+        if (indices.has_value()) {
+            columns.push_back(indices.value().partitioned(lengths_).value_or_throw());
+        }
+        if (slider.has_value()) {
+            columns.push_back(slider.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(ComponentColumn::from_indicators<TensorSliceSelection>(
+                              static_cast<uint32_t>(lengths_.size())
+        )
+                              .value_or_throw());
+        return columns;
+    }
+
+    Collection<ComponentColumn> TensorSliceSelection::columns() {
+        if (width.has_value()) {
+            return columns(std::vector<uint32_t>(width.value().length(), 1));
+        }
+        if (height.has_value()) {
+            return columns(std::vector<uint32_t>(height.value().length(), 1));
+        }
+        if (indices.has_value()) {
+            return columns(std::vector<uint32_t>(indices.value().length(), 1));
+        }
+        if (slider.has_value()) {
+            return columns(std::vector<uint32_t>(slider.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::blueprint::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>>
-        AsComponents<blueprint::archetypes::TensorSliceSelection>::serialize(
+    Result<Collection<ComponentBatch>>
+        AsComponents<blueprint::archetypes::TensorSliceSelection>::as_batches(
             const blueprint::archetypes::TensorSliceSelection& archetype
         ) {
         using namespace blueprint::archetypes;
-        std::vector<DataCell> cells;
+        std::vector<ComponentBatch> cells;
         cells.reserve(5);
 
         if (archetype.width.has_value()) {
-            auto result = DataCell::from_loggable(archetype.width.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.width.value());
         }
         if (archetype.height.has_value()) {
-            auto result = DataCell::from_loggable(archetype.height.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.height.value());
         }
         if (archetype.indices.has_value()) {
-            auto result = DataCell::from_loggable(archetype.indices.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.indices.value());
         }
         if (archetype.slider.has_value()) {
-            auto result = DataCell::from_loggable(archetype.slider.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.slider.value());
         }
         {
-            auto indicator = TensorSliceSelection::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<TensorSliceSelection>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

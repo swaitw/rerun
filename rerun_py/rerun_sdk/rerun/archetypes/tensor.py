@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import numpy as np
 from attrs import define, field
 
-from .. import components
+from .. import components, datatypes
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
+from ..error_utils import catch_and_log_exceptions
 from .tensor_ext import TensorExt
 
 __all__ = ["Tensor"]
@@ -20,6 +23,10 @@ __all__ = ["Tensor"]
 class Tensor(TensorExt, Archetype):
     """
     **Archetype**: An N-dimensional array of numbers.
+
+    It's not currently possible to use `send_columns` with tensors since construction
+    of `rerun.components.TensorDataBatch` does not support more than a single element.
+    This will be addressed as part of <https://github.com/rerun-io/rerun/issues/6832>.
 
     Example
     -------
@@ -52,7 +59,8 @@ class Tensor(TensorExt, Archetype):
     def __attrs_clear__(self) -> None:
         """Convenience method for calling `__attrs_init__` with all `None`s."""
         self.__attrs_init__(
-            data=None,  # type: ignore[arg-type]
+            data=None,
+            value_range=None,
         )
 
     @classmethod
@@ -62,11 +70,136 @@ class Tensor(TensorExt, Archetype):
         inst.__attrs_clear__()
         return inst
 
-    data: components.TensorDataBatch = field(
-        metadata={"component": "required"},
-        converter=components.TensorDataBatch._required,  # type: ignore[misc]
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        clear_unset: bool = False,
+        data: datatypes.TensorDataLike | None = None,
+        value_range: datatypes.Range1DLike | None = None,
+    ) -> Tensor:
+        """
+        Update only some specific fields of a `Tensor`.
+
+        Parameters
+        ----------
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        data:
+            The tensor data
+        value_range:
+            The expected range of values.
+
+            This is typically the expected range of valid values.
+            Everything outside of the range is clamped to the range for the purpose of colormpaping.
+            Any colormap applied for display, will map this range.
+
+            If not specified, the range will be automatically estimated from the data.
+            Note that the Viewer may try to guess a wider range than the minimum/maximum of values
+            in the contents of the tensor.
+            E.g. if all values are positive, some bigger than 1.0 and all smaller than 255.0,
+            the Viewer will guess that the data likely came from an 8bit image, thus assuming a range of 0-255.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "data": data,
+                "value_range": value_range,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def cleared(cls) -> Tensor:
+        """Clear all the fields of a `Tensor`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        data: datatypes.TensorDataArrayLike | None = None,
+        value_range: datatypes.Range1DArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        data:
+            The tensor data
+        value_range:
+            The expected range of values.
+
+            This is typically the expected range of valid values.
+            Everything outside of the range is clamped to the range for the purpose of colormpaping.
+            Any colormap applied for display, will map this range.
+
+            If not specified, the range will be automatically estimated from the data.
+            Note that the Viewer may try to guess a wider range than the minimum/maximum of values
+            in the contents of the tensor.
+            E.g. if all values are positive, some bigger than 1.0 and all smaller than 255.0,
+            the Viewer will guess that the data likely came from an 8bit image, thus assuming a range of 0-255.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                data=data,
+                value_range=value_range,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
+    data: components.TensorDataBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.TensorDataBatch._converter,  # type: ignore[misc]
     )
     # The tensor data
+    #
+    # (Docstring intentionally commented out to hide this field from the docs)
+
+    value_range: components.ValueRangeBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.ValueRangeBatch._converter,  # type: ignore[misc]
+    )
+    # The expected range of values.
+    #
+    # This is typically the expected range of valid values.
+    # Everything outside of the range is clamped to the range for the purpose of colormpaping.
+    # Any colormap applied for display, will map this range.
+    #
+    # If not specified, the range will be automatically estimated from the data.
+    # Note that the Viewer may try to guess a wider range than the minimum/maximum of values
+    # in the contents of the tensor.
+    # E.g. if all values are positive, some bigger than 1.0 and all smaller than 255.0,
+    # the Viewer will guess that the data likely came from an 8bit image, thus assuming a range of 0-255.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 

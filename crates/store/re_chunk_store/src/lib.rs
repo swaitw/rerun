@@ -1,5 +1,5 @@
 //! The Rerun chunk store, implemented on top of [Apache Arrow](https://arrow.apache.org/)
-//! using the [`arrow2`] crate.
+//! using the [`arrow`] crate.
 //!
 //! This crate is an in-memory time series database for Rerun log data.
 //! It is indexed by Entity path, component, timeline, and time.
@@ -14,6 +14,8 @@
 #![doc = document_features::document_features!()]
 //!
 
+mod dataframe;
+mod drop_time_range;
 mod events;
 mod gc;
 mod query;
@@ -22,19 +24,36 @@ mod store;
 mod subscribers;
 mod writes;
 
-pub use self::events::{ChunkStoreDiff, ChunkStoreDiffKind, ChunkStoreEvent};
-pub use self::gc::{GarbageCollectionOptions, GarbageCollectionTarget};
-pub use self::stats::{ChunkStoreChunkStats, ChunkStoreStats};
-pub use self::store::{ChunkStore, ChunkStoreConfig, ChunkStoreGeneration};
-pub use self::subscribers::{ChunkStoreSubscriber, ChunkStoreSubscriberHandle};
+mod protobuf_conversions;
+
+pub use self::{
+    dataframe::{
+        ColumnSelector, ComponentColumnSelector, Index, IndexRange, IndexValue, QueryExpression,
+        SparseFillStrategy, TimeColumnSelector, ViewContentsSelector,
+    },
+    events::{ChunkCompactionReport, ChunkStoreDiff, ChunkStoreDiffKind, ChunkStoreEvent},
+    gc::{GarbageCollectionOptions, GarbageCollectionTarget},
+    stats::{ChunkStoreChunkStats, ChunkStoreStats},
+    store::{ChunkStore, ChunkStoreConfig, ChunkStoreGeneration, ChunkStoreHandle, ColumnMetadata},
+    subscribers::{ChunkStoreSubscriber, ChunkStoreSubscriberHandle, PerStoreChunkSubscriber},
+};
+pub use re_sorbet::{ColumnDescriptor, ComponentColumnDescriptor, IndexColumnDescriptor};
+
+pub(crate) use self::store::ColumnMetadataState;
 
 // Re-exports
 #[doc(no_inline)]
-pub use re_chunk::{Chunk, ChunkId, LatestAtQuery, RangeQuery, RowId};
+pub use re_chunk::{
+    Chunk, ChunkId, ChunkShared, LatestAtQuery, RangeQuery, RangeQueryOptions, RowId,
+    UnitChunkShared,
+};
+
 #[doc(no_inline)]
 pub use re_log_types::{ResolvedTimeRange, TimeInt, TimeType, Timeline};
 
 pub mod external {
+    pub use arrow;
+
     pub use re_chunk;
 }
 

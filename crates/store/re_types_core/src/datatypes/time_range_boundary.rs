@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use crate::external::arrow2;
-use crate::ComponentName;
+use crate::try_serialize_field;
 use crate::SerializationResult;
-use crate::{ComponentBatch, MaybeOwnedComponentBatch};
+use crate::{ComponentBatch, SerializedComponentBatch};
+use crate::{ComponentDescriptor, ComponentName};
 use crate::{DeserializationError, DeserializationResult};
 
 /// **Datatype**: Left or right boundary of a time range.
@@ -31,39 +31,56 @@ pub enum TimeRangeBoundary {
     Infinite,
 }
 
-impl crate::SizeBytes for TimeRangeBoundary {
-    #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        #![allow(clippy::match_same_arms)]
-        match self {
-            Self::CursorRelative(v) => v.heap_size_bytes(),
-            Self::Absolute(v) => v.heap_size_bytes(),
-            Self::Infinite => 0,
-        }
-    }
-
-    #[inline]
-    fn is_pod() -> bool {
-        <crate::datatypes::TimeInt>::is_pod() && <crate::datatypes::TimeInt>::is_pod()
-    }
-}
-
 crate::macros::impl_into_cow!(TimeRangeBoundary);
 
 impl crate::Loggable for TimeRangeBoundary {
-    type Name = crate::DatatypeName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.datatypes.TimeRangeBoundary".into()
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        #![allow(clippy::wildcard_imports)]
+        use arrow::datatypes::*;
+        DataType::Union(
+            UnionFields::new(
+                vec![0, 1, 2, 3],
+                vec![
+                    Field::new("_null_markers", DataType::Null, true),
+                    Field::new(
+                        "CursorRelative",
+                        <crate::datatypes::TimeInt>::arrow_datatype(),
+                        false,
+                    ),
+                    Field::new(
+                        "Absolute",
+                        <crate::datatypes::TimeInt>::arrow_datatype(),
+                        false,
+                    ),
+                    Field::new("Infinite", DataType::Null, true),
+                ],
+            ),
+            UnionMode::Dense,
+        )
     }
 
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
+    fn to_arrow_opt<'a>(
+        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+    ) -> SerializationResult<arrow::array::ArrayRef>
+    where
+        Self: Clone + 'a,
+    {
         #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
-        DataType::Union(
-            std::sync::Arc::new(vec![
+        #![allow(clippy::manual_is_variant_and)]
+        use crate::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
+        Ok({
+            // Dense Arrow union
+            let data: Vec<_> = data
+                .into_iter()
+                .map(|datum| {
+                    let datum: Option<::std::borrow::Cow<'a, Self>> = datum.map(Into::into);
+                    datum
+                })
+                .collect();
+            let field_type_ids = [0, 1, 2, 3];
+            let fields = vec![
                 Field::new("_null_markers", DataType::Null, true),
                 Field::new(
                     "CursorRelative",
@@ -76,31 +93,8 @@ impl crate::Loggable for TimeRangeBoundary {
                     false,
                 ),
                 Field::new("Infinite", DataType::Null, true),
-            ]),
-            Some(std::sync::Arc::new(vec![0i32, 1i32, 2i32, 3i32])),
-            UnionMode::Dense,
-        )
-    }
-
-    fn to_arrow_opt<'a>(
-        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
-    where
-        Self: Clone + 'a,
-    {
-        #![allow(clippy::wildcard_imports)]
-        use crate::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
-        Ok({
-            // Dense Arrow union
-            let data: Vec<_> = data
-                .into_iter()
-                .map(|datum| {
-                    let datum: Option<::std::borrow::Cow<'a, Self>> = datum.map(Into::into);
-                    datum
-                })
-                .collect();
-            let types = data
+            ];
+            let type_ids: Vec<i8> = data
                 .iter()
                 .map(|a| match a.as_deref() {
                     None => 0,
@@ -109,49 +103,7 @@ impl crate::Loggable for TimeRangeBoundary {
                     Some(Self::Infinite) => 3i8,
                 })
                 .collect();
-            let fields = vec![
-                NullArray::new(DataType::Null, data.iter().filter(|v| v.is_none()).count()).boxed(),
-                {
-                    let cursor_relative: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::CursorRelative(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let cursor_relative_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    PrimitiveArray::new(
-                        DataType::Int64,
-                        cursor_relative.into_iter().map(|datum| datum.0).collect(),
-                        cursor_relative_bitmap,
-                    )
-                    .boxed()
-                },
-                {
-                    let absolute: Vec<_> = data
-                        .iter()
-                        .filter_map(|datum| match datum.as_deref() {
-                            Some(Self::Absolute(v)) => Some(v.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    let absolute_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                    PrimitiveArray::new(
-                        DataType::Int64,
-                        absolute.into_iter().map(|datum| datum.0).collect(),
-                        absolute_bitmap,
-                    )
-                    .boxed()
-                },
-                NullArray::new(
-                    DataType::Null,
-                    data.iter()
-                        .filter(|datum| matches!(datum.as_deref(), Some(Self::Infinite)))
-                        .count(),
-                )
-                .boxed(),
-            ];
-            let offsets = Some({
+            let offsets = {
                 let mut cursor_relative_offset = 0;
                 let mut absolute_offset = 0;
                 let mut infinite_offset = 0;
@@ -180,24 +132,77 @@ impl crate::Loggable for TimeRangeBoundary {
                         }
                     })
                     .collect()
-            });
-            UnionArray::new(Self::arrow_datatype(), types, fields, offsets).boxed()
+            };
+            let children = vec![
+                as_array_ref(NullArray::new(data.iter().filter(|v| v.is_none()).count())),
+                {
+                    let cursor_relative: Vec<_> = data
+                        .iter()
+                        .filter_map(|datum| match datum.as_deref() {
+                            Some(Self::CursorRelative(v)) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let cursor_relative_validity: Option<arrow::buffer::NullBuffer> = None;
+                    as_array_ref(PrimitiveArray::<Int64Type>::new(
+                        ScalarBuffer::from(
+                            cursor_relative
+                                .into_iter()
+                                .map(|datum| datum.0)
+                                .collect::<Vec<_>>(),
+                        ),
+                        cursor_relative_validity,
+                    ))
+                },
+                {
+                    let absolute: Vec<_> = data
+                        .iter()
+                        .filter_map(|datum| match datum.as_deref() {
+                            Some(Self::Absolute(v)) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let absolute_validity: Option<arrow::buffer::NullBuffer> = None;
+                    as_array_ref(PrimitiveArray::<Int64Type>::new(
+                        ScalarBuffer::from(
+                            absolute
+                                .into_iter()
+                                .map(|datum| datum.0)
+                                .collect::<Vec<_>>(),
+                        ),
+                        absolute_validity,
+                    ))
+                },
+                as_array_ref(NullArray::new(
+                    data.iter()
+                        .filter(|datum| matches!(datum.as_deref(), Some(Self::Infinite)))
+                        .count(),
+                )),
+            ];
+            debug_assert_eq!(field_type_ids.len(), fields.len());
+            debug_assert_eq!(fields.len(), children.len());
+            as_array_ref(UnionArray::try_new(
+                UnionFields::new(field_type_ids, fields),
+                ScalarBuffer::from(type_ids),
+                Some(offsets),
+                children,
+            )?)
         })
     }
 
     fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
+        arrow_data: &dyn arrow::array::Array,
     ) -> DeserializationResult<Vec<Option<Self>>>
     where
         Self: Sized,
     {
         #![allow(clippy::wildcard_imports)]
-        use crate::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
+        use crate::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
             let arrow_data = arrow_data
                 .as_any()
-                .downcast_ref::<arrow2::array::UnionArray>()
+                .downcast_ref::<arrow::array::UnionArray>()
                 .ok_or_else(|| {
                     let expected = Self::arrow_datatype();
                     let actual = arrow_data.data_type().clone();
@@ -207,8 +212,7 @@ impl crate::Loggable for TimeRangeBoundary {
             if arrow_data.is_empty() {
                 Vec::new()
             } else {
-                let (arrow_data_types, arrow_data_arrays) =
-                    (arrow_data.types(), arrow_data.fields());
+                let arrow_data_type_ids = arrow_data.type_ids();
                 let arrow_data_offsets = arrow_data
                     .offsets()
                     .ok_or_else(|| {
@@ -217,18 +221,15 @@ impl crate::Loggable for TimeRangeBoundary {
                         DeserializationError::datatype_mismatch(expected, actual)
                     })
                     .with_context("rerun.datatypes.TimeRangeBoundary")?;
-                if arrow_data_types.len() != arrow_data_offsets.len() {
+                if arrow_data_type_ids.len() != arrow_data_offsets.len() {
                     return Err(DeserializationError::offset_slice_oob(
-                        (0, arrow_data_types.len()),
+                        (0, arrow_data_type_ids.len()),
                         arrow_data_offsets.len(),
                     ))
                     .with_context("rerun.datatypes.TimeRangeBoundary");
                 }
                 let cursor_relative = {
-                    if 1usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[1usize];
+                    let arrow_data = arrow_data.child(1).as_ref();
                     arrow_data
                         .as_any()
                         .downcast_ref::<Int64Array>()
@@ -239,15 +240,11 @@ impl crate::Loggable for TimeRangeBoundary {
                         })
                         .with_context("rerun.datatypes.TimeRangeBoundary#CursorRelative")?
                         .into_iter()
-                        .map(|opt| opt.copied())
                         .map(|res_or_opt| res_or_opt.map(crate::datatypes::TimeInt))
                         .collect::<Vec<_>>()
                 };
                 let absolute = {
-                    if 2usize >= arrow_data_arrays.len() {
-                        return Ok(Vec::new());
-                    }
-                    let arrow_data = &*arrow_data_arrays[2usize];
+                    let arrow_data = arrow_data.child(2).as_ref();
                     arrow_data
                         .as_any()
                         .downcast_ref::<Int64Array>()
@@ -258,11 +255,10 @@ impl crate::Loggable for TimeRangeBoundary {
                         })
                         .with_context("rerun.datatypes.TimeRangeBoundary#Absolute")?
                         .into_iter()
-                        .map(|opt| opt.copied())
                         .map(|res_or_opt| res_or_opt.map(crate::datatypes::TimeInt))
                         .collect::<Vec<_>>()
                 };
-                arrow_data_types
+                arrow_data_type_ids
                     .iter()
                     .enumerate()
                     .map(|(i, typ)| {
@@ -324,5 +320,22 @@ impl crate::Loggable for TimeRangeBoundary {
                     .with_context("rerun.datatypes.TimeRangeBoundary")?
             }
         })
+    }
+}
+
+impl ::re_byte_size::SizeBytes for TimeRangeBoundary {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        #![allow(clippy::match_same_arms)]
+        match self {
+            Self::CursorRelative(v) => v.heap_size_bytes(),
+            Self::Absolute(v) => v.heap_size_bytes(),
+            Self::Infinite => 0,
+        }
+    }
+
+    #[inline]
+    fn is_pod() -> bool {
+        <crate::datatypes::TimeInt>::is_pod() && <crate::datatypes::TimeInt>::is_pod()
     }
 }

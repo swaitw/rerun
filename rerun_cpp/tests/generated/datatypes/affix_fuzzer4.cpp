@@ -17,14 +17,14 @@ namespace rerun {
             arrow::field(
                 "single_required",
                 Loggable<rerun::datatypes::AffixFuzzer3>::arrow_datatype(),
-                false
+                true
             ),
             arrow::field(
                 "many_required",
                 arrow::list(arrow::field(
                     "item",
                     Loggable<rerun::datatypes::AffixFuzzer3>::arrow_datatype(),
-                    false
+                    true
                 )),
                 false
             ),
@@ -100,6 +100,8 @@ namespace rerun {
                         "Failed to serialize AffixFuzzer4::many_required: objects (Object(\"rerun.testing.datatypes.AffixFuzzer3\")) in unions not yet implemented"
                     );
                 } break;
+                default:
+                    assert(false && "unreachable");
             }
         }
 

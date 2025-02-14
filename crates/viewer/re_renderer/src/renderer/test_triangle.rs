@@ -6,7 +6,9 @@ use crate::{
     wgpu_resources::{GpuRenderPipelineHandle, PipelineLayoutDesc, RenderPipelineDesc},
 };
 
-use super::*;
+use super::{
+    DrawData, DrawError, DrawPhase, GpuRenderPipelinePoolAccessor, RenderContext, Renderer,
+};
 
 pub struct TestTriangle {
     render_pipeline: GpuRenderPipelineHandle,
@@ -62,18 +64,21 @@ impl Renderer for TestTriangle {
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
-                multisample: ViewBuilder::MAIN_TARGET_DEFAULT_MSAA_STATE,
+                multisample: ViewBuilder::main_target_default_msaa_state(
+                    ctx.render_config(),
+                    false,
+                ),
             },
         );
 
         Self { render_pipeline }
     }
 
-    fn draw<'a>(
+    fn draw(
         &self,
-        render_pipelines: &'a GpuRenderPipelinePoolAccessor<'a>,
+        render_pipelines: &GpuRenderPipelinePoolAccessor<'_>,
         _phase: DrawPhase,
-        pass: &mut wgpu::RenderPass<'a>,
+        pass: &mut wgpu::RenderPass<'_>,
         _draw_data: &TestTriangleDrawData,
     ) -> Result<(), DrawError> {
         let pipeline = render_pipelines.get(self.render_pipeline)?;

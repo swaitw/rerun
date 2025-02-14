@@ -97,7 +97,7 @@ jobs:
           entries+=("Wasm:web_viewer/re_viewer_bg.wasm:MiB")
           entries+=("JS:web_viewer/re_viewer.js:kiB")
 
-          if [ -n ${{ inputs.WITH_EXAMPLES }} = "true" ]; then
+          if [ ${{ inputs.WITH_EXAMPLES }} = "true" ]; then
             for file in example_data/*.rrd; do
               name=$(basename "$file")
               entries+=("$name:$file:MiB")
@@ -189,10 +189,13 @@ jobs:
           save-data-file: false
           auto-push: false
 
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.39.0
+
       - name: Render benchmark result
         if: github.ref == 'refs/heads/main'
         run: |
-          python3 -m pip install google-cloud-storage==2.9.0
-          scripts/ci/render_bench.py sizes \
+          pixi run python scripts/ci/render_bench.py sizes \
             --after $(date -d"180 days ago" +%Y-%m-%d) \
             --output "gs://rerun-builds/graphs"

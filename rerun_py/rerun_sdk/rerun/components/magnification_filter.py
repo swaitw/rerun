@@ -11,17 +11,11 @@ import pyarrow as pa
 
 from .._baseclasses import (
     BaseBatch,
-    BaseExtensionType,
     ComponentBatchMixin,
+    ComponentDescriptor,
 )
 
-__all__ = [
-    "MagnificationFilter",
-    "MagnificationFilterArrayLike",
-    "MagnificationFilterBatch",
-    "MagnificationFilterLike",
-    "MagnificationFilterType",
-]
+__all__ = ["MagnificationFilter", "MagnificationFilterArrayLike", "MagnificationFilterBatch", "MagnificationFilterLike"]
 
 
 from enum import Enum
@@ -45,64 +39,40 @@ class MagnificationFilter(Enum):
     Used as default for mesh rendering.
     """
 
+    @classmethod
+    def auto(cls, val: str | int | MagnificationFilter) -> MagnificationFilter:
+        """Best-effort converter, including a case-insensitive string matcher."""
+        if isinstance(val, MagnificationFilter):
+            return val
+        if isinstance(val, int):
+            return cls(val)
+        try:
+            return cls[val]
+        except KeyError:
+            val_lower = val.lower()
+            for variant in cls:
+                if variant.name.lower() == val_lower:
+                    return variant
+        raise ValueError(f"Cannot convert {val} to {cls.__name__}")
 
-MagnificationFilterLike = Union[MagnificationFilter, Literal["nearest", "linear"]]
+    def __str__(self) -> str:
+        """Returns the variant name."""
+        return self.name
+
+
+MagnificationFilterLike = Union[MagnificationFilter, Literal["Linear", "Nearest", "linear", "nearest"], int]
 MagnificationFilterArrayLike = Union[MagnificationFilterLike, Sequence[MagnificationFilterLike]]
 
 
-class MagnificationFilterType(BaseExtensionType):
-    _TYPE_NAME: str = "rerun.components.MagnificationFilter"
-
-    def __init__(self) -> None:
-        pa.ExtensionType.__init__(
-            self,
-            pa.sparse_union([
-                pa.field("_null_markers", pa.null(), nullable=True, metadata={}),
-                pa.field("Nearest", pa.null(), nullable=True, metadata={}),
-                pa.field("Linear", pa.null(), nullable=True, metadata={}),
-            ]),
-            self._TYPE_NAME,
-        )
-
-
 class MagnificationFilterBatch(BaseBatch[MagnificationFilterArrayLike], ComponentBatchMixin):
-    _ARROW_TYPE = MagnificationFilterType()
+    _ARROW_DATATYPE = pa.uint8()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.MagnificationFilter")
 
     @staticmethod
     def _native_to_pa_array(data: MagnificationFilterArrayLike, data_type: pa.DataType) -> pa.Array:
         if isinstance(data, (MagnificationFilter, int, str)):
             data = [data]
 
-        types: list[int] = []
+        pa_data = [MagnificationFilter.auto(v).value if v is not None else None for v in data]  # type: ignore[redundant-expr]
 
-        for value in data:
-            if value is None:
-                types.append(0)
-            elif isinstance(value, MagnificationFilter):
-                types.append(value.value)  # Actual enum value
-            elif isinstance(value, int):
-                types.append(value)  # By number
-            elif isinstance(value, str):
-                if hasattr(MagnificationFilter, value):
-                    types.append(MagnificationFilter[value].value)  # fast path
-                elif value.lower() == "nearest":
-                    types.append(MagnificationFilter.Nearest.value)
-                elif value.lower() == "linear":
-                    types.append(MagnificationFilter.Linear.value)
-                else:
-                    raise ValueError(f"Unknown MagnificationFilter kind: {value}")
-            else:
-                raise ValueError(f"Unknown MagnificationFilter kind: {value}")
-
-        buffers = [
-            None,
-            pa.array(types, type=pa.int8()).buffers()[1],
-        ]
-        children = (1 + 2) * [pa.nulls(len(data))]
-
-        return pa.UnionArray.from_buffers(
-            type=data_type,
-            length=len(data),
-            buffers=buffers,
-            children=children,
-        )
+        return pa.array(pa_data, type=data_type)

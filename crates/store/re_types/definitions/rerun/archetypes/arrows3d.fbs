@@ -4,7 +4,7 @@ namespace rerun.archetypes;
 
 /// 3D arrows with optional colors, radii, labels, etc.
 ///
-/// \example archetypes/arrow3d_simple title="Simple batch of 3D arrows" image="https://static.rerun.io/arrow3d_simple/55e2f794a520bbf7527d7b828b0264732146c5d0/1200w.png"
+/// \example archetypes/arrows3d_simple title="Simple batch of 3D arrows" image="https://static.rerun.io/arrow3d_simple/55e2f794a520bbf7527d7b828b0264732146c5d0/1200w.png"
 table Arrows3D (
   "attr.rust.derive": "PartialEq",
   "attr.rust.new_pub_crate",
@@ -40,6 +40,9 @@ table Arrows3D (
   /// If there's a single label present, it will be placed at the center of the entity.
   /// Otherwise, each instance will have its own label.
   labels: [rerun.components.Text] ("attr.rerun.component_optional", nullable, order: 3200);
+
+  /// Optional choice of whether the text labels should be shown by default.
+  show_labels: rerun.components.ShowLabels ("attr.rerun.component_optional", nullable, order: 3250);
 
   /// Optional class Ids for the points.
   ///

@@ -1,12 +1,12 @@
 #pragma once
 
 #include "collection.hpp"
-#include "data_cell.hpp"
+#include "component_batch.hpp"
 #include "indicator_component.hpp"
 #include "loggable.hpp"
 
 namespace rerun {
-    /// The AsComponents trait is used to convert a type into a list of serialized component.
+    /// The AsComponents trait is used to convert a type into a list of component batches.
     ///
     /// It is implemented for various built-in types as well as collections of components.
     /// You can build your own archetypes by implementing this trait.
@@ -22,77 +22,67 @@ namespace rerun {
         static_assert(
             NoAsComponentsFor<T>::value,
             "AsComponents is not implemented for this type. "
-            "It is implemented for all built-in archetypes as well as std::vector, std::array, and "
-            "c-arrays of components. "
+            "It is implemented for all built-in archetypes as well as invidiual & collections of `rerun::ComponentBatch`."
             "You can add your own implementation by specializing AsComponents<T> for your type T."
         );
 
-        // TODO(andreas): List methods that the trait should implement.
+        /// Converts the type `T` into a collection of `ComponentBatch`s.
+        static Result<Collection<ComponentBatch>> as_batches(const T& archetype);
     };
 
     // Documenting the builtin generic `AsComponents` impls is too much clutter for the doc class overview.
     /// \cond private
 
-    /// `AsComponents` for a Collection of types implementing the `rerun::Loggable` trait.
-    template <typename TComponent>
-    struct AsComponents<Collection<TComponent>> {
-        static_assert(
-            is_loggable<TComponent>, "The given type does not implement the rerun::Loggable trait."
-        );
-
-        static Result<std::vector<DataCell>> serialize(const Collection<TComponent>& components) {
-            auto cell_result = DataCell::from_loggable<TComponent>(components);
-            RR_RETURN_NOT_OK(cell_result.error);
-
-            return Result<std::vector<DataCell>>({std::move(cell_result.value)});
-        }
-    };
-
-    /// `AsComponents` for a `std::vector` of types implementing the `rerun::Loggable` trait.
-    template <typename TComponent>
-    struct AsComponents<std::vector<TComponent>> {
-        static Result<std::vector<DataCell>> serialize(const std::vector<TComponent>& components) {
-            return AsComponents<Collection<TComponent>>::serialize(components);
-        }
-    };
-
-    /// AsComponents for `std::initializer_list`
-    template <typename TComponent>
-    struct AsComponents<std::initializer_list<TComponent>> {
-        static Result<std::vector<DataCell>> serialize(std::initializer_list<TComponent> components
+    /// `AsComponents` for a `Collection<ComponentBatch>`.
+    template <>
+    struct AsComponents<Collection<ComponentBatch>> {
+        static Result<Collection<ComponentBatch>> as_batches(Collection<ComponentBatch> components
         ) {
-            return AsComponents<Collection<TComponent>>::serialize(components);
+            return components;
         }
     };
 
-    /// `AsComponents` for an `std::array` of types implementing the `rerun::Loggable` trait.
-    template <typename TComponent, size_t NumInstances>
-    struct AsComponents<std::array<TComponent, NumInstances>> {
-        static Result<std::vector<DataCell>> serialize(
-            const std::array<TComponent, NumInstances>& components
-        ) {
-            return AsComponents<Collection<TComponent>>::serialize(components);
+    /// `AsComponents` for a single `ComponentBatch`.
+    template <>
+    struct AsComponents<ComponentBatch> {
+        static Result<Collection<ComponentBatch>> as_batches(ComponentBatch components) {
+            return rerun::take_ownership(std::move(components));
         }
     };
 
-    /// `AsComponents` for an c-array of types implementing the `rerun::Loggable` trait.
-    template <typename TComponent, size_t NumInstances>
-    struct AsComponents<TComponent[NumInstances]> {
-        static Result<std::vector<DataCell>> serialize(const TComponent (&components)[NumInstances]
+    /// `AsComponents` for a `Collection<ComponentBatch>` wrapped in a `Result`, forwarding errors for convenience.
+    template <>
+    struct AsComponents<Result<Collection<ComponentBatch>>> {
+        static Result<Collection<ComponentBatch>> as_batches(
+            Result<Collection<ComponentBatch>> components
         ) {
-            return AsComponents<Collection<TComponent>>::serialize(components);
+            RR_RETURN_NOT_OK(components.error);
+            return components.value;
         }
     };
 
-    /// `AsComponents` for single indicator components.
-    template <const char Name[]>
-    struct AsComponents<components::IndicatorComponent<Name>> {
-        static Result<std::vector<DataCell>> serialize(
-            const components::IndicatorComponent<Name>& indicator
+    /// `AsComponents` for a `Collection<ComponentBatch>` individually wrapped in `Result`, forwarding errors for convenience.
+    template <>
+    struct AsComponents<Collection<Result<ComponentBatch>>> {
+        static Result<Collection<ComponentBatch>> as_batches(
+            Collection<Result<ComponentBatch>> components
         ) {
-            return AsComponents<Collection<components::IndicatorComponent<Name>>>::serialize(
-                indicator
-            );
+            std::vector<ComponentBatch> result;
+            result.reserve(components.size());
+            for (auto& component : components) {
+                RR_RETURN_NOT_OK(component.error);
+                result.push_back(std::move(component.value));
+            }
+            return rerun::take_ownership(std::move(result));
+        }
+    };
+
+    /// `AsComponents` for a single `ComponentBatch` wrapped in a `Result`, forwarding errors for convenience.
+    template <>
+    struct AsComponents<Result<ComponentBatch>> {
+        static Result<Collection<ComponentBatch>> as_batches(Result<ComponentBatch> components) {
+            RR_RETURN_NOT_OK(components.error);
+            return rerun::take_ownership(std::move(components.value));
         }
     };
 

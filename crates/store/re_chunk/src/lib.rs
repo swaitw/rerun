@@ -6,25 +6,29 @@
 
 mod builder;
 mod chunk;
-mod id;
+mod helpers;
 mod iter;
 mod latest_at;
 mod merge;
+mod migration;
 mod range;
 mod shuffle;
 mod slice;
 mod transport;
-pub mod util;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod batcher;
 
-pub use self::builder::{ChunkBuilder, ChunkTimelineBuilder};
-pub use self::chunk::{Chunk, ChunkError, ChunkResult, ChunkTimeline};
-pub use self::id::{ChunkId, RowId};
+pub use self::builder::{ChunkBuilder, TimeColumnBuilder};
+pub use self::chunk::{
+    Chunk, ChunkComponents, ChunkError, ChunkResult, TimeColumn, TimeColumnError,
+};
+pub use self::helpers::{ChunkShared, UnitChunkShared};
+pub use self::iter::{
+    ChunkComponentIter, ChunkComponentIterItem, ChunkComponentSlicer, ChunkIndicesIter,
+};
 pub use self::latest_at::LatestAtQuery;
-pub use self::range::RangeQuery;
-pub use self::transport::TransportChunk;
+pub use self::range::{RangeQuery, RangeQueryOptions};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use self::batcher::{
@@ -34,15 +38,17 @@ pub use self::batcher::{
 // Re-exports
 
 #[doc(no_inline)]
-pub use arrow2::array::Array as ArrowArray;
+pub use arrow::array::Array as ArrowArray;
 #[doc(no_inline)]
 pub use re_log_types::{EntityPath, TimeInt, TimePoint, Timeline, TimelineName};
 #[doc(no_inline)]
-pub use re_types_core::ComponentName;
+pub use re_types_core::{ArchetypeFieldName, ArchetypeName, ChunkId, ComponentName, RowId};
 
 pub mod external {
-    pub use arrow2;
+    pub use arrow;
+    pub use nohash_hasher;
 
+    pub use re_byte_size;
     pub use re_log_types;
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -217,12 +217,13 @@ pub struct Analytics {
 fn load_config() -> Result<Config, ConfigError> {
     let config = match Config::load() {
         Ok(config) => config,
-        #[allow(unused_variables)]
+
         Err(err) => {
             // NOTE: This will cause the first run disclaimer to show up again on native,
             //       and analytics will be disabled for the rest of the session.
-            #[cfg(not(target_arch = "wasm32"))]
-            re_log::warn!("failed to load analytics config file: {err}");
+            if !cfg!(target_arch = "wasm32") {
+                re_log::warn!("failed to load analytics config file: {err}");
+            }
             None
         }
     };
@@ -345,6 +346,7 @@ impl Properties for re_build_info::BuildInfo {
         let git_hash = self.git_hash_or_tag();
         let Self {
             crate_name: _,
+            features,
             version,
             rustc_version,
             llvm_version,
@@ -355,6 +357,7 @@ impl Properties for re_build_info::BuildInfo {
             datetime,
         } = self;
 
+        event.insert("features", features);
         event.insert("git_hash", git_hash);
         event.insert("rerun_version", version.to_string());
         event.insert("rust_version", rustc_version);

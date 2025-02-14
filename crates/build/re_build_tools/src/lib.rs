@@ -93,9 +93,9 @@ impl Environment {
     pub fn detect() -> Self {
         let is_in_rerun_workspace = is_tracked_env_var_set("IS_IN_RERUN_WORKSPACE");
 
-        if is_tracked_env_var_set("RERUN_IS_PUBLISHING") {
-            // "RERUN_IS_PUBLISHING" is set by `scripts/ci/crates.py`
-            eprintln!("Environment: env-var RERUN_IS_PUBLISHING is set");
+        if is_tracked_env_var_set("RERUN_IS_PUBLISHING_CRATES") {
+            // "RERUN_IS_PUBLISHING_CRATES" is set by `scripts/ci/crates.py`
+            eprintln!("Environment: env-var RERUN_IS_PUBLISHING_CRATES is set");
             Self::PublishingCrates
         } else if is_in_rerun_workspace && std::env::var("CI").is_ok() {
             // `CI` is an env-var set by GitHub actions.
@@ -110,7 +110,7 @@ impl Environment {
             eprintln!("Environment: env-var IS_IN_RERUN_WORKSPACE is set");
             Self::DeveloperInWorkspace
         } else {
-            eprintln!("Environment: Not on CI anmd not in workspace");
+            eprintln!("Environment: Not on CI and not in workspace");
             Self::UsedAsDependency
         }
     }
@@ -194,6 +194,26 @@ pub fn export_build_info_vars_for_crate(crate_name: &str) {
             );
         }
     }
+
+    if environment == Environment::PublishingCrates {
+        // We can't query this during `cargo publish`, but we also don't need the info.
+        set_env("RE_BUILD_FEATURES", "<unknown>");
+    } else {
+        let features = enabled_features_of(crate_name);
+        let features = match features {
+            Ok(features) => features.join(" "),
+
+            // When building as a dependency on users' end, feature flag collection can fail for a
+            // bunch of reasons (e.g. there's no `cargo` to begin with (Bazel, Buck, etc)).
+            // Failing the build entirely is a bit too harsh in that case, everything will still
+            // work just fine otherwise.
+            Err(_err) if environment == Environment::UsedAsDependency => "<error>".to_owned(),
+
+            Err(err) => panic!("{err}"),
+        };
+
+        set_env("RE_BUILD_FEATURES", &features);
+    }
 }
 
 /// ISO 8601 / RFC 3339 build time.
@@ -269,7 +289,44 @@ fn rust_llvm_versions() -> anyhow::Result<(String, String)> {
     ))
 }
 
-/// Returns info parsed from an invocation of the `cargo metadata` command
+/// Returns info parsed from an invocation of the `cargo metadata` command.
+///
+/// You may not run this during crate publishing.
 pub fn cargo_metadata() -> anyhow::Result<cargo_metadata::Metadata> {
-    Ok(cargo_metadata::MetadataCommand::new().exec()?)
+    // See https://github.com/rerun-io/rerun/pull/7885
+    anyhow::ensure!(
+        Environment::detect() != Environment::PublishingCrates,
+        "Can't get metadata during crate publishing - it would create a Cargo.lock file"
+    );
+
+    Ok(cargo_metadata::MetadataCommand::new()
+        .no_deps()
+        // Make sure this works without a connection, since docs.rs won't have one either.
+        // See https://github.com/rerun-io/rerun/issues/8165
+        .other_options(vec!["--frozen".to_owned()])
+        .exec()?)
+}
+
+/// Returns a list of all the enabled features of the given package.
+///
+/// You may not run this during crate publishing.
+pub fn enabled_features_of(crate_name: &str) -> anyhow::Result<Vec<String>> {
+    let metadata = cargo_metadata()?;
+
+    let mut features = vec![];
+    for package in &metadata.packages {
+        if package.name == crate_name {
+            for feature in package.features.keys() {
+                println!("Checking if feature is enabled: {feature:?}");
+                let feature_in_screaming_snake_case =
+                    feature.to_ascii_uppercase().replace('-', "_");
+                if std::env::var(format!("CARGO_FEATURE_{feature_in_screaming_snake_case}")).is_ok()
+                {
+                    features.push(feature.clone());
+                }
+            }
+        }
+    }
+
+    Ok(features)
 }

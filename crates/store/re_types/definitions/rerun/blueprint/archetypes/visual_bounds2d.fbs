@@ -1,6 +1,5 @@
 namespace rerun.blueprint.archetypes;
 
-
 /// Controls the visual bounds of a 2D view.
 ///
 /// Everything within these bounds are guaranteed to be visible.
@@ -9,9 +8,7 @@ namespace rerun.blueprint.archetypes;
 /// If no visual bounds are set, it will be determined automatically,
 /// based on the bounding-box of the data or other camera information present in the view.
 table VisualBounds2D (
-    "attr.rerun.scope": "blueprint",
-    "attr.rust.derive": "Copy",
-    "attr.rust.generate_field_info"
+    "attr.rerun.scope": "blueprint"
 ) {
     /// Controls the visible range of a 2D view.
     ///

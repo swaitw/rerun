@@ -11,6 +11,7 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 include = [
+  "../../Cargo.lock",
   "../../LICENSE-APACHE",
   "../../LICENSE-MIT",
   "**/*.rs",
@@ -31,24 +32,34 @@ crate-type = ["cdylib", "rlib"]
 
 
 [features]
-default = ["analytics"]
+default = ["analytics", "map_view"]
 
 ## Enable telemetry using our analytics SDK.
 analytics = ["dep:re_analytics"]
 
+## Enable the map view
+map_view = ["dep:re_view_map"]
+
+## Enable the gRPC Rerun Data Platform data source.
+grpc = ["re_data_source/grpc", "re_grpc_client/redap"]
+
+
 [dependencies]
 # Internal:
-re_build_info.workspace = true
 re_blueprint_tree.workspace = true
+re_build_info.workspace = true
+re_capabilities.workspace = true
 re_chunk.workspace = true
+re_chunk_store.workspace = true
+re_component_ui.workspace = true
 re_data_loader.workspace = true
 re_data_source.workspace = true
-re_chunk_store.workspace = true
 re_data_ui.workspace = true
-re_edit_ui.workspace = true
+re_chunk_store_ui.workspace = true
 re_entity_db.workspace = true
 re_error.workspace = true
 re_format.workspace = true
+re_grpc_client.workspace = true
 re_log = { workspace = true, features = ["setup"] }
 re_log_encoding = { workspace = true, features = [
   "decoder",
@@ -60,28 +71,28 @@ re_memory.workspace = true
 re_query.workspace = true
 re_renderer = { workspace = true, default-features = false }
 re_selection_panel.workspace = true
-re_sdk_comms.workspace = true
 re_smart_channel.workspace = true
-re_space_view_bar_chart.workspace = true
-re_space_view_dataframe.workspace = true
-re_space_view_spatial.workspace = true
-re_space_view_tensor.workspace = true
-re_space_view_text_document = { workspace = true, features = ["markdown"] }
-re_space_view_text_log.workspace = true
-re_space_view_time_series.workspace = true
+re_view_bar_chart.workspace = true
+re_view_dataframe.workspace = true
+re_view_graph.workspace = true
+re_view_spatial.workspace = true
+re_view_tensor.workspace = true
+re_view_text_document.workspace = true
+re_view_text_log.workspace = true
+re_view_time_series.workspace = true
 re_time_panel.workspace = true
 re_tracing = { workspace = true, features = ["server"] }
-re_types.workspace = true
-re_types_blueprint.workspace = true
 re_types_core.workspace = true
+re_types.workspace = true
 re_ui.workspace = true
+re_video.workspace = true
 re_viewer_context.workspace = true
-re_viewport.workspace = true
 re_viewport_blueprint.workspace = true
-re_ws_comms = { workspace = true, features = ["client"] }
+re_viewport.workspace = true
 
 # Internal (optional):
 re_analytics = { workspace = true, optional = true }
+re_view_map = { workspace = true, optional = true }
 
 
 # External
@@ -92,7 +103,6 @@ cfg-if.workspace = true
 eframe = { workspace = true, default-features = false, features = [
   "default_fonts",
   "persistence",
-  "puffin",
   "wgpu",
 ] }
 egui_plot.workspace = true
@@ -100,7 +110,7 @@ egui-wgpu.workspace = true
 egui.workspace = true
 ehttp.workspace = true
 image = { workspace = true, default-features = false, features = ["png"] }
-itertools = { workspace = true }
+itertools.workspace = true
 parking_lot.workspace = true
 poll-promise = { workspace = true, features = ["web"] }
 rfd.workspace = true
@@ -109,7 +119,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde-wasm-bindgen.workspace = true
 thiserror.workspace = true
-time = { workspace = true, features = ["formatting"] }
+uuid.workspace = true
 web-time.workspace = true
 wgpu.workspace = true
 
@@ -119,7 +129,13 @@ js-sys.workspace = true
 strum.workspace = true
 strum_macros.workspace = true
 wasm-bindgen-futures.workspace = true
-wasm-bindgen.workspace = true
+# TODO(#8766): `rerun_js/web-viewer/build-wasm.mjs` is HIGHLY sensitive to changes in `wasm-bindgen`.
+#       Whenever updating `wasm-bindgen`, update this and the narrower dependency specifications in
+#       `crates/viewer/re_viewer/Cargo.toml`, and make sure that the build script still works.
+#       Do not make this an `=` dependency, because that may break Rust users’ builds when a newer
+#       version is released, even if they are not building the web viewer.
+#       For details see https://github.com/rerun-io/rerun/issues/8766
+wasm-bindgen = "=0.2.100"
 web-sys = { workspace = true, features = [
   "History",
   "Location",

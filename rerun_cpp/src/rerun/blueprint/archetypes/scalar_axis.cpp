@@ -5,34 +5,67 @@
 
 #include "../../collection_adapter_builtins.hpp"
 
-namespace rerun::blueprint::archetypes {}
+namespace rerun::blueprint::archetypes {
+    ScalarAxis ScalarAxis::clear_fields() {
+        auto archetype = ScalarAxis();
+        archetype.range =
+            ComponentBatch::empty<rerun::components::Range1D>(Descriptor_range).value_or_throw();
+        archetype.zoom_lock =
+            ComponentBatch::empty<rerun::blueprint::components::LockRangeDuringZoom>(
+                Descriptor_zoom_lock
+            )
+                .value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> ScalarAxis::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(3);
+        if (range.has_value()) {
+            columns.push_back(range.value().partitioned(lengths_).value_or_throw());
+        }
+        if (zoom_lock.has_value()) {
+            columns.push_back(zoom_lock.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(
+            ComponentColumn::from_indicators<ScalarAxis>(static_cast<uint32_t>(lengths_.size()))
+                .value_or_throw()
+        );
+        return columns;
+    }
+
+    Collection<ComponentColumn> ScalarAxis::columns() {
+        if (range.has_value()) {
+            return columns(std::vector<uint32_t>(range.value().length(), 1));
+        }
+        if (zoom_lock.has_value()) {
+            return columns(std::vector<uint32_t>(zoom_lock.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::blueprint::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<blueprint::archetypes::ScalarAxis>::serialize(
+    Result<Collection<ComponentBatch>> AsComponents<blueprint::archetypes::ScalarAxis>::as_batches(
         const blueprint::archetypes::ScalarAxis& archetype
     ) {
         using namespace blueprint::archetypes;
-        std::vector<DataCell> cells;
+        std::vector<ComponentBatch> cells;
         cells.reserve(3);
 
         if (archetype.range.has_value()) {
-            auto result = DataCell::from_loggable(archetype.range.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.range.value());
         }
         if (archetype.zoom_lock.has_value()) {
-            auto result = DataCell::from_loggable(archetype.zoom_lock.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.zoom_lock.value());
         }
         {
-            auto indicator = ScalarAxis::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<ScalarAxis>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

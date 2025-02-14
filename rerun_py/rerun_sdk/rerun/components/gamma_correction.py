@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["GammaCorrection", "GammaCorrectionBatch", "GammaCorrectionType"]
+__all__ = ["GammaCorrection", "GammaCorrectionBatch"]
 
 
 class GammaCorrection(datatypes.Float32, ComponentMixin):
@@ -32,12 +33,8 @@ class GammaCorrection(datatypes.Float32, ComponentMixin):
     pass
 
 
-class GammaCorrectionType(datatypes.Float32Type):
-    _TYPE_NAME: str = "rerun.components.GammaCorrection"
-
-
 class GammaCorrectionBatch(datatypes.Float32Batch, ComponentBatchMixin):
-    _ARROW_TYPE = GammaCorrectionType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.GammaCorrection")
 
 
 # This is patched in late to avoid circular dependencies.

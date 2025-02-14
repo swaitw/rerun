@@ -14,7 +14,7 @@ README = """\
 This test checks that mono-entity views work as expected.
 
 - Reset the blueprint to default
-- Check each space view: when titled `ERROR`, they should display an error, and when titled `OK`, they should display the tensor or text document correctly.
+- Check each view: when titled `ERROR`, they should display an error, and when titled `OK`, they should display the tensor or text document correctly.
 
 """
 
@@ -44,7 +44,8 @@ def blueprint() -> rrb.BlueprintLike:
 
 
 def run(args: Namespace) -> None:
-    rr.script_setup(args, f"{os.path.basename(__file__)}", recording_id=uuid4(), default_blueprint=blueprint())
+    rr.script_setup(args, f"{os.path.basename(__file__)}", recording_id=uuid4())
+    rr.send_blueprint(blueprint(), make_active=True, make_default=True)
 
     log_readme()
     log_data()

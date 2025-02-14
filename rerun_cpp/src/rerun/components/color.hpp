@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../datatypes/rgba32.hpp"
 #include "../result.hpp"
 
@@ -17,9 +18,7 @@ namespace rerun::components {
     struct Color {
         rerun::datatypes::Rgba32 rgba;
 
-      public:
-        // Extensions to generated type defined in 'color_ext.cpp'
-
+      public: // START of extensions from color_ext.cpp:
         /// Construct Color from unmultiplied RGBA values.
         Color(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) : rgba(r, g, b, a) {}
 
@@ -38,6 +37,8 @@ namespace rerun::components {
         uint8_t a() const {
             return rgba.a();
         }
+
+        // END of extensions from color_ext.cpp, start of generated code:
 
       public:
         Color() = default;
@@ -69,7 +70,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::Color> {
-        static constexpr const char Name[] = "rerun.components.Color";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.Color";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -80,7 +81,19 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const components::Color* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::Rgba32>::to_arrow(&instances->rgba, num_instances);
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::Rgba32>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::Rgba32>::to_arrow(
+                    &instances->rgba,
+                    num_instances
+                );
+            }
         }
     };
 } // namespace rerun

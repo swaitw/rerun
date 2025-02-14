@@ -1,4 +1,11 @@
-use crate::{Component, ComponentName, Datatype, DatatypeName, Loggable, SerializationResult};
+use std::borrow::Cow;
+
+use crate::{
+    ArchetypeFieldName, ArchetypeName, Component, ComponentDescriptor, ComponentName, Loggable,
+    SerializationResult,
+};
+
+use arrow::array::ListArray as ArrowListArray;
 
 #[allow(unused_imports)] // used in docstrings
 use crate::Archetype;
@@ -15,220 +22,372 @@ use crate::Archetype;
 /// You should almost never need to implement [`LoggableBatch`] manually, as it is already
 /// blanket implemented for most common use cases (arrays/vectors/slices of loggables, etc).
 pub trait LoggableBatch {
-    type Name;
-
     // NOTE: It'd be tempting to have the following associated type, but that'd be
     // counterproductive, the whole point of this is to allow for heterogeneous collections!
     // type Loggable: Loggable;
 
-    /// The fully-qualified name of this batch, e.g. `rerun.datatypes.Vec2D`.
-    fn name(&self) -> Self::Name;
-
-    /// The number of component instances stored into this batch.
-    fn num_instances(&self) -> usize;
-
-    /// The underlying [`arrow2::datatypes::Field`], including datatype extensions.
-    fn arrow_field(&self) -> arrow2::datatypes::Field;
-
     /// Serializes the batch into an Arrow array.
-    fn to_arrow(&self) -> SerializationResult<Box<dyn ::arrow2::array::Array>>;
+    fn to_arrow(&self) -> SerializationResult<arrow::array::ArrayRef>;
 }
 
-/// A [`DatatypeBatch`] represents an array's worth of [`Datatype`] instances.
-///
-/// Any [`LoggableBatch`] with a [`Loggable::Name`] set to [`DatatypeName`] automatically
-/// implements [`DatatypeBatch`].
-pub trait DatatypeBatch: LoggableBatch<Name = DatatypeName> {}
+#[allow(dead_code)]
+fn assert_loggablebatch_object_safe() {
+    let _: &dyn LoggableBatch;
+}
 
 /// A [`ComponentBatch`] represents an array's worth of [`Component`] instances.
-///
-/// Any [`LoggableBatch`] with a [`Loggable::Name`] set to [`ComponentName`] automatically
-/// implements [`ComponentBatch`].
-pub trait ComponentBatch: LoggableBatch<Name = ComponentName> {}
+pub trait ComponentBatch: LoggableBatch {
+    /// Serializes the batch into an Arrow list array with a single component per list.
+    fn to_arrow_list_array(&self) -> SerializationResult<ArrowListArray> {
+        let array = self.to_arrow()?;
+        let offsets =
+            arrow::buffer::OffsetBuffer::from_lengths(std::iter::repeat(1).take(array.len()));
+        let nullable = true;
+        let field = arrow::datatypes::Field::new("item", array.data_type().clone(), nullable);
+        ArrowListArray::try_new(field.into(), offsets, array, None).map_err(|err| err.into())
+    }
 
-/// Holds either an owned [`ComponentBatch`] that lives on heap, or a reference to one.
-///
-/// This doesn't use [`std::borrow::Cow`] on purpose: `Cow` requires `Clone`, which would break
-/// object-safety, which would prevent us from erasing [`ComponentBatch`]s in the first place.
-pub enum MaybeOwnedComponentBatch<'a> {
-    Owned(Box<dyn ComponentBatch>),
-    Ref(&'a dyn ComponentBatch),
-}
+    /// Returns the complete [`ComponentDescriptor`] for this [`ComponentBatch`].
+    ///
+    /// Every component batch is uniquely identified by its [`ComponentDescriptor`].
+    fn descriptor(&self) -> Cow<'_, ComponentDescriptor>;
 
-impl<'a> From<&'a dyn ComponentBatch> for MaybeOwnedComponentBatch<'a> {
+    /// Serializes the contents of this [`ComponentBatch`].
+    ///
+    /// Once serialized, the data is ready to be logged into Rerun via the [`AsComponents`] trait.
+    ///
+    /// # Fallibility
+    ///
+    /// There are very few ways in which serialization can fail, all of which are very rare to hit
+    /// in practice.
+    /// One such example is trying to serialize data with more than 2^31 elements into a `ListArray`.
+    ///
+    /// For that reason, this method favors a nice user experience over error handling: errors will
+    /// merely be logged, not returned (except in debug builds, where all errors panic).
+    ///
+    /// See also [`ComponentBatch::try_serialized`].
+    ///
+    /// [`AsComponents`]: [crate::AsComponents]
     #[inline]
-    fn from(comp_batch: &'a dyn ComponentBatch) -> Self {
-        Self::Ref(comp_batch)
+    fn serialized(&self) -> Option<SerializedComponentBatch> {
+        match self.try_serialized() {
+            Ok(array) => Some(array),
+
+            #[cfg(debug_assertions)]
+            Err(err) => {
+                panic!(
+                    "failed to serialize data for {}: {}",
+                    self.descriptor(),
+                    re_error::format_ref(&err)
+                )
+            }
+
+            #[cfg(not(debug_assertions))]
+            Err(err) => {
+                re_log::error!(
+                    descriptor = %self.descriptor(),
+                    "failed to serialize data: {}",
+                    re_error::format_ref(&err)
+                );
+                None
+            }
+        }
+    }
+
+    /// Serializes the contents of this [`ComponentBatch`].
+    ///
+    /// Once serialized, the data is ready to be logged into Rerun via the [`AsComponents`] trait.
+    ///
+    /// # Fallibility
+    ///
+    /// There are very few ways in which serialization can fail, all of which are very rare to hit
+    /// in practice.
+    ///
+    /// For that reason, it generally makes sense to favor a nice user experience over error handling
+    /// in most cases, see [`ComponentBatch::serialized`].
+    ///
+    /// [`AsComponents`]: [crate::AsComponents]
+    #[inline]
+    fn try_serialized(&self) -> SerializationResult<SerializedComponentBatch> {
+        Ok(SerializedComponentBatch {
+            array: self.to_arrow()?,
+            descriptor: self.descriptor().into_owned(),
+        })
+    }
+
+    /// The fully-qualified name of this component batch, e.g. `rerun.components.Position2D`.
+    ///
+    /// This is a trivial but useful helper for `self.descriptor().component_name`.
+    ///
+    /// The default implementation already does the right thing. Do not override unless you know
+    /// what you're doing.
+    /// `Self::name()` must exactly match the value returned by `self.descriptor().component_name`,
+    /// or undefined behavior ensues.
+    #[inline]
+    fn name(&self) -> ComponentName {
+        self.descriptor().component_name
     }
 }
 
-impl From<Box<dyn ComponentBatch>> for MaybeOwnedComponentBatch<'_> {
+#[allow(dead_code)]
+fn assert_component_batch_object_safe() {
+    let _: &dyn LoggableBatch;
+}
+
+// ---
+
+/// The serialized contents of a [`ComponentBatch`] with associated [`ComponentDescriptor`].
+///
+/// This is what gets logged into Rerun:
+/// * See [`ComponentBatch`] to easily serialize component data.
+/// * See [`AsComponents`] for logging serialized data.
+///
+/// [`AsComponents`]: [crate::AsComponents]
+#[derive(Debug, Clone)]
+pub struct SerializedComponentBatch {
+    pub array: arrow::array::ArrayRef,
+
+    // TODO(cmc): Maybe Cow<> this one if it grows bigger. Or intern descriptors altogether, most likely.
+    pub descriptor: ComponentDescriptor,
+}
+
+impl re_byte_size::SizeBytes for SerializedComponentBatch {
     #[inline]
-    fn from(comp_batch: Box<dyn ComponentBatch>) -> Self {
-        Self::Owned(comp_batch)
+    fn heap_size_bytes(&self) -> u64 {
+        let Self { array, descriptor } = self;
+        array.heap_size_bytes() + descriptor.heap_size_bytes()
     }
 }
 
-impl<'a> AsRef<dyn ComponentBatch + 'a> for MaybeOwnedComponentBatch<'a> {
+impl PartialEq for SerializedComponentBatch {
     #[inline]
-    fn as_ref(&self) -> &(dyn ComponentBatch + 'a) {
-        match self {
-            MaybeOwnedComponentBatch::Owned(this) => &**this,
-            MaybeOwnedComponentBatch::Ref(this) => *this,
+    fn eq(&self, other: &Self) -> bool {
+        let Self { array, descriptor } = self;
+
+        // Descriptor first!
+        *descriptor == other.descriptor && **array == *other.array
+    }
+}
+
+impl SerializedComponentBatch {
+    #[inline]
+    pub fn new(array: arrow::array::ArrayRef, descriptor: ComponentDescriptor) -> Self {
+        Self { array, descriptor }
+    }
+
+    #[inline]
+    pub fn with_descriptor_override(self, descriptor: ComponentDescriptor) -> Self {
+        Self { descriptor, ..self }
+    }
+
+    /// Unconditionally sets the descriptor's `archetype_name` to the given one.
+    #[inline]
+    pub fn with_archetype_name(mut self, archetype_name: ArchetypeName) -> Self {
+        self.descriptor = self.descriptor.with_archetype_name(archetype_name);
+        self
+    }
+
+    /// Unconditionally sets the descriptor's `archetype_field_name` to the given one.
+    #[inline]
+    pub fn with_archetype_field_name(mut self, archetype_field_name: ArchetypeFieldName) -> Self {
+        self.descriptor = self
+            .descriptor
+            .with_archetype_field_name(archetype_field_name);
+        self
+    }
+
+    /// Sets the descriptor's `archetype_name` to the given one iff it's not already set.
+    #[inline]
+    pub fn or_with_archetype_name(mut self, archetype_name: impl Fn() -> ArchetypeName) -> Self {
+        self.descriptor = self.descriptor.or_with_archetype_name(archetype_name);
+        self
+    }
+
+    /// Sets the descriptor's `archetype_field_name` to the given one iff it's not already set.
+    #[inline]
+    pub fn or_with_archetype_field_name(
+        mut self,
+        archetype_field_name: impl FnOnce() -> ArchetypeFieldName,
+    ) -> Self {
+        self.descriptor = self
+            .descriptor
+            .or_with_archetype_field_name(archetype_field_name);
+        self
+    }
+}
+
+/// A column's worth of component data.
+///
+/// If a [`SerializedComponentBatch`] represents one row's worth of data
+#[derive(Debug, Clone)]
+pub struct SerializedComponentColumn {
+    pub list_array: arrow::array::ListArray,
+
+    // TODO(cmc): Maybe Cow<> this one if it grows bigger. Or intern descriptors altogether, most likely.
+    pub descriptor: ComponentDescriptor,
+}
+
+impl SerializedComponentColumn {
+    /// Repartitions the component data into multiple sub-batches, ignoring the previous partitioning.
+    ///
+    /// The specified `lengths` must sum to the total length of the component batch.
+    pub fn repartitioned(
+        self,
+        lengths: impl IntoIterator<Item = usize>,
+    ) -> SerializationResult<Self> {
+        let Self {
+            list_array,
+            descriptor,
+        } = self;
+
+        let list_array = re_arrow_util::repartition_list_array(list_array, lengths)?;
+
+        Ok(Self {
+            list_array,
+            descriptor,
+        })
+    }
+}
+
+impl From<SerializedComponentBatch> for SerializedComponentColumn {
+    #[inline]
+    fn from(batch: SerializedComponentBatch) -> Self {
+        use arrow::{
+            array::{Array, ListArray},
+            buffer::OffsetBuffer,
+            datatypes::Field,
+        };
+
+        let list_array = {
+            let nullable = true;
+            let field = Field::new_list_field(batch.array.data_type().clone(), nullable);
+            let offsets = OffsetBuffer::from_lengths(std::iter::once(batch.array.len()));
+            let nulls = None;
+            ListArray::new(field.into(), offsets, batch.array, nulls)
+        };
+
+        Self {
+            list_array,
+            descriptor: batch.descriptor,
         }
     }
 }
 
-impl<'a> std::ops::Deref for MaybeOwnedComponentBatch<'a> {
-    type Target = dyn ComponentBatch + 'a;
-
+impl SerializedComponentBatch {
+    /// Partitions the component data into multiple sub-batches.
+    ///
+    /// Specifically, this transforms the existing [`SerializedComponentBatch`] data into a [`SerializedComponentColumn`].
+    ///
+    /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+    ///
+    /// The specified `lengths` must sum to the total length of the component batch.
     #[inline]
-    fn deref(&self) -> &(dyn ComponentBatch + 'a) {
-        match self {
-            MaybeOwnedComponentBatch::Owned(this) => &**this,
-            MaybeOwnedComponentBatch::Ref(this) => *this,
-        }
+    pub fn partitioned(
+        self,
+        lengths: impl IntoIterator<Item = usize>,
+    ) -> SerializationResult<SerializedComponentColumn> {
+        let column: SerializedComponentColumn = self.into();
+        column.repartitioned(lengths)
     }
 }
 
-impl<'a> LoggableBatch for MaybeOwnedComponentBatch<'a> {
-    type Name = ComponentName;
+// ---
 
-    #[inline]
-    fn name(&self) -> Self::Name {
-        self.as_ref().name()
-    }
+// TODO(cmc): This is far from ideal and feels very hackish, but for now the priority is getting
+// all things related to tags up and running so we can gather learnings.
+// This is only used on the archetype deserialization path, which isn't ever used outside of tests anyway.
 
-    #[inline]
-    fn num_instances(&self) -> usize {
-        self.as_ref().num_instances()
-    }
+// TODO(cmc): we really shouldn't be duplicating these.
 
-    #[inline]
-    fn arrow_field(&self) -> arrow2::datatypes::Field {
-        self.as_ref().arrow_field()
-    }
+/// The key used to identify the [`crate::ArchetypeName`] in field-level metadata.
+const FIELD_METADATA_KEY_ARCHETYPE_NAME: &str = "rerun.archetype_name";
 
+/// The key used to identify the [`crate::ArchetypeFieldName`] in field-level metadata.
+const FIELD_METADATA_KEY_ARCHETYPE_FIELD_NAME: &str = "rerun.archetype_field_name";
+
+impl From<&SerializedComponentBatch> for arrow::datatypes::Field {
     #[inline]
-    fn to_arrow(&self) -> SerializationResult<Box<dyn ::arrow2::array::Array>> {
-        self.as_ref().to_arrow()
+    fn from(batch: &SerializedComponentBatch) -> Self {
+        Self::new(
+            batch.descriptor.component_name.to_string(),
+            batch.array.data_type().clone(),
+            false,
+        )
+        .with_metadata(
+            [
+                batch.descriptor.archetype_name.map(|name| {
+                    (
+                        FIELD_METADATA_KEY_ARCHETYPE_NAME.to_owned(),
+                        name.to_string(),
+                    )
+                }),
+                batch.descriptor.archetype_field_name.map(|name| {
+                    (
+                        FIELD_METADATA_KEY_ARCHETYPE_FIELD_NAME.to_owned(),
+                        name.to_string(),
+                    )
+                }),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        )
     }
 }
-
-impl<'a> ComponentBatch for MaybeOwnedComponentBatch<'a> {}
 
 // --- Unary ---
 
 impl<L: Clone + Loggable> LoggableBatch for L {
-    type Name = L::Name;
-
     #[inline]
-    fn name(&self) -> Self::Name {
-        L::name()
-    }
-
-    #[inline]
-    fn num_instances(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn arrow_field(&self) -> arrow2::datatypes::Field {
-        L::arrow_field()
-    }
-
-    #[inline]
-    fn to_arrow(&self) -> SerializationResult<Box<dyn ::arrow2::array::Array>> {
+    fn to_arrow(&self) -> SerializationResult<arrow::array::ArrayRef> {
         L::to_arrow([std::borrow::Cow::Borrowed(self)])
     }
 }
 
-impl<D: Datatype> DatatypeBatch for D {}
-
-impl<C: Component> ComponentBatch for C {}
+impl<C: Component> ComponentBatch for C {
+    #[inline]
+    fn descriptor(&self) -> Cow<'_, ComponentDescriptor> {
+        C::descriptor().into()
+    }
+}
 
 // --- Unary Option ---
 
 impl<L: Clone + Loggable> LoggableBatch for Option<L> {
-    type Name = L::Name;
-
     #[inline]
-    fn name(&self) -> Self::Name {
-        L::name()
-    }
-
-    #[inline]
-    fn num_instances(&self) -> usize {
-        self.is_some() as usize
-    }
-
-    #[inline]
-    fn arrow_field(&self) -> arrow2::datatypes::Field {
-        L::arrow_field()
-    }
-
-    #[inline]
-    fn to_arrow(&self) -> SerializationResult<Box<dyn ::arrow2::array::Array>> {
+    fn to_arrow(&self) -> SerializationResult<arrow::array::ArrayRef> {
         L::to_arrow(self.iter().map(|v| std::borrow::Cow::Borrowed(v)))
     }
 }
 
-impl<D: Datatype> DatatypeBatch for Option<D> {}
-
-impl<C: Component> ComponentBatch for Option<C> {}
+impl<C: Component> ComponentBatch for Option<C> {
+    #[inline]
+    fn descriptor(&self) -> Cow<'_, ComponentDescriptor> {
+        C::descriptor().into()
+    }
+}
 
 // --- Vec ---
 
 impl<L: Clone + Loggable> LoggableBatch for Vec<L> {
-    type Name = L::Name;
-
     #[inline]
-    fn name(&self) -> Self::Name {
-        L::name()
-    }
-
-    #[inline]
-    fn num_instances(&self) -> usize {
-        self.len()
-    }
-
-    #[inline]
-    fn arrow_field(&self) -> arrow2::datatypes::Field {
-        L::arrow_field()
-    }
-
-    #[inline]
-    fn to_arrow(&self) -> SerializationResult<Box<dyn ::arrow2::array::Array>> {
+    fn to_arrow(&self) -> SerializationResult<arrow::array::ArrayRef> {
         L::to_arrow(self.iter().map(|v| std::borrow::Cow::Borrowed(v)))
     }
 }
 
-impl<D: Datatype> DatatypeBatch for Vec<D> {}
-
-impl<C: Component> ComponentBatch for Vec<C> {}
+impl<C: Component> ComponentBatch for Vec<C> {
+    #[inline]
+    fn descriptor(&self) -> Cow<'_, ComponentDescriptor> {
+        C::descriptor().into()
+    }
+}
 
 // --- Vec<Option> ---
 
 impl<L: Loggable> LoggableBatch for Vec<Option<L>> {
-    type Name = L::Name;
-
     #[inline]
-    fn name(&self) -> Self::Name {
-        L::name()
-    }
-
-    #[inline]
-    fn num_instances(&self) -> usize {
-        self.len()
-    }
-
-    #[inline]
-    fn arrow_field(&self) -> arrow2::datatypes::Field {
-        L::arrow_field()
-    }
-
-    #[inline]
-    fn to_arrow(&self) -> SerializationResult<Box<dyn ::arrow2::array::Array>> {
+    fn to_arrow(&self) -> SerializationResult<arrow::array::ArrayRef> {
         L::to_arrow_opt(
             self.iter()
                 .map(|opt| opt.as_ref().map(|v| std::borrow::Cow::Borrowed(v))),
@@ -236,62 +395,34 @@ impl<L: Loggable> LoggableBatch for Vec<Option<L>> {
     }
 }
 
-impl<D: Datatype> DatatypeBatch for Vec<Option<D>> {}
-
-impl<C: Component> ComponentBatch for Vec<Option<C>> {}
+impl<C: Component> ComponentBatch for Vec<Option<C>> {
+    #[inline]
+    fn descriptor(&self) -> Cow<'_, ComponentDescriptor> {
+        C::descriptor().into()
+    }
+}
 
 // --- Array ---
 
 impl<L: Loggable, const N: usize> LoggableBatch for [L; N] {
-    type Name = L::Name;
-
     #[inline]
-    fn name(&self) -> Self::Name {
-        L::name()
-    }
-
-    #[inline]
-    fn num_instances(&self) -> usize {
-        N
-    }
-
-    #[inline]
-    fn arrow_field(&self) -> arrow2::datatypes::Field {
-        L::arrow_field()
-    }
-
-    #[inline]
-    fn to_arrow(&self) -> SerializationResult<Box<dyn ::arrow2::array::Array>> {
+    fn to_arrow(&self) -> SerializationResult<arrow::array::ArrayRef> {
         L::to_arrow(self.iter().map(|v| std::borrow::Cow::Borrowed(v)))
     }
 }
 
-impl<D: Datatype, const N: usize> DatatypeBatch for [D; N] {}
-
-impl<C: Component, const N: usize> ComponentBatch for [C; N] {}
+impl<C: Component, const N: usize> ComponentBatch for [C; N] {
+    #[inline]
+    fn descriptor(&self) -> Cow<'_, ComponentDescriptor> {
+        C::descriptor().into()
+    }
+}
 
 // --- Array<Option> ---
 
 impl<L: Loggable, const N: usize> LoggableBatch for [Option<L>; N] {
-    type Name = L::Name;
-
     #[inline]
-    fn name(&self) -> Self::Name {
-        L::name()
-    }
-
-    #[inline]
-    fn num_instances(&self) -> usize {
-        N
-    }
-
-    #[inline]
-    fn arrow_field(&self) -> arrow2::datatypes::Field {
-        L::arrow_field()
-    }
-
-    #[inline]
-    fn to_arrow(&self) -> SerializationResult<Box<dyn ::arrow2::array::Array>> {
+    fn to_arrow(&self) -> SerializationResult<arrow::array::ArrayRef> {
         L::to_arrow_opt(
             self.iter()
                 .map(|opt| opt.as_ref().map(|v| std::borrow::Cow::Borrowed(v))),
@@ -299,62 +430,34 @@ impl<L: Loggable, const N: usize> LoggableBatch for [Option<L>; N] {
     }
 }
 
-impl<D: Datatype, const N: usize> DatatypeBatch for [Option<D>; N] {}
-
-impl<C: Component, const N: usize> ComponentBatch for [Option<C>; N] {}
+impl<C: Component, const N: usize> ComponentBatch for [Option<C>; N] {
+    #[inline]
+    fn descriptor(&self) -> Cow<'_, ComponentDescriptor> {
+        C::descriptor().into()
+    }
+}
 
 // --- Slice ---
 
-impl<'a, L: Loggable> LoggableBatch for &'a [L] {
-    type Name = L::Name;
-
+impl<L: Loggable> LoggableBatch for [L] {
     #[inline]
-    fn name(&self) -> Self::Name {
-        L::name()
-    }
-
-    #[inline]
-    fn num_instances(&self) -> usize {
-        self.len()
-    }
-
-    #[inline]
-    fn arrow_field(&self) -> arrow2::datatypes::Field {
-        L::arrow_field()
-    }
-
-    #[inline]
-    fn to_arrow(&self) -> SerializationResult<Box<dyn ::arrow2::array::Array>> {
+    fn to_arrow(&self) -> SerializationResult<arrow::array::ArrayRef> {
         L::to_arrow(self.iter().map(|v| std::borrow::Cow::Borrowed(v)))
     }
 }
 
-impl<'a, D: Datatype> DatatypeBatch for &'a [D] {}
-
-impl<'a, C: Component> ComponentBatch for &'a [C] {}
+impl<C: Component> ComponentBatch for [C] {
+    #[inline]
+    fn descriptor(&self) -> Cow<'_, ComponentDescriptor> {
+        C::descriptor().into()
+    }
+}
 
 // --- Slice<Option> ---
 
-impl<'a, L: Loggable> LoggableBatch for &'a [Option<L>] {
-    type Name = L::Name;
-
+impl<L: Loggable> LoggableBatch for [Option<L>] {
     #[inline]
-    fn name(&self) -> Self::Name {
-        L::name()
-    }
-
-    #[inline]
-    fn num_instances(&self) -> usize {
-        self.len()
-    }
-
-    #[inline]
-    fn arrow_field(&self) -> arrow2::datatypes::Field {
-        L::arrow_field()
-    }
-
-    #[inline]
-    fn to_arrow(&self) -> SerializationResult<Box<dyn ::arrow2::array::Array>> {
+    fn to_arrow(&self) -> SerializationResult<arrow::array::ArrayRef> {
         L::to_arrow_opt(
             self.iter()
                 .map(|opt| opt.as_ref().map(|v| std::borrow::Cow::Borrowed(v))),
@@ -362,69 +465,9 @@ impl<'a, L: Loggable> LoggableBatch for &'a [Option<L>] {
     }
 }
 
-impl<'a, D: Datatype> DatatypeBatch for &'a [Option<D>] {}
-
-impl<'a, C: Component> ComponentBatch for &'a [Option<C>] {}
-
-// --- ArrayRef ---
-
-impl<'a, L: Loggable, const N: usize> LoggableBatch for &'a [L; N] {
-    type Name = L::Name;
-
+impl<C: Component> ComponentBatch for [Option<C>] {
     #[inline]
-    fn name(&self) -> Self::Name {
-        L::name()
-    }
-
-    #[inline]
-    fn num_instances(&self) -> usize {
-        N
-    }
-
-    #[inline]
-    fn arrow_field(&self) -> arrow2::datatypes::Field {
-        L::arrow_field()
-    }
-
-    #[inline]
-    fn to_arrow(&self) -> SerializationResult<Box<dyn ::arrow2::array::Array>> {
-        L::to_arrow(self.iter().map(|v| std::borrow::Cow::Borrowed(v)))
+    fn descriptor(&self) -> Cow<'_, ComponentDescriptor> {
+        C::descriptor().into()
     }
 }
-
-impl<'a, D: Datatype, const N: usize> DatatypeBatch for &'a [D; N] {}
-
-impl<'a, C: Component, const N: usize> ComponentBatch for &'a [C; N] {}
-
-// --- ArrayRef<Option> ---
-
-impl<'a, L: Loggable, const N: usize> LoggableBatch for &'a [Option<L>; N] {
-    type Name = L::Name;
-
-    #[inline]
-    fn name(&self) -> Self::Name {
-        L::name()
-    }
-
-    #[inline]
-    fn num_instances(&self) -> usize {
-        N
-    }
-
-    #[inline]
-    fn arrow_field(&self) -> arrow2::datatypes::Field {
-        L::arrow_field()
-    }
-
-    #[inline]
-    fn to_arrow(&self) -> SerializationResult<Box<dyn ::arrow2::array::Array>> {
-        L::to_arrow_opt(
-            self.iter()
-                .map(|opt| opt.as_ref().map(|v| std::borrow::Cow::Borrowed(v))),
-        )
-    }
-}
-
-impl<'a, D: Datatype, const N: usize> DatatypeBatch for &'a [Option<D>; N] {}
-
-impl<'a, C: Component, const N: usize> ComponentBatch for &'a [Option<C>; N] {}

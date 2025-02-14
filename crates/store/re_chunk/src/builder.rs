@@ -1,16 +1,11 @@
-use std::collections::BTreeMap;
-
-use arrow2::{
-    array::{Array as ArrowArray, PrimitiveArray as ArrowPrimitiveArray},
-    datatypes::DataType as ArrowDatatype,
-};
+use arrow::{array::ArrayRef, datatypes::DataType as ArrowDatatype};
 use itertools::Itertools;
-
 use nohash_hasher::IntMap;
-use re_log_types::{EntityPath, TimeInt, TimePoint, Timeline};
-use re_types_core::{AsComponents, ComponentBatch, ComponentName};
 
-use crate::{Chunk, ChunkId, ChunkResult, ChunkTimeline, RowId};
+use re_log_types::{EntityPath, TimeInt, TimePoint, Timeline};
+use re_types_core::{AsComponents, ComponentBatch, ComponentDescriptor, SerializedComponentBatch};
+
+use crate::{chunk::ChunkComponents, Chunk, ChunkId, ChunkResult, RowId, TimeColumn};
 
 // ---
 
@@ -22,8 +17,8 @@ pub struct ChunkBuilder {
     entity_path: EntityPath,
 
     row_ids: Vec<RowId>,
-    timelines: BTreeMap<Timeline, ChunkTimelineBuilder>,
-    components: BTreeMap<ComponentName, Vec<Option<Box<dyn ArrowArray>>>>,
+    timelines: IntMap<Timeline, TimeColumnBuilder>,
+    components: IntMap<ComponentDescriptor, Vec<Option<ArrayRef>>>,
 }
 
 impl Chunk {
@@ -53,8 +48,8 @@ impl ChunkBuilder {
             entity_path,
 
             row_ids: Vec::new(),
-            timelines: BTreeMap::new(),
-            components: BTreeMap::new(),
+            timelines: IntMap::default(),
+            components: IntMap::default(),
         }
     }
 
@@ -63,13 +58,13 @@ impl ChunkBuilder {
         mut self,
         row_id: RowId,
         timepoint: impl Into<TimePoint>,
-        components: impl IntoIterator<Item = (ComponentName, Option<Box<dyn ArrowArray>>)>,
+        components: impl IntoIterator<Item = (ComponentDescriptor, Option<ArrayRef>)>,
     ) -> Self {
         let components = components.into_iter().collect_vec();
 
         // Align all columns by appending null values for rows where we don't have data.
-        for (component_name, _) in &components {
-            let arrays = self.components.entry(*component_name).or_default();
+        for (component_desc, _) in &components {
+            let arrays = self.components.entry(component_desc.clone()).or_default();
             arrays.extend(
                 std::iter::repeat(None).take(self.row_ids.len().saturating_sub(arrays.len())),
             );
@@ -80,7 +75,7 @@ impl ChunkBuilder {
         for (timeline, time) in timepoint.into() {
             self.timelines
                 .entry(timeline)
-                .or_insert_with(|| ChunkTimeline::builder(timeline))
+                .or_insert_with(|| TimeColumn::builder(timeline))
                 .with_row(time);
         }
 
@@ -107,14 +102,14 @@ impl ChunkBuilder {
         self,
         row_id: RowId,
         timepoint: impl Into<TimePoint>,
-        components: impl IntoIterator<Item = (ComponentName, Box<dyn ArrowArray>)>,
+        components: impl IntoIterator<Item = (ComponentDescriptor, ArrayRef)>,
     ) -> Self {
         self.with_sparse_row(
             row_id,
             timepoint,
             components
                 .into_iter()
-                .map(|(component_name, array)| (component_name, Some(array))),
+                .map(|(component_descr, array)| (component_descr, Some(array))),
         )
     }
 
@@ -126,12 +121,8 @@ impl ChunkBuilder {
         timepoint: impl Into<TimePoint>,
         as_components: &dyn AsComponents,
     ) -> Self {
-        let batches = as_components.as_component_batches();
-        self.with_component_batches(
-            row_id,
-            timepoint,
-            batches.iter().map(|batch| batch.as_ref()),
-        )
+        let batches = as_components.as_serialized_batches();
+        self.with_serialized_batches(row_id, timepoint, batches)
     }
 
     /// Add a row's worth of data by serializing a single [`ComponentBatch`].
@@ -148,7 +139,7 @@ impl ChunkBuilder {
             component_batch
                 .to_arrow()
                 .ok()
-                .map(|array| (component_batch.name(), array)),
+                .map(|array| (component_batch.descriptor().into_owned(), array)),
         )
     }
 
@@ -167,7 +158,7 @@ impl ChunkBuilder {
                 component_batch
                     .to_arrow()
                     .ok()
-                    .map(|array| (component_batch.name(), array))
+                    .map(|array| (component_batch.descriptor().into_owned(), array))
             }),
         )
     }
@@ -178,18 +169,73 @@ impl ChunkBuilder {
         self,
         row_id: RowId,
         timepoint: impl Into<TimePoint>,
-        component_batches: impl IntoIterator<Item = (ComponentName, Option<&'a dyn ComponentBatch>)>,
+        component_batches: impl IntoIterator<
+            Item = (ComponentDescriptor, Option<&'a dyn ComponentBatch>),
+        >,
     ) -> Self {
         self.with_sparse_row(
             row_id,
             timepoint,
             component_batches
                 .into_iter()
-                .map(|(component_name, component_batch)| {
+                .map(|(component_desc, component_batch)| {
                     (
-                        component_name,
+                        component_desc,
                         component_batch.and_then(|batch| batch.to_arrow().ok()),
                     )
+                }),
+        )
+    }
+
+    /// Add a row's worth of data by serializing a single [`ComponentBatch`].
+    #[inline]
+    pub fn with_serialized_batch(
+        self,
+        row_id: RowId,
+        timepoint: impl Into<TimePoint>,
+        component_batch: SerializedComponentBatch,
+    ) -> Self {
+        self.with_row(
+            row_id,
+            timepoint,
+            [(component_batch.descriptor, component_batch.array)],
+        )
+    }
+
+    /// Add a row's worth of data by serializing many [`ComponentBatch`]es.
+    #[inline]
+    pub fn with_serialized_batches(
+        self,
+        row_id: RowId,
+        timepoint: impl Into<TimePoint>,
+        component_batches: impl IntoIterator<Item = SerializedComponentBatch>,
+    ) -> Self {
+        self.with_row(
+            row_id,
+            timepoint,
+            component_batches
+                .into_iter()
+                .map(|component_batch| (component_batch.descriptor, component_batch.array)),
+        )
+    }
+
+    /// Add a row's worth of data by serializing many sparse [`ComponentBatch`]es.
+    #[inline]
+    pub fn with_sparse_serialized_batches(
+        self,
+        row_id: RowId,
+        timepoint: impl Into<TimePoint>,
+        component_batches: impl IntoIterator<
+            Item = (ComponentDescriptor, Option<SerializedComponentBatch>),
+        >,
+    ) -> Self {
+        self.with_sparse_row(
+            row_id,
+            timepoint,
+            component_batches
+                .into_iter()
+                .map(|(component_desc, component_batch)| {
+                    (component_desc, component_batch.map(|batch| batch.array))
                 }),
         )
     }
@@ -208,6 +254,7 @@ impl ChunkBuilder {
     /// This returns an error if the chunk fails to `sanity_check`.
     #[inline]
     pub fn build(self) -> ChunkResult<Chunk> {
+        re_tracing::profile_function!();
         let Self {
             id,
             entity_path,
@@ -216,24 +263,32 @@ impl ChunkBuilder {
             components,
         } = self;
 
-        Chunk::from_native_row_ids(
-            id,
-            entity_path,
-            None,
-            &row_ids,
+        let timelines = {
+            re_tracing::profile_scope!("timelines");
             timelines
                 .into_iter()
-                .map(|(timeline, time_chunk)| (timeline, time_chunk.build()))
-                .collect(),
-            components
-                .into_iter()
-                .filter_map(|(component_name, arrays)| {
-                    let arrays = arrays.iter().map(|array| array.as_deref()).collect_vec();
-                    crate::util::arrays_to_list_array_opt(&arrays)
-                        .map(|list_array| (component_name, list_array))
-                })
-                .collect(),
-        )
+                .map(|(timeline, time_column)| (timeline, time_column.build()))
+                .collect()
+        };
+
+        let components = {
+            re_tracing::profile_scope!("components");
+            let mut per_name = ChunkComponents::default();
+            for (component_desc, list_array) in
+                components
+                    .into_iter()
+                    .filter_map(|(component_desc, arrays)| {
+                        let arrays = arrays.iter().map(|array| array.as_deref()).collect_vec();
+                        re_arrow_util::arrays_to_list_array_opt(&arrays)
+                            .map(|list_array| (component_desc, list_array))
+                    })
+            {
+                per_name.insert_descriptor(component_desc, list_array);
+            }
+            per_name
+        };
+
+        Chunk::from_native_row_ids(id, entity_path, None, &row_ids, timelines, components)
     }
 
     /// Builds and returns the final [`Chunk`].
@@ -254,7 +309,7 @@ impl ChunkBuilder {
     #[inline]
     pub fn build_with_datatypes(
         self,
-        datatypes: &IntMap<ComponentName, ArrowDatatype>,
+        datatypes: &IntMap<ComponentDescriptor, ArrowDatatype>,
     ) -> ChunkResult<Chunk> {
         let Self {
             id,
@@ -271,51 +326,57 @@ impl ChunkBuilder {
             &row_ids,
             timelines
                 .into_iter()
-                .map(|(timeline, time_chunk)| (timeline, time_chunk.build()))
+                .map(|(timeline, time_column)| (timeline, time_column.build()))
                 .collect(),
-            components
-                .into_iter()
-                .filter_map(|(component_name, arrays)| {
-                    let arrays = arrays.iter().map(|array| array.as_deref()).collect_vec();
-
-                    // If we know the datatype in advance, we're able to keep even fully sparse
-                    // columns around.
-                    if let Some(datatype) = datatypes.get(&component_name) {
-                        crate::util::arrays_to_list_array(datatype.clone(), &arrays)
-                            .map(|list_array| (component_name, list_array))
-                    } else {
-                        crate::util::arrays_to_list_array_opt(&arrays)
-                            .map(|list_array| (component_name, list_array))
-                    }
-                })
-                .collect(),
+            {
+                let mut per_name = ChunkComponents::default();
+                for (component_desc, list_array) in
+                    components
+                        .into_iter()
+                        .filter_map(|(component_desc, arrays)| {
+                            let arrays = arrays.iter().map(|array| array.as_deref()).collect_vec();
+                            // If we know the datatype in advance, we're able to keep even fully sparse
+                            // columns around.
+                            if let Some(datatype) = datatypes.get(&component_desc) {
+                                re_arrow_util::arrays_to_list_array(datatype.clone(), &arrays)
+                                    .map(|list_array| (component_desc, list_array))
+                            } else {
+                                re_arrow_util::arrays_to_list_array_opt(&arrays)
+                                    .map(|list_array| (component_desc, list_array))
+                            }
+                        })
+                {
+                    per_name.insert_descriptor(component_desc, list_array);
+                }
+                per_name
+            },
         )
     }
 }
 
 // ---
 
-/// Helper to incrementally build a [`ChunkTimeline`].
+/// Helper to incrementally build a [`TimeColumn`].
 ///
-/// Can be created using [`ChunkTimeline::builder`].
-pub struct ChunkTimelineBuilder {
+/// Can be created using [`TimeColumn::builder`].
+pub struct TimeColumnBuilder {
     timeline: Timeline,
 
     times: Vec<i64>,
 }
 
-impl ChunkTimeline {
-    /// Initializes a new [`ChunkTimelineBuilder`].
+impl TimeColumn {
+    /// Initializes a new [`TimeColumnBuilder`].
     #[inline]
-    pub fn builder(timeline: Timeline) -> ChunkTimelineBuilder {
-        ChunkTimelineBuilder::new(timeline)
+    pub fn builder(timeline: Timeline) -> TimeColumnBuilder {
+        TimeColumnBuilder::new(timeline)
     }
 }
 
-impl ChunkTimelineBuilder {
-    /// Initializes a new [`ChunkTimelineBuilder`].
+impl TimeColumnBuilder {
+    /// Initializes a new [`TimeColumnBuilder`].
     ///
-    /// See also [`ChunkTimeline::builder`].
+    /// See also [`TimeColumn::builder`].
     #[inline]
     pub fn new(timeline: Timeline) -> Self {
         Self {
@@ -334,12 +395,10 @@ impl ChunkTimelineBuilder {
         self
     }
 
-    /// Builds and returns the final [`ChunkTimeline`].
+    /// Builds and returns the final [`TimeColumn`].
     #[inline]
-    pub fn build(self) -> ChunkTimeline {
+    pub fn build(self) -> TimeColumn {
         let Self { timeline, times } = self;
-
-        let times = ArrowPrimitiveArray::<i64>::from_vec(times).to(timeline.datatype());
-        ChunkTimeline::new(None, timeline, times)
+        TimeColumn::new(None, timeline, times.into())
     }
 }

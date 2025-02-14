@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["Texcoord2D", "Texcoord2DBatch", "Texcoord2DType"]
+__all__ = ["Texcoord2D", "Texcoord2DBatch"]
 
 
 class Texcoord2D(datatypes.Vec2D, ComponentMixin):
@@ -41,12 +42,8 @@ class Texcoord2D(datatypes.Vec2D, ComponentMixin):
     pass
 
 
-class Texcoord2DType(datatypes.Vec2DType):
-    _TYPE_NAME: str = "rerun.components.Texcoord2D"
-
-
 class Texcoord2DBatch(datatypes.Vec2DBatch, ComponentBatchMixin):
-    _ARROW_TYPE = Texcoord2DType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.Texcoord2D")
 
 
 # This is patched in late to avoid circular dependencies.

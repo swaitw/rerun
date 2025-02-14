@@ -69,7 +69,7 @@ pub mod gpu_data {
     static_assertions::assert_eq_size!(PositionRadius, glam::Vec4);
 
     /// Uniform buffer that changes once per draw data rendering.
-    #[repr(C, align(256))]
+    #[repr(C)]
     #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct DrawDataUniformBuffer {
         pub radius_boost_in_ui_points: wgpu_buffer_types::F32RowPadded,
@@ -77,7 +77,7 @@ pub mod gpu_data {
     }
 
     /// Uniform buffer that changes for every batch of points.
-    #[repr(C, align(256))]
+    #[repr(C)]
     #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct BatchUniformBuffer {
         pub world_from_obj: wgpu_buffer_types::Mat4,
@@ -102,7 +102,7 @@ struct PointCloudBatch {
 }
 
 /// A point cloud drawing operation.
-/// Expected to be recrated every frame.
+/// Expected to be recreated every frame.
 #[derive(Clone)]
 pub struct PointCloudDrawData {
     bind_group_all_points: Option<GpuBindGroup>,
@@ -149,6 +149,22 @@ pub struct PointCloudBatchInfo {
 
     /// Depth offset applied after projection.
     pub depth_offset: DepthOffset,
+}
+
+impl Default for PointCloudBatchInfo {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            label: DebugLabel::default(),
+            world_from_obj: glam::Affine3A::IDENTITY,
+            flags: PointCloudBatchFlags::FLAG_ENABLE_SHADING,
+            point_count: 0,
+            overall_outline_mask_ids: OutlineMaskPreference::NONE,
+            additional_outline_mask_ids_vertex_ranges: Vec::new(),
+            picking_object_id: Default::default(),
+            depth_offset: 0,
+        }
+    }
 }
 
 #[derive(thiserror::Error, Debug, PartialEq, Eq)]
@@ -523,18 +539,14 @@ impl Renderer for PointCloudRenderer {
             fragment_entrypoint: "fs_main".into(),
             fragment_handle: shader_module,
             vertex_buffers: smallvec![],
-            render_targets: smallvec![Some(ViewBuilder::MAIN_TARGET_COLOR_FORMAT.into())],
+            render_targets: smallvec![Some(ViewBuilder::MAIN_TARGET_ALPHA_TO_COVERAGE_COLOR_STATE)],
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
             depth_stencil: ViewBuilder::MAIN_TARGET_DEFAULT_DEPTH_STATE,
-            multisample: wgpu::MultisampleState {
-                // We discard pixels to do the round cutout, therefore we need to calculate
-                // our own sampling mask.
-                alpha_to_coverage_enabled: true,
-                ..ViewBuilder::MAIN_TARGET_DEFAULT_MSAA_STATE
-            },
+            // We discard pixels to do the round cutout, therefore we need to calculate our own sampling mask.
+            multisample: ViewBuilder::main_target_default_msaa_state(ctx.render_config(), true),
         };
         let render_pipeline_color =
             render_pipelines.get_or_create(ctx, &render_pipeline_desc_color);
@@ -557,7 +569,7 @@ impl Renderer for PointCloudRenderer {
                 render_targets: smallvec![Some(OutlineMaskProcessor::MASK_FORMAT.into())],
                 depth_stencil: OutlineMaskProcessor::MASK_DEPTH_STATE,
                 // Alpha to coverage doesn't work with the mask integer target.
-                multisample: OutlineMaskProcessor::mask_default_msaa_state(&ctx.config.device_caps),
+                multisample: OutlineMaskProcessor::mask_default_msaa_state(ctx.device_caps().tier),
                 ..render_pipeline_desc_color
             },
         );
@@ -571,12 +583,12 @@ impl Renderer for PointCloudRenderer {
         }
     }
 
-    fn draw<'a>(
+    fn draw(
         &self,
-        render_pipelines: &'a GpuRenderPipelinePoolAccessor<'a>,
+        render_pipelines: &GpuRenderPipelinePoolAccessor<'_>,
         phase: DrawPhase,
-        pass: &mut wgpu::RenderPass<'a>,
-        draw_data: &'a Self::RendererDrawData,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw_data: &Self::RendererDrawData,
     ) -> Result<(), DrawError> {
         let (pipeline_handle, bind_group_all_points) = match phase {
             DrawPhase::OutlineMask => (

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../result.hpp"
 #include "angle.hpp"
 #include "vec3d.hpp"
@@ -22,17 +23,18 @@ namespace rerun::datatypes {
         /// Axis to rotate around.
         ///
         /// This is not required to be normalized.
-        /// If normalization fails (typically because the vector is length zero), the rotation is silently
-        /// ignored.
+        /// However, if normalization of the rotation axis fails (typically due to a zero vector)
+        /// the rotation is treated as an invalid transform, unless the angle is zero in which case
+        /// it is treated as an identity.
         rerun::datatypes::Vec3D axis;
 
         /// How much to rotate around the axis.
         rerun::datatypes::Angle angle;
 
-      public:
-        // Extensions to generated type defined in 'rotation_axis_angle_ext.cpp'
-
+      public: // START of extensions from rotation_axis_angle_ext.cpp:
         RotationAxisAngle(const Vec3D& _axis, const Angle& _angle) : axis(_axis), angle(_angle) {}
+
+        // END of extensions from rotation_axis_angle_ext.cpp, start of generated code:
 
       public:
         RotationAxisAngle() = default;
@@ -46,7 +48,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::RotationAxisAngle> {
-        static constexpr const char Name[] = "rerun.datatypes.RotationAxisAngle";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.RotationAxisAngle";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

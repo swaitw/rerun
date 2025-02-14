@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use itertools::Itertools as _;
 use re_chunk::{Chunk, ChunkId, RowId};
 use re_chunk_store::{ChunkStore, ChunkStoreError, LatestAtQuery};
 use re_log_types::example_components::{MyIndex, MyPoint};
@@ -11,7 +10,7 @@ use re_log_types::{
     build_frame_nr, build_log_time, Duration, EntityPath, Time, TimeInt, TimePoint, TimeType,
     Timeline,
 };
-use re_types_core::Loggable as _;
+use re_types_core::Component as _;
 
 // ---
 
@@ -22,21 +21,20 @@ fn query_latest_component<C: re_types_core::Component>(
 ) -> Option<(TimeInt, RowId, C)> {
     re_tracing::profile_function!();
 
-    let (data_time, row_id, array) = store
+    let ((data_time, row_id), unit) = store
         .latest_at_relevant_chunks(query, entity_path, C::name())
         .into_iter()
-        .flat_map(|chunk| {
+        .filter_map(|chunk| {
             chunk
                 .latest_at(query, C::name())
-                .iter_rows(&query.timeline(), &C::name())
-                .collect_vec()
+                .into_unit()
+                .and_then(|unit| unit.index(&query.timeline()).map(|index| (index, unit)))
         })
-        .max_by_key(|(data_time, row_id, _)| (*data_time, *row_id))
-        .and_then(|(data_time, row_id, array)| array.map(|array| (data_time, row_id, array)))?;
+        .max_by_key(|(index, _unit)| *index)?;
 
-    let value = C::from_arrow(&*array).ok()?.first()?.clone();
-
-    Some((data_time, row_id, value))
+    unit.component_mono()?
+        .ok()
+        .map(|values| (data_time, row_id, values))
 }
 
 // ---
@@ -132,7 +130,7 @@ fn row_id_ordering_semantics() -> anyhow::Result<()> {
     }
 
     // Static data has last-write-wins semantics, as defined by RowId-ordering.
-    // Timeless is RowId-ordered too!
+    // Static data is RowId-ordered too!
     //
     // * Insert static `point1` with a random `RowId`.
     // * Insert static `point2` using `point1`'s `RowId`, decremented by one.

@@ -1,20 +1,21 @@
 use egui::NumExt;
 
-use re_entity_db::{external::re_query::LatestAtComponentResults, EntityPath, InstancePath};
-use re_log_types::Instance;
-use re_ui::{ContextExt as _, SyntaxHighlighting as _};
+use re_chunk_store::UnitChunkShared;
+use re_entity_db::InstancePath;
+use re_log_types::{ComponentPath, Instance, TimeInt};
+use re_ui::{ContextExt as _, SyntaxHighlighting as _, UiExt};
 use re_viewer_context::{UiLayout, ViewerContext};
 
 use super::DataUi;
 use crate::item_ui;
 
 /// All the values of a specific [`re_log_types::ComponentPath`].
-pub struct EntityLatestAtResults<'a> {
-    pub entity_path: EntityPath,
-    pub results: &'a LatestAtComponentResults,
+pub struct ComponentPathLatestAtResults<'a> {
+    pub component_path: ComponentPath,
+    pub unit: &'a UnitChunkShared,
 }
 
-impl<'a> DataUi for EntityLatestAtResults<'a> {
+impl DataUi for ComponentPathLatestAtResults<'_> {
     fn data_ui(
         &self,
         ctx: &ViewerContext<'_>,
@@ -23,42 +24,73 @@ impl<'a> DataUi for EntityLatestAtResults<'a> {
         query: &re_chunk_store::LatestAtQuery,
         db: &re_entity_db::EntityDb,
     ) {
-        let Some(component_name) = self.results.component_name(db.resolver()) else {
-            // TODO(#5607): what should happen if the promise is still pending?
-            return;
-        };
+        re_tracing::profile_function!(self.component_path.component_name);
 
-        re_tracing::profile_function!(component_name);
+        let ComponentPath {
+            entity_path,
+            component_name,
+        } = &self.component_path;
 
-        // TODO(#5607): what should happen if the promise is still pending?
         let Some(num_instances) = self
-            .results
-            .raw(db.resolver(), component_name)
+            .unit
+            .component_batch_raw(component_name)
             .map(|data| data.len())
         else {
             ui.weak("<pending>");
             return;
         };
 
-        let one_line = match ui_layout {
-            UiLayout::List => true,
-            UiLayout::Tooltip
-            | UiLayout::SelectionPanelLimitHeight
-            | UiLayout::SelectionPanelFull => false,
-        };
-
         // in some cases, we don't want to display all instances
         let max_row = match ui_layout {
             UiLayout::List => 0,
             UiLayout::Tooltip => num_instances.at_most(4), // includes "…x more" if any
-            UiLayout::SelectionPanelLimitHeight | UiLayout::SelectionPanelFull => num_instances,
+            UiLayout::SelectionPanel => num_instances,
         };
 
+        let engine = db.storage_engine();
+
         // Display data time and additional diagnostic information for static components.
-        if ui_layout != UiLayout::List {
-            let time = self.results.index().0;
+        if !ui_layout.is_single_line() {
+            let time = self
+                .unit
+                .index(&query.timeline())
+                .map_or(TimeInt::STATIC, |(time, _)| time);
+
+            // if the component is static, we display extra diagnostic information
             if time.is_static() {
-                // No need to show anything here. We already tell the user this is a static component elsewhere.
+                let static_message_count = engine
+                    .store()
+                    .num_static_events_for_component(entity_path, *component_name);
+                if static_message_count > 1 {
+                    ui.label(ui.ctx().warning_text(format!(
+                        "Static component value was overridden {} times",
+                        static_message_count.saturating_sub(1),
+                    )))
+                    .on_hover_text(
+                        "When a static component is logged multiple times, only the last value \
+                        is stored. Previously logged values are overwritten and not \
+                        recoverable.",
+                    );
+                }
+
+                let temporal_message_count = engine
+                    .store()
+                    .num_temporal_events_for_component_on_all_timelines(
+                        entity_path,
+                        *component_name,
+                    );
+                if temporal_message_count > 0 {
+                    ui.error_label(format!(
+                        "Static component has {} event{} logged on timelines",
+                        temporal_message_count,
+                        if temporal_message_count > 1 { "s" } else { "" }
+                    ))
+                    .on_hover_text(
+                        "Components should be logged either as static or on timelines, but \
+                        never both. Values for static components logged to timelines cannot be \
+                        displayed.",
+                    );
+                }
             } else {
                 let formatted_time = query
                     .timeline()
@@ -68,41 +100,6 @@ impl<'a> DataUi for EntityLatestAtResults<'a> {
                     ui.add(re_ui::icons::COMPONENT_TEMPORAL.as_image());
                     ui.label(format!("Temporal component at {formatted_time}"));
                 });
-            }
-
-            // if the component is static, we display extra diagnostic information
-            if self.results.is_static() {
-                if let Some(histogram) = db
-                    .tree()
-                    .subtree(&self.entity_path)
-                    .and_then(|tree| tree.entity.components.get(&component_name))
-                {
-                    if histogram.num_static_messages() > 1 {
-                        ui.label(ui.ctx().warning_text(format!(
-                            "Static component value was overridden {} times",
-                            histogram.num_static_messages().saturating_sub(1),
-                        )))
-                        .on_hover_text(
-                            "When a static component is logged multiple times, only the last value \
-                            is stored. Previously logged values are overwritten and not \
-                            recoverable.",
-                        );
-                    }
-
-                    let timeline_message_count = histogram.num_temporal_messages();
-                    if timeline_message_count > 0 {
-                        ui.label(ui.ctx().error_text(format!(
-                            "Static component has {} event{} logged on timelines",
-                            timeline_message_count,
-                            if timeline_message_count > 1 { "s" } else { "" }
-                        )))
-                        .on_hover_text(
-                            "Components should be logged either as static or on timelines, but \
-                            never both. Values for static components logged to timelines cannot be \
-                            displayed.",
-                        );
-                    }
-                }
             }
         }
 
@@ -130,20 +127,19 @@ impl<'a> DataUi for EntityLatestAtResults<'a> {
             max_row.saturating_sub(1)
         };
 
-        if num_instances == 0 {
-            ui.weak("(empty)");
-        } else if num_instances == 1 {
+        if num_instances <= 1 {
             ctx.component_ui_registry.ui(
                 ctx,
                 ui,
                 ui_layout,
                 query,
                 db,
-                &self.entity_path,
-                self.results,
+                entity_path,
+                *component_name,
+                self.unit,
                 &Instance::from(0),
             );
-        } else if one_line {
+        } else if ui_layout.is_single_line() {
             ui.label(format!("{} values", re_format::format_uint(num_instances)));
         } else {
             ui_layout
@@ -168,7 +164,7 @@ impl<'a> DataUi for EntityLatestAtResults<'a> {
                         let instance = Instance::from(row.index() as u64);
                         row.col(|ui| {
                             let instance_path =
-                                InstancePath::instance(self.entity_path.clone(), instance);
+                                InstancePath::instance(entity_path.clone(), instance);
                             item_ui::instance_path_button_to(
                                 ctx,
                                 query,
@@ -186,8 +182,9 @@ impl<'a> DataUi for EntityLatestAtResults<'a> {
                                 UiLayout::List,
                                 query,
                                 db,
-                                &self.entity_path,
-                                self.results,
+                                entity_path,
+                                *component_name,
+                                self.unit,
                                 &instance,
                             );
                         });

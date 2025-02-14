@@ -2,24 +2,46 @@
 
 from __future__ import annotations
 
+from .component_column_selector import (
+    ComponentColumnSelector,
+    ComponentColumnSelectorArrayLike,
+    ComponentColumnSelectorBatch,
+    ComponentColumnSelectorLike,
+)
+from .filter_by_range import FilterByRange, FilterByRangeArrayLike, FilterByRangeBatch, FilterByRangeLike
+from .filter_is_not_null import FilterIsNotNull, FilterIsNotNullArrayLike, FilterIsNotNullBatch, FilterIsNotNullLike
+from .selected_columns import SelectedColumns, SelectedColumnsArrayLike, SelectedColumnsBatch, SelectedColumnsLike
 from .tensor_dimension_index_slider import (
     TensorDimensionIndexSlider,
     TensorDimensionIndexSliderArrayLike,
     TensorDimensionIndexSliderBatch,
     TensorDimensionIndexSliderLike,
-    TensorDimensionIndexSliderType,
 )
-from .utf8list import Utf8List, Utf8ListArrayLike, Utf8ListBatch, Utf8ListLike, Utf8ListType
+from .utf8list import Utf8List, Utf8ListArrayLike, Utf8ListBatch, Utf8ListLike
 
 __all__ = [
+    "ComponentColumnSelector",
+    "ComponentColumnSelectorArrayLike",
+    "ComponentColumnSelectorBatch",
+    "ComponentColumnSelectorLike",
+    "FilterByRange",
+    "FilterByRangeArrayLike",
+    "FilterByRangeBatch",
+    "FilterByRangeLike",
+    "FilterIsNotNull",
+    "FilterIsNotNullArrayLike",
+    "FilterIsNotNullBatch",
+    "FilterIsNotNullLike",
+    "SelectedColumns",
+    "SelectedColumnsArrayLike",
+    "SelectedColumnsBatch",
+    "SelectedColumnsLike",
     "TensorDimensionIndexSlider",
     "TensorDimensionIndexSliderArrayLike",
     "TensorDimensionIndexSliderBatch",
     "TensorDimensionIndexSliderLike",
-    "TensorDimensionIndexSliderType",
     "Utf8List",
     "Utf8ListArrayLike",
     "Utf8ListBatch",
     "Utf8ListLike",
-    "Utf8ListType",
 ]

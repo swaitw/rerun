@@ -1,5 +1,5 @@
-// TODO(andreas): The concept of DrawPhase implementors is very much in progress!
-// Need to start to formalize this further and create implementors for all DrawPhases to build up our render graph.
+// TODO(andreas): The concept of DrawPhase implementers is very much in progress!
+// Need to start to formalize this further and create implementers for all DrawPhases to build up our render graph.
 
 mod outlines;
 pub use outlines::{OutlineConfig, OutlineMaskPreference, OutlineMaskProcessor};
@@ -31,6 +31,9 @@ pub enum DrawPhase {
 
     /// Background, rendering where depth wasn't written.
     Background,
+
+    /// Transparent objects, performing reads of the depth buffer, but no writes.
+    Transparent,
 
     /// Everything that can be picked with GPU based picking.
     ///

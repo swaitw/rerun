@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["KeypointId", "KeypointIdBatch", "KeypointIdType"]
+__all__ = ["KeypointId", "KeypointIdBatch"]
 
 
 class KeypointId(datatypes.KeypointId, ComponentMixin):
@@ -31,12 +32,8 @@ class KeypointId(datatypes.KeypointId, ComponentMixin):
     pass
 
 
-class KeypointIdType(datatypes.KeypointIdType):
-    _TYPE_NAME: str = "rerun.components.KeypointId"
-
-
 class KeypointIdBatch(datatypes.KeypointIdBatch, ComponentBatchMixin):
-    _ARROW_TYPE = KeypointIdType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.KeypointId")
 
 
 # This is patched in late to avoid circular dependencies.

@@ -1,7 +1,7 @@
 use ahash::HashMap;
 use parking_lot::Mutex;
 
-use crate::config::WgpuBackendType;
+use crate::device_caps::WgpuBackendType;
 
 use super::{handle_async_error, wgpu_core_error::WgpuCoreWrappedContextError};
 
@@ -17,7 +17,7 @@ pub struct ErrorEntry {
     last_occurred_frame_index: u64,
 
     /// Description of the error.
-    // TODO(#4507): Expecting to need this once we use this in space views. Also very useful for debugging.
+    // TODO(#4507): Expecting to need this once we use this in views. Also very useful for debugging.
     #[allow(dead_code)]
     description: String,
 }
@@ -121,11 +121,11 @@ impl ErrorTracker {
                     description: description.clone(),
                 };
 
-                let should_log = match _source.downcast::<wgpu_core::error::ContextError>() {
+                let should_log = match _source.downcast::<wgpu::core::error::ContextError>() {
                     Ok(ctx_err) => {
                         if ctx_err
-                            .cause
-                            .downcast_ref::<wgpu_core::command::CommandEncoderError>()
+                            .source
+                            .downcast_ref::<wgpu::core::command::CommandEncoderError>()
                             .is_some()
                         {
                             // Actual command encoder errors never carry any meaningful

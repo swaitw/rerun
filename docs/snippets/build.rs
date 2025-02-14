@@ -6,7 +6,7 @@
 //!
 //! Motivation: <https://github.com/rerun-io/rerun/issues/4623>
 
-// TODO(#3408): remove unwrap()
+// TODO(#6330): remove unwrap()
 #![allow(clippy::unwrap_used)]
 
 use std::{fs, path::Path};
@@ -73,6 +73,8 @@ fn main() {
         }
     }
 
+    snippets.sort();
+
     assert!(
         snippets.len() > 10,
         "Found too few snippets in {all_path:?}"
@@ -102,6 +104,9 @@ fn main() {
             ${MATCH_SNIPPETS}
             _ => {
                 eprintln!("Unknown snippet: {snippet_name}");
+                eprintln!("Available snippets:");
+                eprintln!();
+                eprintln!("${SNIPPETS}");
                 std::process::exit(1);
             }
         }

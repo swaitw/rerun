@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../result.hpp"
 
 #include <cstdint>
@@ -25,9 +26,7 @@ namespace rerun::datatypes {
         /// Angle in radians. One turn is equal to 2π (or τ) radians.
         float angle_radians;
 
-      public:
-        // Extensions to generated type defined in 'angle_ext.cpp'
-
+      public: // START of extensions from angle_ext.cpp:
         /// New angle in radians.
         static Angle radians(float radians_) {
             Angle angle;
@@ -45,6 +44,8 @@ namespace rerun::datatypes {
             return angle;
         }
 
+        // END of extensions from angle_ext.cpp, start of generated code:
+
       public:
         Angle() = default;
     };
@@ -57,7 +58,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::Angle> {
-        static constexpr const char Name[] = "rerun.datatypes.Angle";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.Angle";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

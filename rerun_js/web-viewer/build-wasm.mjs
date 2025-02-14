@@ -14,29 +14,31 @@ const exec = (cmd) => {
   child_process.execSync(cmd, { cwd: __dirname, stdio: "inherit" });
 };
 
-function wasm(mode) {
+function buildWebViewer(mode) {
+  let modeFlags = "";
   switch (mode) {
-    case "debug": {
-      return exec(
-        "cargo run -p re_dev_tools -- build-web-viewer --debug --target no-modules-base -o rerun_js/web-viewer",
-      );
-    }
-    case "release": {
-      return exec(
-        "cargo run -p re_dev_tools -- build-web-viewer --release -g --target no-modules-base -o rerun_js/web-viewer",
-      );
-    }
+    case "debug":
+      modeFlags = "--debug";
+      break;
+    case "release":
+      modeFlags = "--release -g";
+      break;
     default:
       throw new Error(`Unknown mode: ${mode}`);
   }
+  return exec(
+    [
+      "cargo run -p re_dev_tools -- build-web-viewer",
+      modeFlags,
+      "--target no-modules-base",
+      "--no-default-features",
+      "--features grpc,map_view", // no `analytics`
+      "-o rerun_js/web-viewer",
+    ].join(" "),
+  );
 }
 
-child_process.execSync(
-  "cargo run -p re_dev_tools -- build-web-viewer --debug --target no-modules-base -o rerun_js/web-viewer",
-  { cwd: __dirname, stdio: "inherit" },
-);
-
-function script() {
+function re_viewer_js() {
   let code = fs.readFileSync(path.join(__dirname, "re_viewer.js"), "utf-8");
 
   // this transforms the module, wrapping it in a default-exported function.
@@ -64,11 +66,10 @@ ${code}
 function deinit() {
   __wbg_init.__wbindgen_wasm_module = null;
   wasm = null;
-  cachedFloat32Memory0 = null;
-  cachedFloat64Memory0 = null;
-  cachedInt32Memory0 = null;
-  cachedUint32Memory0 = null;
-  cachedUint8Memory0 = null;
+  cachedFloat32ArrayMemory0 = null;
+  cachedInt32ArrayMemory0 = null;
+  cachedUint32ArrayMemory0 = null;
+  cachedUint8ArrayMemory0 = null;
 }
 
 return Object.assign(__wbg_init, { initSync, deinit }, __exports);
@@ -80,21 +81,23 @@ return Object.assign(__wbg_init, { initSync, deinit }, __exports);
   // cleaned up properly.
   // TODO(jprochazk): Can we force these to run before we null `wasm` instead?
   const closure_dtors = `const CLOSURE_DTORS = (typeof FinalizationRegistry === 'undefined')
-    ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(state => {
-    wasm.__wbindgen_export_3.get(state.dtor)(state.a, state.b)`;
+        ? { register: () => {}, unregister: () => {} }
+        : new FinalizationRegistry(state => {
+        wasm.__wbindgen_export_4.get(state.dtor)(state.a, state.b)
+    });`;
 
   const closure_dtors_patch = `const CLOSURE_DTORS = (typeof FinalizationRegistry === 'undefined')
-    ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(state => {
-    wasm?.__wbindgen_export_3.get(state.dtor)(state.a, state.b)`;
+        ? { register: () => {}, unregister: () => {} }
+        : new FinalizationRegistry(state => {
+        wasm?.__wbindgen_export_4.get(state.dtor)(state.a, state.b)
+    });`;
 
   code = code.replace(closure_dtors, closure_dtors_patch);
 
   fs.writeFileSync(path.join(__dirname, "re_viewer.js"), code);
 }
 
-function types() {
+function re_viewer_d_ts() {
   let code = fs.readFileSync(path.join(__dirname, "re_viewer.d.ts"), "utf-8");
 
   // this transformation just re-exports WebHandle and adds a default export inside the `.d.ts` file
@@ -108,18 +111,27 @@ export default function(): wasm_bindgen;
   fs.writeFileSync(path.join(__dirname, "re_viewer.d.ts"), code);
 }
 
-const args = util.parseArgs({
-  options: {
-    mode: {
-      type: "string",
+function main() {
+  const args = util.parseArgs({
+    options: {
+      mode: {
+        type: "string",
+      },
     },
-  },
-});
+  });
+  const mode = args.values.mode;
 
-if (!args.values.mode) {
-  throw new Error("Missing required argument: mode");
+  if (!mode) {
+    throw new Error("Missing required argument: mode");
+  }
+
+  buildWebViewer(mode);
+  re_viewer_js();
+  re_viewer_d_ts();
 }
 
-wasm(args.values.mode);
-script();
-types();
+try {
+  main();
+} catch (e) {
+  console.error(e);
+}

@@ -5,14 +5,32 @@ use itertools::Itertools as _;
 
 use crate::EntityPath;
 
+/// Error returned by [`EntityPathFilter::resolve_strict`] and [`EntityPathFilter::parse_strict`].
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
+pub enum EntityPathFilterError {
+    #[error("Path parse error: {0}")]
+    PathParseError(#[from] crate::PathParseError),
+
+    #[error("Unresolved substitution: {0}")]
+    UnresolvedSubstitution(String),
+}
+
 /// A set of substitutions for entity paths.
-#[derive(Default)]
-pub struct EntityPathSubs(pub HashMap<String, String>);
+///
+/// Important: the same substitutions must be used in every place we resolve [`EntityPathFilter`] to
+/// [`ResolvedEntityPathFilter`].
+#[derive(Debug)]
+pub struct EntityPathSubs(HashMap<String, String>);
 
 impl EntityPathSubs {
     /// Create a new set of substitutions from a single origin.
     pub fn new_with_origin(origin: &EntityPath) -> Self {
         Self(std::iter::once(("origin".to_owned(), origin.to_string())).collect())
+    }
+
+    /// No variable substitutions.
+    pub fn empty() -> Self {
+        Self(HashMap::default())
     }
 }
 
@@ -34,7 +52,29 @@ impl EntityPathSubs {
 /// (`/world/**` matches both `/world` and `/world/car/driver`).
 /// Other uses of `*` are not (yet) supported.
 ///
-/// `EntityPathFilter` sorts the rule by entity path, with recursive coming before non-recursive.
+/// Since variable substitution (and thus path parsing) hasn't been performed yet,
+/// the rules can not be sorted yet from general to specific, instead they are stored
+/// in alphabetical order.
+/// To expand variables & evaluate the filter, use [`ResolvedEntityPathFilter`].
+#[derive(Clone, Default, PartialEq, Eq, Debug, Hash)]
+pub struct EntityPathFilter {
+    rules: BTreeMap<EntityPathRule, RuleEffect>,
+}
+
+// Note: it's not possible to implement that for `S: AsRef<str>` because this conflicts with some
+// blanket implementation in `core` :(
+impl TryFrom<&str> for EntityPathFilter {
+    type Error = EntityPathFilterError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::parse_strict(value)
+    }
+}
+
+/// An [`EntityPathFilter`] with all variables Resolved.
+///
+/// [`ResolvedEntityPathFilter`] sorts the rule by specificity of the entity path,
+/// with recursive coming before non-recursive.
 /// This means the last matching rule is also the most specific one.
 /// For instance:
 ///
@@ -49,44 +89,70 @@ impl EntityPathSubs {
 /// The last rule matching `/world/car/hood` is `- /world/car/**`, so it is excluded.
 /// The last rule matching `/world` is `- /world`, so it is excluded.
 /// The last rule matching `/world/house` is `+ /world/**`, so it is included.
-#[derive(Clone, Default, PartialEq, Eq)]
-pub struct EntityPathFilter {
-    rules: BTreeMap<EntityPathRule, RuleEffect>,
+#[derive(Clone, Default, PartialEq, Eq, Hash)]
+pub struct ResolvedEntityPathFilter {
+    rules: BTreeMap<ResolvedEntityPathRule, RuleEffect>,
 }
 
-impl std::hash::Hash for EntityPathFilter {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.formatted().hash(state);
-    }
-}
-
-impl std::fmt::Debug for EntityPathFilter {
+impl std::fmt::Debug for ResolvedEntityPathFilter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "EntityPathFilter({:?})", self.formatted())
+        write!(f, "ResolvedEntityPathFilter({:?})", self.formatted())
     }
 }
 
+/// A single entity path rule.
+///
+/// This is a raw, whitespace trimmed path expression without any variable substitutions.
+/// See [`EntityPathFilter`] for more information.
+///
+/// Note that ordering of unresolved entity path rules is simply alphabetical.
+/// In contrast, [`ResolvedEntityPathRule`] are ordered by entity path from least specific to most specific.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub struct EntityPathRule(String);
+
+impl From<EntityPath> for EntityPathRule {
+    #[inline]
+    fn from(entity_path: EntityPath) -> Self {
+        Self::exact_entity(&entity_path)
+    }
+}
+
+impl std::ops::Deref for EntityPathRule {
+    type Target = str;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for EntityPathRule {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "{}{}{}",
+            self.0,
+            if EntityPath::parse_forgiving(&self.0).is_root() {
+                ""
+            } else {
+                "/"
+            },
+            if self.include_subtree() { "**" } else { "" }
+        ))
+    }
+}
+
+/// A path rule with all variables resolved to entity paths.
 #[derive(Clone, Debug)]
-pub struct EntityPathRule {
-    // We need to store the raw expression to be able to round-trip the filter
-    // when it contains substitutions.
-    pub raw_expression: String,
+pub struct ResolvedEntityPathRule {
+    /// The original rule, with unresolved variables.
+    pub rule: EntityPathRule,
 
-    pub path: EntityPath,
-
-    /// If true, ALSO include children and grandchildren of this path (recursive rule).
-    pub include_subtree: bool,
+    /// The resolved path, with all variables Resolved.
+    pub resolved_path: EntityPath,
 }
 
-impl PartialEq for EntityPathRule {
-    fn eq(&self, other: &Self) -> bool {
-        self.raw_expression == other.raw_expression
-    }
-}
-
-impl Eq for EntityPathRule {}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RuleEffect {
     Include,
     Exclude,
@@ -95,8 +161,8 @@ pub enum RuleEffect {
 impl std::ops::AddAssign for EntityPathFilter {
     /// The union of all rules
     #[inline]
-    fn add_assign(&mut self, mut rhs: Self) {
-        self.rules.append(&mut rhs.rules);
+    fn add_assign(&mut self, rhs: Self) {
+        self.rules.extend(rhs.rules);
     }
 }
 
@@ -111,7 +177,94 @@ impl std::iter::Sum for EntityPathFilter {
     }
 }
 
+/// Split a string into whitespace-separated tokens with extra logic.
+///
+/// Specifically, we allow for whitespace between `+`/`-` and the following token.
+///
+/// Additional rules:
+///  - Escaped whitespace never results in a split.
+///  - Otherwise always split on `\n` (even if it follows a `+` or `-` character).
+///  - Only consider `+` and `-` characters as special if they are the first character of a token.
+///  - Split on whitespace does not following a relevant `+` or `-` character.
+fn split_whitespace_smart(path: &'_ str) -> Vec<&'_ str> {
+    #![allow(clippy::unwrap_used)]
+
+    // We parse on bytes, and take care to only split on either side of a one-byte ASCII,
+    // making the `from_utf8(…)`s below safe to unwrap.
+    let mut bytes = path.as_bytes();
+
+    let mut tokens = vec![];
+
+    // Start by ignoring any leading whitespace
+    while !bytes.is_empty() {
+        let mut i = 0;
+        let mut is_in_escape = false;
+        let mut is_include_exclude = false;
+        let mut new_token = true;
+
+        // Find the next unescaped whitespace character not following a '+' or '-' character
+        while i < bytes.len() {
+            let is_unescaped_whitespace = !is_in_escape && bytes[i].is_ascii_whitespace();
+
+            let is_unescaped_newline = !is_in_escape && bytes[i] == b'\n';
+
+            if is_unescaped_newline || (!is_include_exclude && is_unescaped_whitespace) {
+                break;
+            }
+
+            is_in_escape = bytes[i] == b'\\';
+
+            if bytes[i] == b'+' || bytes[i] == b'-' {
+                is_include_exclude = new_token;
+            } else if !is_unescaped_whitespace {
+                is_include_exclude = false;
+                new_token = false;
+            }
+
+            i += 1;
+        }
+        if i > 0 {
+            tokens.push(&bytes[..i]);
+        }
+
+        // Continue skipping whitespace characters
+        while i < bytes.len() {
+            if is_in_escape || !bytes[i].is_ascii_whitespace() {
+                break;
+            }
+            is_in_escape = bytes[i] == b'\\';
+            i += 1;
+        }
+
+        bytes = &bytes[i..];
+    }
+
+    // Safety: we split at proper character boundaries
+    tokens
+        .iter()
+        .map(|token| std::str::from_utf8(token).unwrap())
+        .collect()
+}
+
 impl EntityPathFilter {
+    /// Iterates the expressions in alphabetical order.
+    ///
+    /// This is **not** the order the rules are evaluated in
+    /// (use [`ResolvedEntityPathFilter::iter_unresolved_expressions`] for that instead).
+    pub fn iter_expressions(&self) -> impl Iterator<Item = String> + '_ {
+        self.rules.iter().map(|(filter, effect)| {
+            let mut s = String::new();
+            s.push_str(match effect {
+                RuleEffect::Include => "+ ",
+                RuleEffect::Exclude => "- ",
+            });
+            s.push_str(&filter.0);
+            s
+        })
+    }
+
+    /// Parse an entity path filter from a string, ignoring any parsing errors.
+    ///
     /// Example of rules:
     ///
     /// ```diff
@@ -123,11 +276,33 @@ impl EntityPathFilter {
     /// Each line is a rule.
     ///
     /// The first character should be `+` or `-`. If missing, `+` is assumed.
-    /// The rest of the line is trimmed and treated as an entity path.
+    /// The rest of the line is trimmed and treated as an entity path after variable substitution through [`Self::resolve_forgiving`]/[`Self::resolve_strict`].
     ///
     /// Conflicting rules are resolved by the last rule.
-    pub fn parse_forgiving(rules: &str, subst_env: &EntityPathSubs) -> Self {
-        Self::from_query_expressions(rules.split('\n'), subst_env)
+    pub fn parse_forgiving(rules: &str) -> Self {
+        let split_rules = split_whitespace_smart(rules);
+        Self::from_query_expressions(split_rules)
+    }
+
+    /// Parse an entity path filter from a string.
+    ///
+    /// Example of rules:
+    ///
+    /// ```diff
+    /// + /world/**
+    /// - /world/roads/**
+    /// + /world/roads/main
+    /// ```
+    ///
+    /// Each line is a rule.
+    ///
+    /// The first character should be `+` or `-`. If missing, `+` is assumed.
+    /// The rest of the line is trimmed and treated as an entity path after variable substitution through [`Self::resolve_forgiving`]/[`Self::resolve_strict`].
+    ///
+    /// Conflicting rules are resolved by the last rule.
+    #[allow(clippy::unnecessary_wraps)] // TODO(andreas): Do some error checking here?
+    pub fn parse_strict(rules: &str) -> Result<Self, EntityPathFilterError> {
+        Ok(Self::parse_forgiving(rules))
     }
 
     /// Build a filter from a list of query expressions.
@@ -138,10 +313,7 @@ impl EntityPathFilter {
     /// The rest of the expression is trimmed and treated as an entity path.
     ///
     /// Conflicting rules are resolved by the last rule.
-    pub fn from_query_expressions<'a>(
-        rules: impl IntoIterator<Item = &'a str>,
-        subst_env: &EntityPathSubs,
-    ) -> Self {
+    pub fn from_query_expressions<'a>(rules: impl IntoIterator<Item = &'a str>) -> Self {
         let mut filter = Self::default();
 
         for line in rules
@@ -155,46 +327,165 @@ impl EntityPathFilter {
                 _ => (RuleEffect::Include, line),
             };
 
-            let rule = EntityPathRule::parse_forgiving(path_pattern, subst_env);
+            let rule = EntityPathRule::new(path_pattern);
 
-            filter.add_rule(effect, rule);
+            filter.rules.insert(rule, effect);
         }
 
+        filter
+    }
+
+    /// Adds a rule to this filter.
+    ///
+    /// If there's already an effect for the rule, it is overwritten with the new effect.
+    pub fn add_rule(&mut self, effect: RuleEffect, rule: EntityPathRule) {
+        self.rules.insert(rule, effect);
+    }
+
+    /// Creates a filter that accepts everything.
+    pub fn all() -> Self {
+        Self {
+            rules: std::iter::once((
+                EntityPathRule::exact_entity(&EntityPath::root()),
+                RuleEffect::Include,
+            ))
+            .collect(),
+        }
+    }
+
+    /// Include this path or variable expression, but not the subtree.
+    pub fn add_exact(&mut self, path_or_variable: &str) {
+        self.rules
+            .insert(EntityPathRule::exact(path_or_variable), RuleEffect::Include);
+    }
+
+    /// Include this entity, but not the subtree.
+    pub fn add_exact_entity(&mut self, path: &EntityPath) {
+        self.rules
+            .insert(EntityPathRule::exact_entity(path), RuleEffect::Include);
+    }
+
+    /// Include this entity or variable expression with subtree.
+    pub fn add_subtree(&mut self, path_or_variable: &str) {
+        self.rules.insert(
+            EntityPathRule::including_subtree(path_or_variable),
+            RuleEffect::Include,
+        );
+    }
+
+    /// Include this entity with subtree.
+    pub fn add_entity_subtree(&mut self, entity_path: &EntityPath) {
+        self.rules.insert(
+            EntityPathRule::including_entity_subtree(entity_path),
+            RuleEffect::Include,
+        );
+    }
+
+    /// Creates a new entity path filter that includes only a single path or variable expression.
+    pub fn single_filter(path_or_variable: &str) -> Self {
+        let mut filter = Self::default();
+        filter.add_exact(path_or_variable);
         filter
     }
 
     /// Creates a new entity path filter that includes only a single entity.
     pub fn single_entity_filter(entity_path: &EntityPath) -> Self {
         let mut filter = Self::default();
-        filter.add_exact(entity_path.clone());
+        filter.add_exact_entity(entity_path);
         filter
     }
 
     /// Creates a new entity path filter that includes a single subtree.
-    pub fn subtree_entity_filter(entity_path: &EntityPath) -> Self {
+    pub fn subtree_filter(path_or_variable: &str) -> Self {
         let mut filter = Self::default();
-        filter.add_subtree(entity_path.clone());
+        filter.add_subtree(path_or_variable);
         filter
     }
 
-    pub fn add_rule(&mut self, effect: RuleEffect, rule: EntityPathRule) {
-        self.rules.insert(rule, effect);
+    /// Creates a new entity path filter that includes a single subtree.
+    ///
+    /// To use this with unsubsituted variables, use [`Self::subtree_filter`] instead.
+    pub fn subtree_entity_filter(entity_path: &EntityPath) -> Self {
+        let mut filter = Self::default();
+        filter.add_entity_subtree(entity_path);
+        filter
     }
 
-    pub fn iter_expressions(&self) -> impl Iterator<Item = String> + '_ {
-        self.rules.iter().map(|(rule, effect)| {
+    /// Resolve variables & parse paths, ignoring any errors.
+    pub fn resolve_forgiving(&self, subst_env: &EntityPathSubs) -> ResolvedEntityPathFilter {
+        let rules = self
+            .rules
+            .iter()
+            .map(|(rule, effect)| {
+                (
+                    ResolvedEntityPathRule::parse_forgiving(rule, subst_env),
+                    *effect,
+                )
+            })
+            .collect();
+        ResolvedEntityPathFilter { rules }
+    }
+
+    /// Resolve variables & parse paths, returning an error if any rule cannot be parsed or variable substitution fails.
+    pub fn resolve_strict(
+        self,
+        subst_env: &EntityPathSubs,
+    ) -> Result<ResolvedEntityPathFilter, EntityPathFilterError> {
+        let rules = self
+            .rules
+            .into_iter()
+            .map(|(rule, effect)| {
+                ResolvedEntityPathRule::parse_strict(&rule, subst_env).map(|r| (r, effect))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        Ok(ResolvedEntityPathFilter {
+            rules: BTreeMap::from_iter(rules),
+        })
+    }
+
+    /// Resolve variables & parse paths, without any substitutions.
+    pub fn resolve_without_substitutions(self) -> ResolvedEntityPathFilter {
+        self.resolve_forgiving(&EntityPathSubs::empty())
+    }
+
+    #[inline]
+    /// Iterate over all rules in the filter.
+    pub fn rules(&self) -> impl Iterator<Item = (&EntityPathRule, &RuleEffect)> {
+        self.rules.iter()
+    }
+}
+
+impl ResolvedEntityPathFilter {
+    /// Turns the resolved filter back into an unresolved filter.
+    pub fn unresolved(&self) -> EntityPathFilter {
+        EntityPathFilter {
+            rules: self
+                .rules
+                .iter()
+                .map(|(rule, effect)| (rule.rule.clone(), *effect))
+                .collect(),
+        }
+    }
+
+    /// Iterate over the raw expressions of the rules, displaying the raw unresolved expressions.
+    ///
+    /// Note that they are iterated in the order of the resolved rules in contrast to [`EntityPathFilter::iter_expressions`].
+    pub fn iter_unresolved_expressions(&self) -> impl Iterator<Item = String> + '_ {
+        // Do **not** call `unresolved()` because this would yield a different order!
+
+        self.rules.iter().map(|(filter, effect)| {
             let mut s = String::new();
             s.push_str(match effect {
                 RuleEffect::Include => "+ ",
                 RuleEffect::Exclude => "- ",
             });
-            s.push_str(&rule.raw_expression);
+            s.push_str(&filter.rule);
             s
         })
     }
 
     pub fn formatted(&self) -> String {
-        self.iter_expressions().join("\n")
+        self.iter_unresolved_expressions().join("\n")
     }
 
     /// Find the most specific matching rule and return its effect.
@@ -212,7 +503,8 @@ impl EntityPathFilter {
         None
     }
 
-    pub fn is_included(&self, path: &EntityPath) -> bool {
+    /// Does this filter include the given entity path?
+    pub fn matches(&self, path: &EntityPath) -> bool {
         let effect = self
             .most_specific_match(path)
             .unwrap_or(RuleEffect::Exclude);
@@ -223,24 +515,19 @@ impl EntityPathFilter {
     }
 
     /// Is there a rule for this exact entity path (ignoring subtree)?
-    pub fn is_exact_included(&self, entity_path: &EntityPath) -> bool {
+    pub fn matches_exactly(&self, entity_path: &EntityPath) -> bool {
         self.rules.iter().any(|(rule, effect)| {
-            effect == &RuleEffect::Include && !rule.include_subtree && rule.path == *entity_path
+            effect == &RuleEffect::Include
+                && !rule.rule.include_subtree()
+                && rule.resolved_path == *entity_path
         })
     }
 
-    /// Include this entity, but not the subtree.
-    pub fn add_exact(&mut self, clone: EntityPath) {
-        self.rules
-            .insert(EntityPathRule::exact(clone), RuleEffect::Include);
-    }
-
-    /// Include this entity with subtree.
-    pub fn add_subtree(&mut self, clone: EntityPath) {
-        self.rules.insert(
-            EntityPathRule::including_subtree(clone),
-            RuleEffect::Include,
-        );
+    /// Adds a rule to this filter.
+    ///
+    /// If there's already an effect for the rule, it is overwritten with the new effect.
+    pub fn add_rule(&mut self, effect: RuleEffect, rule: ResolvedEntityPathRule) {
+        self.rules.insert(rule, effect);
     }
 
     /// Remove a subtree and any existing rules that it would match.
@@ -249,50 +536,56 @@ impl EntityPathFilter {
     /// it can still be overridden by existing inclusions. This method ensures
     /// that not only do we add a subtree exclusion, but clear out any existing
     /// inclusions or (now redundant) exclusions that would match the subtree.
-    pub fn remove_subtree_and_matching_rules(&mut self, clone: EntityPath) {
-        let new_exclusion = EntityPathRule::including_subtree(clone);
+    pub fn remove_subtree_and_matching_rules(&mut self, entity_path: EntityPath) {
+        let new_exclusion = ResolvedEntityPathRule {
+            rule: EntityPathRule::including_entity_subtree(&entity_path),
+            resolved_path: entity_path,
+        };
 
         // Remove any rule that is a subtree of the new exclusion.
         self.rules
-            .retain(|rule, _| !new_exclusion.matches(&rule.path));
+            .retain(|rule, _| !new_exclusion.matches(&rule.resolved_path));
 
         self.rules.insert(new_exclusion, RuleEffect::Exclude);
     }
 
     /// Remove any rule for the given entity path (ignoring whether or not that rule includes the subtree).
     pub fn remove_rule_for(&mut self, entity_path: &EntityPath) {
-        self.rules.retain(|rule, _| rule.path != *entity_path);
+        self.rules
+            .retain(|rule, _| rule.resolved_path != *entity_path);
     }
 
     /// Is there any rule for this entity path?
     ///
     /// Whether or not the subtree is included is NOT important.
     pub fn contains_rule_for_exactly(&self, entity_path: &EntityPath) -> bool {
-        self.rules.iter().any(|(rule, _)| rule.path == *entity_path)
+        self.rules
+            .iter()
+            .any(|(rule, _)| rule.resolved_path == *entity_path)
     }
 
     /// Is this entity path explicitly included?
     ///
     /// Whether or not the subtree is included is NOT important.
     pub fn is_explicitly_included(&self, entity_path: &EntityPath) -> bool {
-        self.rules
-            .iter()
-            .any(|(rule, effect)| rule.path == *entity_path && effect == &RuleEffect::Include)
+        self.rules.iter().any(|(rule, effect)| {
+            rule.resolved_path == *entity_path && effect == &RuleEffect::Include
+        })
     }
 
     /// Is this entity path explicitly excluded?
     ///
     /// Whether or not the subtree is included is NOT important.
     pub fn is_explicitly_excluded(&self, entity_path: &EntityPath) -> bool {
-        self.rules
-            .iter()
-            .any(|(rule, effect)| rule.path == *entity_path && effect == &RuleEffect::Exclude)
+        self.rules.iter().any(|(rule, effect)| {
+            rule.resolved_path == *entity_path && effect == &RuleEffect::Exclude
+        })
     }
 
     /// Is anything under this path included (including self)?
     pub fn is_anything_in_subtree_included(&self, path: &EntityPath) -> bool {
         for (rule, effect) in &self.rules {
-            if effect == &RuleEffect::Include && rule.path.starts_with(path) {
+            if effect == &RuleEffect::Include && rule.resolved_path.starts_with(path) {
                 return true; // something in this subtree is explicitly included
             }
         }
@@ -306,7 +599,7 @@ impl EntityPathFilter {
                         return true; // the entity (with or without subtree) is explicitly included
                     }
                     RuleEffect::Exclude => {
-                        if rule.include_subtree {
+                        if rule.rule.include_subtree() {
                             // the subtree is explicitly excluded,
                             // and we've already checked that nothing in the subtree was included.
                             return false;
@@ -323,7 +616,7 @@ impl EntityPathFilter {
 
     /// Checks whether this results of this filter "fully contain" the results of another filter.
     ///
-    /// If this returns `true` there should not exist any [`EntityPath`] for which [`Self::is_included`]
+    /// If this returns `true` there should not exist any [`EntityPath`] for which [`Self::matches`]
     /// would return `true` and the other filter would return `false` for this filter.
     ///
     /// This check operates purely on the rule expressions and not the actual entity tree,
@@ -343,13 +636,15 @@ impl EntityPathFilter {
                         .rules
                         .iter()
                         .rev()
-                        .find(|(r, _)| r.matches(&other_rule.path))
+                        .find(|(r, _)| r.matches(&other_rule.resolved_path))
                     {
                         match self_effect {
                             RuleEffect::Include => {
                                 // If the other rule includes the subtree, but the matching
                                 // rule doesn't, then we don't fully contain the other rule.
-                                if other_rule.include_subtree && !self_rule.include_subtree {
+                                if other_rule.rule.include_subtree()
+                                    && !self_rule.rule.include_subtree()
+                                {
                                     return false;
                                 }
                             }
@@ -372,7 +667,7 @@ impl EntityPathFilter {
                         .rules
                         .iter()
                         .rev()
-                        .find(|(r, _)| r.matches(&self_rule.path))
+                        .find(|(r, _)| r.matches(&self_rule.resolved_path))
                     {
                         match other_effect {
                             RuleEffect::Include => {
@@ -388,98 +683,210 @@ impl EntityPathFilter {
         // inclusion rule and didn't hit an exclusion rule.
         true
     }
+
+    #[inline]
+    /// Iterate over all rules in the filter.
+    pub fn rules(&self) -> impl Iterator<Item = (&ResolvedEntityPathRule, &RuleEffect)> {
+        self.rules.iter()
+    }
 }
 
 impl EntityPathRule {
+    /// Create a new [`EntityPathRule`] from a string.
+    pub fn new(expression: &str) -> Self {
+        Self(expression.trim().to_owned())
+    }
+
+    /// Whether this rule includes a subtree.
+    #[inline]
+    pub fn include_subtree(&self) -> bool {
+        self.0.ends_with("/**")
+    }
+
+    /// Match this path or variable expression, but not children.
+    #[inline]
+    pub fn exact(path_or_variable: &str) -> Self {
+        Self(path_or_variable.to_owned())
+    }
+
     /// Match this path, but not children.
     #[inline]
-    pub fn exact(path: EntityPath) -> Self {
+    pub fn exact_entity(path: &EntityPath) -> Self {
+        Self(path.to_string())
+    }
+
+    /// Match this path or variable expression and any entity in its subtree.
+    #[inline]
+    pub fn including_subtree(path_or_variable: &str) -> Self {
+        Self(format!("{path_or_variable}/**"))
+    }
+
+    /// Match this path and any entity in its subtree.
+    #[inline]
+    pub fn including_entity_subtree(entity_path: &EntityPath) -> Self {
+        Self::including_subtree(&entity_path.to_string())
+    }
+}
+
+impl ResolvedEntityPathRule {
+    /// Whether this rule matches the given path.
+    #[inline]
+    pub fn matches(&self, path: &EntityPath) -> bool {
+        if self.rule.include_subtree() {
+            path.starts_with(&self.resolved_path)
+        } else {
+            path == &self.resolved_path
+        }
+    }
+
+    /// Match this path, but not children.
+    #[inline]
+    pub fn exact_entity(path: &EntityPath) -> Self {
         Self {
-            raw_expression: path.to_string(),
-            path,
-            include_subtree: false,
+            rule: EntityPathRule::exact_entity(path),
+            resolved_path: path.clone(),
         }
     }
 
     /// Match this path and any entity in its subtree.
     #[inline]
-    pub fn including_subtree(path: EntityPath) -> Self {
+    pub fn including_subtree(entity_path: &EntityPath) -> Self {
         Self {
-            raw_expression: format!("{path}/**",),
-            path,
-            include_subtree: true,
+            rule: EntityPathRule::including_entity_subtree(entity_path),
+            resolved_path: entity_path.clone(),
         }
     }
 
-    pub fn parse_forgiving(expression: &str, subst_env: &EntityPathSubs) -> Self {
-        let raw_expression = expression.trim().to_owned();
-
+    fn substitute_variables(rule: &EntityPathRule, subst_env: &EntityPathSubs) -> String {
         // TODO(#5528): This is a very naive implementation of variable substitution.
         // unclear if we want to do this here, push this down into `EntityPath::parse`,
         // or even supported deferred evaluation on the `EntityPath` itself.
-        let mut expression_sub = raw_expression.clone();
+        let mut expression_sub = rule.0.clone();
         for (key, value) in &subst_env.0 {
             expression_sub = expression_sub.replace(format!("${key}").as_str(), value);
             expression_sub = expression_sub.replace(format!("${{{key}}}").as_str(), value);
         }
+        expression_sub
+    }
 
-        if expression == "/**" {
+    pub fn parse_strict(
+        expression: &str,
+        subst_env: &EntityPathSubs,
+    ) -> Result<Self, EntityPathFilterError> {
+        let rule = EntityPathRule::new(expression);
+        let expression_sub = Self::substitute_variables(&rule, subst_env);
+
+        // Check for unresolved substitutions.
+        if let Some(start) = expression_sub.find('$') {
+            let rest = &expression_sub[start + 1..];
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            return Err(EntityPathFilterError::UnresolvedSubstitution(
+                rest[..end].to_owned(),
+            ));
+        }
+
+        if expression_sub == "/**" {
+            Ok(Self {
+                rule,
+                resolved_path: EntityPath::root(),
+            })
+        } else if let Some(path) = expression_sub.strip_suffix("/**") {
+            Ok(Self {
+                rule,
+                resolved_path: EntityPath::parse_strict(path)?,
+            })
+        } else {
+            Ok(Self {
+                rule,
+                resolved_path: EntityPath::parse_strict(&expression_sub)?,
+            })
+        }
+    }
+
+    pub fn parse_forgiving(expression: &str, subst_env: &EntityPathSubs) -> Self {
+        let rule = EntityPathRule::new(expression);
+        let expression_sub = Self::substitute_variables(&rule, subst_env);
+
+        if expression_sub == "/**" {
             Self {
-                raw_expression,
-                path: EntityPath::root(),
-                include_subtree: true,
+                rule,
+                resolved_path: EntityPath::root(),
             }
         } else if let Some(path) = expression_sub.strip_suffix("/**") {
             Self {
-                raw_expression,
-                path: EntityPath::parse_forgiving(path),
-                include_subtree: true,
+                rule,
+                resolved_path: EntityPath::parse_forgiving(path),
             }
         } else {
             Self {
-                raw_expression,
-                path: EntityPath::parse_forgiving(&expression_sub),
-                include_subtree: false,
+                rule,
+                resolved_path: EntityPath::parse_forgiving(&expression_sub),
             }
         }
     }
+}
 
+impl std::fmt::Display for ResolvedEntityPathRule {
     #[inline]
-    pub fn matches(&self, path: &EntityPath) -> bool {
-        if self.include_subtree {
-            path.starts_with(&self.path)
-        } else {
-            path == &self.path
-        }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            rule,
+            resolved_path: path,
+        } = self;
+
+        f.write_fmt(format_args!(
+            "{path}{}{}",
+            if path.is_root() { "" } else { "/" },
+            if rule.include_subtree() { "**" } else { "" }
+        ))
     }
 }
 
-impl std::cmp::Ord for EntityPathRule {
+impl PartialEq for ResolvedEntityPathRule {
+    fn eq(&self, other: &Self) -> bool {
+        // Careful! This has to check the same fields as `Ord`/`Hash`!
+        self.rule.include_subtree() == other.rule.include_subtree()
+            && self.resolved_path == other.resolved_path
+    }
+}
+
+impl Eq for ResolvedEntityPathRule {}
+
+impl std::cmp::Ord for ResolvedEntityPathRule {
     /// Most specific last, which means recursive first.
     #[inline]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (&self.path, !self.include_subtree).cmp(&(&other.path, !other.include_subtree))
+        // Careful! This has to check the same fields as `PartialEq`/`Hash`!
+        (&self.resolved_path, !self.rule.include_subtree())
+            .cmp(&(&other.resolved_path, !other.rule.include_subtree()))
     }
 }
 
-impl std::cmp::PartialOrd for EntityPathRule {
+impl std::cmp::PartialOrd for ResolvedEntityPathRule {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
+impl std::hash::Hash for ResolvedEntityPathRule {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (self.rule.include_subtree(), self.resolved_path.hash()).hash(state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{EntityPath, EntityPathFilter, EntityPathRule, EntityPathSubs, RuleEffect};
+    use crate::{
+        path::entity_path_filter::{split_whitespace_smart, ResolvedEntityPathRule},
+        EntityPath, EntityPathFilter, EntityPathSubs, RuleEffect,
+    };
 
     #[test]
-    fn test_rule_order() {
-        let subst_env = Default::default();
-
+    fn test_resolved_rule_order() {
         use std::cmp::Ordering;
 
-        fn check_total_order(rules: &[EntityPathRule]) {
+        fn check_total_order(rules: &[ResolvedEntityPathRule]) {
             fn ordering_str(ord: Ordering) -> &'static str {
                 match ord {
                     Ordering::Greater => ">",
@@ -511,13 +918,14 @@ mod tests {
             "/world/car/driver",
             "/x/y/z",
         ];
-        let rules = rules.map(|rule| EntityPathRule::parse_forgiving(rule, &subst_env));
+        let rules = rules
+            .map(|rule| ResolvedEntityPathRule::parse_forgiving(rule, &EntityPathSubs::empty()));
         check_total_order(&rules);
     }
 
     #[test]
     fn test_entity_path_filter() {
-        let subst_env = Default::default();
+        let subst_env = EntityPathSubs::empty();
 
         let filter = EntityPathFilter::parse_forgiving(
             r#"
@@ -526,8 +934,8 @@ mod tests {
         - /world/car/**
         + /world/car/driver
         "#,
-            &subst_env,
-        );
+        )
+        .resolve_forgiving(&subst_env);
 
         for (path, expected_effect) in [
             ("/unworldly", None),
@@ -546,7 +954,9 @@ mod tests {
         }
 
         assert_eq!(
-            EntityPathFilter::parse_forgiving("/**", &subst_env).formatted(),
+            EntityPathFilter::parse_forgiving("/**")
+                .resolve_forgiving(&subst_env)
+                .formatted(),
             "+ /**"
         );
     }
@@ -564,8 +974,8 @@ mod tests {
         - $origin/car/**
         + $origin/car/driver
         "#,
-            &subst_env,
-        );
+        )
+        .resolve_forgiving(&subst_env);
 
         for (path, expected_effect) in [
             ("/unworldly", None),
@@ -590,15 +1000,15 @@ mod tests {
         }
 
         assert_eq!(
-            EntityPathFilter::parse_forgiving("/**", &subst_env).formatted(),
+            EntityPathFilter::parse_forgiving("/**")
+                .resolve_forgiving(&subst_env)
+                .formatted(),
             "+ /**"
         );
     }
 
     #[test]
     fn test_entity_path_filter_subtree() {
-        let subst_env = Default::default();
-
         let filter = EntityPathFilter::parse_forgiving(
             r#"
         + /world/**
@@ -608,8 +1018,8 @@ mod tests {
         - /world/city
         - /world/houses/**
         "#,
-            &subst_env,
-        );
+        )
+        .resolve_forgiving(&EntityPathSubs::empty());
 
         for (path, expected) in [
             ("/2D", false),
@@ -635,7 +1045,7 @@ mod tests {
 
     #[test]
     fn test_is_superset_of() {
-        let subst_env = Default::default();
+        let subst_env = EntityPathSubs::empty();
 
         struct TestCase {
             filter: &'static str,
@@ -698,9 +1108,11 @@ mod tests {
         ];
 
         for case in &cases {
-            let filter = EntityPathFilter::parse_forgiving(case.filter, &subst_env);
+            let filter =
+                EntityPathFilter::parse_forgiving(case.filter).resolve_forgiving(&subst_env);
             for contains in &case.contains {
-                let contains_filter = EntityPathFilter::parse_forgiving(contains, &subst_env);
+                let contains_filter =
+                    EntityPathFilter::parse_forgiving(contains).resolve_forgiving(&subst_env);
                 assert!(
                     filter.is_superset_of(&contains_filter),
                     "Expected {:?} to fully contain {:?}, but it didn't",
@@ -710,7 +1122,7 @@ mod tests {
             }
             for not_contains in &case.not_contains {
                 let not_contains_filter =
-                    EntityPathFilter::parse_forgiving(not_contains, &subst_env);
+                    EntityPathFilter::parse_forgiving(not_contains).resolve_forgiving(&subst_env);
                 assert!(
                     !filter.is_superset_of(&not_contains_filter),
                     "Expected {:?} to NOT fully contain {:?}, but it did",
@@ -719,5 +1131,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_split_whitespace_smart() {
+        assert_eq!(split_whitespace_smart("/world"), vec!["/world"]);
+        assert_eq!(split_whitespace_smart("a b c"), vec!["a", "b", "c"]);
+        assert_eq!(split_whitespace_smart("a\nb\tc  "), vec!["a", "b", "c"]);
+        assert_eq!(split_whitespace_smart(r"a\ b c"), vec![r"a\ b", "c"]);
+
+        assert_eq!(
+            split_whitespace_smart(" + a - b + c"),
+            vec!["+ a", "- b", "+ c"]
+        );
+        assert_eq!(
+            split_whitespace_smart("+ a -\n b + c"),
+            vec!["+ a", "-", "b", "+ c"]
+        );
+        assert_eq!(
+            split_whitespace_smart("/weird/path- +/oth- erpath"),
+            vec!["/weird/path-", "+/oth-", "erpath"]
+        );
+        assert_eq!(
+            split_whitespace_smart(r"+world/** -/world/points"),
+            vec!["+world/**", "-/world/points"]
+        );
+        assert_eq!(
+            split_whitespace_smart(r"+ world/** - /world/points"),
+            vec!["+ world/**", "- /world/points"]
+        );
     }
 }

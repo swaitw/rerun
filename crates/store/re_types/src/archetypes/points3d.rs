@@ -12,33 +12,24 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Archetype**: A 3D point cloud with positions and optional colors, radii, labels, etc.
 ///
 /// ## Examples
 ///
-/// ### Randomly distributed 3D points with varying color and radius
+/// ### Simple 3D points
 /// ```ignore
-/// use rand::{distributions::Uniform, Rng as _};
-///
 /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let rec = rerun::RecordingStreamBuilder::new("rerun_example_points3d_random").spawn()?;
-///
-///     let mut rng = rand::thread_rng();
-///     let dist = Uniform::new(-5., 5.);
+///     let rec = rerun::RecordingStreamBuilder::new("rerun_example_points3d").spawn()?;
 ///
 ///     rec.log(
-///         "random",
-///         &rerun::Points3D::new(
-///             (0..10).map(|_| (rng.sample(dist), rng.sample(dist), rng.sample(dist))),
-///         )
-///         .with_colors((0..10).map(|_| rerun::Color::from_rgb(rng.gen(), rng.gen(), rng.gen())))
-///         .with_radii((0..10).map(|_| rng.gen::<f32>())),
+///         "points",
+///         &rerun::Points3D::new([(0.0, 0.0, 0.0), (1.0, 1.0, 1.0)]),
 ///     )?;
 ///
 ///     Ok(())
@@ -46,40 +37,140 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 /// ```
 /// <center>
 /// <picture>
-///   <source media="(max-width: 480px)" srcset="https://static.rerun.io/point3d_random/7e94e1806d2c381943748abbb3bedb68d564de24/480w.png">
-///   <source media="(max-width: 768px)" srcset="https://static.rerun.io/point3d_random/7e94e1806d2c381943748abbb3bedb68d564de24/768w.png">
-///   <source media="(max-width: 1024px)" srcset="https://static.rerun.io/point3d_random/7e94e1806d2c381943748abbb3bedb68d564de24/1024w.png">
-///   <source media="(max-width: 1200px)" srcset="https://static.rerun.io/point3d_random/7e94e1806d2c381943748abbb3bedb68d564de24/1200w.png">
-///   <img src="https://static.rerun.io/point3d_random/7e94e1806d2c381943748abbb3bedb68d564de24/full.png" width="640">
+///   <source media="(max-width: 480px)" srcset="https://static.rerun.io/point3d_simple/32fb3e9b65bea8bd7ffff95ad839f2f8a157a933/480w.png">
+///   <source media="(max-width: 768px)" srcset="https://static.rerun.io/point3d_simple/32fb3e9b65bea8bd7ffff95ad839f2f8a157a933/768w.png">
+///   <source media="(max-width: 1024px)" srcset="https://static.rerun.io/point3d_simple/32fb3e9b65bea8bd7ffff95ad839f2f8a157a933/1024w.png">
+///   <source media="(max-width: 1200px)" srcset="https://static.rerun.io/point3d_simple/32fb3e9b65bea8bd7ffff95ad839f2f8a157a933/1200w.png">
+///   <img src="https://static.rerun.io/point3d_simple/32fb3e9b65bea8bd7ffff95ad839f2f8a157a933/full.png" width="640">
 /// </picture>
 /// </center>
 ///
-/// ### Log points with radii given in UI points
+/// ### Update a point cloud over time
 /// ```ignore
 /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let rec = rerun::RecordingStreamBuilder::new("rerun_example_points3d_ui_radius").spawn()?;
+///     let rec = rerun::RecordingStreamBuilder::new("rerun_example_points3d_row_updates").spawn()?;
 ///
-///     // Two blue points with scene unit radii of 0.1 and 0.3.
-///     rec.log(
-///         "scene_units",
-///         &rerun::Points3D::new([(0.0, 1.0, 0.0), (1.0, 1.0, 1.0)])
-///             // By default, radii are interpreted as world-space units.
-///             .with_radii([0.1, 0.3])
-///             .with_colors([rerun::Color::from_rgb(0, 0, 255)]),
-///     )?;
+///     // Prepare a point cloud that evolves over 5 timesteps, changing the number of points in the process.
+///     #[rustfmt::skip]
+///     let positions = [
+///         vec![[1.0, 0.0, 1.0], [0.5, 0.5, 2.0]],
+///         vec![[1.5, -0.5, 1.5], [1.0, 1.0, 2.5], [-0.5, 1.5, 1.0], [-1.5, 0.0, 2.0]],
+///         vec![[2.0, 0.0, 2.0], [1.5, -1.5, 3.0], [0.0, -2.0, 2.5], [1.0, -1.0, 3.5]],
+///         vec![[-2.0, 0.0, 2.0], [-1.5, 1.5, 3.0], [-1.0, 1.0, 3.5]],
+///         vec![[1.0, -1.0, 1.0], [2.0, -2.0, 2.0], [3.0, -1.0, 3.0], [2.0, 0.0, 4.0]],
+///     ];
 ///
-///     // Two red points with ui point radii of 40 and 60.
-///     // UI points are independent of zooming in Views, but are sensitive to the application UI scaling.
-///     // For 100% ui scaling, UI points are equal to pixels.
+///     // At each timestep, all points in the cloud share the same but changing color and radius.
+///     let colors = [0xFF0000FF, 0x00FF00FF, 0x0000FFFF, 0xFFFF00FF, 0x00FFFFFF];
+///     let radii = [0.05, 0.01, 0.2, 0.1, 0.3];
+///
+///     for (time, positions, color, radius) in itertools::izip!(10..15, positions, colors, radii) {
+///         rec.set_time_seconds("time", time);
+///
+///         let point_cloud = rerun::Points3D::new(positions)
+///             .with_colors([color])
+///             .with_radii([radius]);
+///
+///         rec.log("points", &point_cloud)?;
+///     }
+///
+///     Ok(())
+/// }
+/// ```
+/// <center>
+/// <picture>
+///   <source media="(max-width: 480px)" srcset="https://static.rerun.io/points3d_row_updates/fba056871b1ec3fc6978ab605d9a63e44ef1f6de/480w.png">
+///   <source media="(max-width: 768px)" srcset="https://static.rerun.io/points3d_row_updates/fba056871b1ec3fc6978ab605d9a63e44ef1f6de/768w.png">
+///   <source media="(max-width: 1024px)" srcset="https://static.rerun.io/points3d_row_updates/fba056871b1ec3fc6978ab605d9a63e44ef1f6de/1024w.png">
+///   <source media="(max-width: 1200px)" srcset="https://static.rerun.io/points3d_row_updates/fba056871b1ec3fc6978ab605d9a63e44ef1f6de/1200w.png">
+///   <img src="https://static.rerun.io/points3d_row_updates/fba056871b1ec3fc6978ab605d9a63e44ef1f6de/full.png" width="640">
+/// </picture>
+/// </center>
+///
+/// ### Update a point cloud over time, in a single operation
+/// ```ignore
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let rec =
+///         rerun::RecordingStreamBuilder::new("rerun_example_points3d_column_updates").spawn()?;
+///
+///     let times = rerun::TimeColumn::new_seconds("time", 10..15);
+///
+///     // Prepare a point cloud that evolves over 5 timesteps, changing the number of points in the process.
+///     #[rustfmt::skip]
+///     let positions = [
+///         [1.0, 0.0, 1.0], [0.5, 0.5, 2.0],
+///         [1.5, -0.5, 1.5], [1.0, 1.0, 2.5], [-0.5, 1.5, 1.0], [-1.5, 0.0, 2.0],
+///         [2.0, 0.0, 2.0], [1.5, -1.5, 3.0], [0.0, -2.0, 2.5], [1.0, -1.0, 3.5],
+///         [-2.0, 0.0, 2.0], [-1.5, 1.5, 3.0], [-1.0, 1.0, 3.5],
+///         [1.0, -1.0, 1.0], [2.0, -2.0, 2.0], [3.0, -1.0, 3.0], [2.0, 0.0, 4.0],
+///     ];
+///
+///     // At each timestep, all points in the cloud share the same but changing color and radius.
+///     let colors = [0xFF0000FF, 0x00FF00FF, 0x0000FFFF, 0xFFFF00FF, 0x00FFFFFF];
+///     let radii = [0.05, 0.01, 0.2, 0.1, 0.3];
+///
+///     // Partition our data as expected across the 5 timesteps.
+///     let position = rerun::Points3D::update_fields()
+///         .with_positions(positions)
+///         .columns([2, 4, 4, 3, 4])?;
+///     let color_and_radius = rerun::Points3D::update_fields()
+///         .with_colors(colors)
+///         .with_radii(radii)
+///         .columns_of_unit_batches()?;
+///
+///     rec.send_columns("points", [times], position.chain(color_and_radius))?;
+///
+///     Ok(())
+/// }
+/// ```
+/// <center>
+/// <picture>
+///   <source media="(max-width: 480px)" srcset="https://static.rerun.io/points3d_row_updates/fba056871b1ec3fc6978ab605d9a63e44ef1f6de/480w.png">
+///   <source media="(max-width: 768px)" srcset="https://static.rerun.io/points3d_row_updates/fba056871b1ec3fc6978ab605d9a63e44ef1f6de/768w.png">
+///   <source media="(max-width: 1024px)" srcset="https://static.rerun.io/points3d_row_updates/fba056871b1ec3fc6978ab605d9a63e44ef1f6de/1024w.png">
+///   <source media="(max-width: 1200px)" srcset="https://static.rerun.io/points3d_row_updates/fba056871b1ec3fc6978ab605d9a63e44ef1f6de/1200w.png">
+///   <img src="https://static.rerun.io/points3d_row_updates/fba056871b1ec3fc6978ab605d9a63e44ef1f6de/full.png" width="640">
+/// </picture>
+/// </center>
+///
+/// ### Update specific properties of a point cloud over time
+/// ```ignore
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let rec =
+///         rerun::RecordingStreamBuilder::new("rerun_example_points3d_partial_updates").spawn()?;
+///
+///     let positions = || (0..10).map(|i| (i as f32, 0.0, 0.0));
+///
+///     rec.set_time_sequence("frame", 0);
+///     rec.log("points", &rerun::Points3D::new(positions()))?;
+///
+///     for i in 0..10 {
+///         let colors = (0..10).map(|n| {
+///             if n < i {
+///                 rerun::Color::from_rgb(20, 200, 20)
+///             } else {
+///                 rerun::Color::from_rgb(200, 20, 20)
+///             }
+///         });
+///         let radii = (0..10).map(|n| if n < i { 0.6 } else { 0.2 });
+///
+///         // Update only the colors and radii, leaving everything else as-is.
+///         rec.set_time_sequence("frame", i);
+///         rec.log(
+///             "points",
+///             &rerun::Points3D::update_fields()
+///                 .with_radii(radii)
+///                 .with_colors(colors),
+///         )?;
+///     }
+///
+///     // Update the positions and radii, and clear everything else in the process.
+///     rec.set_time_sequence("frame", 20);
 ///     rec.log(
-///         "ui_points",
-///         &rerun::Points3D::new([(0.0, 0.0, 0.0), (1.0, 0.0, 1.0)])
-///             // rerun::Radius::new_ui_points produces a radius that the viewer interprets as given in ui points.
-///             .with_radii([
-///                 rerun::Radius::new_ui_points(40.0),
-///                 rerun::Radius::new_ui_points(60.0),
-///             ])
-///             .with_colors([rerun::Color::from_rgb(255, 0, 0)]),
+///         "points",
+///         &rerun::Points3D::clear_fields()
+///             .with_positions(positions())
+///             .with_radii([0.3]),
 ///     )?;
 ///
 ///     Ok(())
@@ -87,34 +178,37 @@ use ::re_types_core::{DeserializationError, DeserializationResult};
 /// ```
 /// <center>
 /// <picture>
-///   <source media="(max-width: 480px)" srcset="https://static.rerun.io/point3d_ui_radius/e051a65b4317438bcaea8d0eee016ac9460b5336/480w.png">
-///   <source media="(max-width: 768px)" srcset="https://static.rerun.io/point3d_ui_radius/e051a65b4317438bcaea8d0eee016ac9460b5336/768w.png">
-///   <source media="(max-width: 1024px)" srcset="https://static.rerun.io/point3d_ui_radius/e051a65b4317438bcaea8d0eee016ac9460b5336/1024w.png">
-///   <source media="(max-width: 1200px)" srcset="https://static.rerun.io/point3d_ui_radius/e051a65b4317438bcaea8d0eee016ac9460b5336/1200w.png">
-///   <img src="https://static.rerun.io/point3d_ui_radius/e051a65b4317438bcaea8d0eee016ac9460b5336/full.png" width="640">
+///   <source media="(max-width: 480px)" srcset="https://static.rerun.io/points3d_partial_updates/d8bec9c3388d2bd0fe59dff01ab8cde0bdda135e/480w.png">
+///   <source media="(max-width: 768px)" srcset="https://static.rerun.io/points3d_partial_updates/d8bec9c3388d2bd0fe59dff01ab8cde0bdda135e/768w.png">
+///   <source media="(max-width: 1024px)" srcset="https://static.rerun.io/points3d_partial_updates/d8bec9c3388d2bd0fe59dff01ab8cde0bdda135e/1024w.png">
+///   <source media="(max-width: 1200px)" srcset="https://static.rerun.io/points3d_partial_updates/d8bec9c3388d2bd0fe59dff01ab8cde0bdda135e/1200w.png">
+///   <img src="https://static.rerun.io/points3d_partial_updates/d8bec9c3388d2bd0fe59dff01ab8cde0bdda135e/full.png" width="640">
 /// </picture>
 /// </center>
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Points3D {
     /// All the 3D positions at which the point cloud shows points.
-    pub positions: Vec<crate::components::Position3D>,
+    pub positions: Option<SerializedComponentBatch>,
 
     /// Optional radii for the points, effectively turning them into circles.
-    pub radii: Option<Vec<crate::components::Radius>>,
+    pub radii: Option<SerializedComponentBatch>,
 
     /// Optional colors for the points.
-    pub colors: Option<Vec<crate::components::Color>>,
+    pub colors: Option<SerializedComponentBatch>,
 
     /// Optional text labels for the points.
     ///
     /// If there's a single label present, it will be placed at the center of the entity.
     /// Otherwise, each instance will have its own label.
-    pub labels: Option<Vec<crate::components::Text>>,
+    pub labels: Option<SerializedComponentBatch>,
+
+    /// Optional choice of whether the text labels should be shown by default.
+    pub show_labels: Option<SerializedComponentBatch>,
 
     /// Optional class Ids for the points.
     ///
     /// The [`components::ClassId`][crate::components::ClassId] provides colors and labels if not specified explicitly.
-    pub class_ids: Option<Vec<crate::components::ClassId>>,
+    pub class_ids: Option<SerializedComponentBatch>,
 
     /// Optional keypoint IDs for the points, identifying them within a class.
     ///
@@ -124,68 +218,130 @@ pub struct Points3D {
     /// with `class_id`).
     /// E.g. the classification might be 'Person' and the keypoints refer to joints on a
     /// detected skeleton.
-    pub keypoint_ids: Option<Vec<crate::components::KeypointId>>,
+    pub keypoint_ids: Option<SerializedComponentBatch>,
 }
 
-impl ::re_types_core::SizeBytes for Points3D {
+impl Points3D {
+    /// Returns the [`ComponentDescriptor`] for [`Self::positions`].
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.positions.heap_size_bytes()
-            + self.radii.heap_size_bytes()
-            + self.colors.heap_size_bytes()
-            + self.labels.heap_size_bytes()
-            + self.class_ids.heap_size_bytes()
-            + self.keypoint_ids.heap_size_bytes()
+    pub fn descriptor_positions() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.Points3D".into()),
+            component_name: "rerun.components.Position3D".into(),
+            archetype_field_name: Some("positions".into()),
+        }
     }
 
+    /// Returns the [`ComponentDescriptor`] for [`Self::radii`].
     #[inline]
-    fn is_pod() -> bool {
-        <Vec<crate::components::Position3D>>::is_pod()
-            && <Option<Vec<crate::components::Radius>>>::is_pod()
-            && <Option<Vec<crate::components::Color>>>::is_pod()
-            && <Option<Vec<crate::components::Text>>>::is_pod()
-            && <Option<Vec<crate::components::ClassId>>>::is_pod()
-            && <Option<Vec<crate::components::KeypointId>>>::is_pod()
+    pub fn descriptor_radii() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.Points3D".into()),
+            component_name: "rerun.components.Radius".into(),
+            archetype_field_name: Some("radii".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::colors`].
+    #[inline]
+    pub fn descriptor_colors() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.Points3D".into()),
+            component_name: "rerun.components.Color".into(),
+            archetype_field_name: Some("colors".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::labels`].
+    #[inline]
+    pub fn descriptor_labels() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.Points3D".into()),
+            component_name: "rerun.components.Text".into(),
+            archetype_field_name: Some("labels".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::show_labels`].
+    #[inline]
+    pub fn descriptor_show_labels() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.Points3D".into()),
+            component_name: "rerun.components.ShowLabels".into(),
+            archetype_field_name: Some("show_labels".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::class_ids`].
+    #[inline]
+    pub fn descriptor_class_ids() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.Points3D".into()),
+            component_name: "rerun.components.ClassId".into(),
+            archetype_field_name: Some("class_ids".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for [`Self::keypoint_ids`].
+    #[inline]
+    pub fn descriptor_keypoint_ids() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.Points3D".into()),
+            component_name: "rerun.components.KeypointId".into(),
+            archetype_field_name: Some("keypoint_ids".into()),
+        }
+    }
+
+    /// Returns the [`ComponentDescriptor`] for the associated indicator component.
+    #[inline]
+    pub fn descriptor_indicator() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.archetypes.Points3D".into()),
+            component_name: "rerun.components.Points3DIndicator".into(),
+            archetype_field_name: None,
+        }
     }
 }
 
-static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.components.Position3D".into()]);
+static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [Points3D::descriptor_positions()]);
 
-static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 3usize]> =
+static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 3usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.Radius".into(),
-            "rerun.components.Color".into(),
-            "rerun.components.Points3DIndicator".into(),
+            Points3D::descriptor_radii(),
+            Points3D::descriptor_colors(),
+            Points3D::descriptor_indicator(),
         ]
     });
 
-static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 3usize]> =
+static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 4usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.Text".into(),
-            "rerun.components.ClassId".into(),
-            "rerun.components.KeypointId".into(),
+            Points3D::descriptor_labels(),
+            Points3D::descriptor_show_labels(),
+            Points3D::descriptor_class_ids(),
+            Points3D::descriptor_keypoint_ids(),
         ]
     });
 
-static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 7usize]> =
+static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 8usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.components.Position3D".into(),
-            "rerun.components.Radius".into(),
-            "rerun.components.Color".into(),
-            "rerun.components.Points3DIndicator".into(),
-            "rerun.components.Text".into(),
-            "rerun.components.ClassId".into(),
-            "rerun.components.KeypointId".into(),
+            Points3D::descriptor_positions(),
+            Points3D::descriptor_radii(),
+            Points3D::descriptor_colors(),
+            Points3D::descriptor_indicator(),
+            Points3D::descriptor_labels(),
+            Points3D::descriptor_show_labels(),
+            Points3D::descriptor_class_ids(),
+            Points3D::descriptor_keypoint_ids(),
         ]
     });
 
 impl Points3D {
-    /// The total number of components in the archetype: 1 required, 3 recommended, 3 optional
-    pub const NUM_COMPONENTS: usize = 7usize;
+    /// The total number of components in the archetype: 1 required, 3 recommended, 4 optional
+    pub const NUM_COMPONENTS: usize = 8usize;
 }
 
 /// Indicator component for the [`Points3D`] [`::re_types_core::Archetype`]
@@ -205,118 +361,73 @@ impl ::re_types_core::Archetype for Points3D {
     }
 
     #[inline]
-    fn indicator() -> MaybeOwnedComponentBatch<'static> {
-        static INDICATOR: Points3DIndicator = Points3DIndicator::DEFAULT;
-        MaybeOwnedComponentBatch::Ref(&INDICATOR)
+    fn indicator() -> SerializedComponentBatch {
+        #[allow(clippy::unwrap_used)]
+        Points3DIndicator::DEFAULT.serialized().unwrap()
     }
 
     #[inline]
-    fn required_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn required_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         REQUIRED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         RECOMMENDED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         OPTIONAL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn all_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn all_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         ALL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
     fn from_arrow_components(
-        arrow_data: impl IntoIterator<Item = (ComponentName, Box<dyn arrow2::array::Array>)>,
+        arrow_data: impl IntoIterator<Item = (ComponentDescriptor, arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self> {
         re_tracing::profile_function!();
         use ::re_types_core::{Loggable as _, ResultExt as _};
-        let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data
-            .into_iter()
-            .map(|(name, array)| (name.full_name(), array))
-            .collect();
-        let positions = {
-            let array = arrays_by_name
-                .get("rerun.components.Position3D")
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.archetypes.Points3D#positions")?;
-            <crate::components::Position3D>::from_arrow_opt(&**array)
-                .with_context("rerun.archetypes.Points3D#positions")?
-                .into_iter()
-                .map(|v| v.ok_or_else(DeserializationError::missing_data))
-                .collect::<DeserializationResult<Vec<_>>>()
-                .with_context("rerun.archetypes.Points3D#positions")?
-        };
-        let radii = if let Some(array) = arrays_by_name.get("rerun.components.Radius") {
-            Some({
-                <crate::components::Radius>::from_arrow_opt(&**array)
-                    .with_context("rerun.archetypes.Points3D#radii")?
-                    .into_iter()
-                    .map(|v| v.ok_or_else(DeserializationError::missing_data))
-                    .collect::<DeserializationResult<Vec<_>>>()
-                    .with_context("rerun.archetypes.Points3D#radii")?
-            })
-        } else {
-            None
-        };
-        let colors = if let Some(array) = arrays_by_name.get("rerun.components.Color") {
-            Some({
-                <crate::components::Color>::from_arrow_opt(&**array)
-                    .with_context("rerun.archetypes.Points3D#colors")?
-                    .into_iter()
-                    .map(|v| v.ok_or_else(DeserializationError::missing_data))
-                    .collect::<DeserializationResult<Vec<_>>>()
-                    .with_context("rerun.archetypes.Points3D#colors")?
-            })
-        } else {
-            None
-        };
-        let labels = if let Some(array) = arrays_by_name.get("rerun.components.Text") {
-            Some({
-                <crate::components::Text>::from_arrow_opt(&**array)
-                    .with_context("rerun.archetypes.Points3D#labels")?
-                    .into_iter()
-                    .map(|v| v.ok_or_else(DeserializationError::missing_data))
-                    .collect::<DeserializationResult<Vec<_>>>()
-                    .with_context("rerun.archetypes.Points3D#labels")?
-            })
-        } else {
-            None
-        };
-        let class_ids = if let Some(array) = arrays_by_name.get("rerun.components.ClassId") {
-            Some({
-                <crate::components::ClassId>::from_arrow_opt(&**array)
-                    .with_context("rerun.archetypes.Points3D#class_ids")?
-                    .into_iter()
-                    .map(|v| v.ok_or_else(DeserializationError::missing_data))
-                    .collect::<DeserializationResult<Vec<_>>>()
-                    .with_context("rerun.archetypes.Points3D#class_ids")?
-            })
-        } else {
-            None
-        };
-        let keypoint_ids = if let Some(array) = arrays_by_name.get("rerun.components.KeypointId") {
-            Some({
-                <crate::components::KeypointId>::from_arrow_opt(&**array)
-                    .with_context("rerun.archetypes.Points3D#keypoint_ids")?
-                    .into_iter()
-                    .map(|v| v.ok_or_else(DeserializationError::missing_data))
-                    .collect::<DeserializationResult<Vec<_>>>()
-                    .with_context("rerun.archetypes.Points3D#keypoint_ids")?
-            })
-        } else {
-            None
-        };
+        let arrays_by_descr: ::nohash_hasher::IntMap<_, _> = arrow_data.into_iter().collect();
+        let positions = arrays_by_descr
+            .get(&Self::descriptor_positions())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_positions())
+            });
+        let radii = arrays_by_descr
+            .get(&Self::descriptor_radii())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_radii()));
+        let colors = arrays_by_descr
+            .get(&Self::descriptor_colors())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_colors()));
+        let labels = arrays_by_descr
+            .get(&Self::descriptor_labels())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_labels()));
+        let show_labels = arrays_by_descr
+            .get(&Self::descriptor_show_labels())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_show_labels())
+            });
+        let class_ids = arrays_by_descr
+            .get(&Self::descriptor_class_ids())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_class_ids())
+            });
+        let keypoint_ids = arrays_by_descr
+            .get(&Self::descriptor_keypoint_ids())
+            .map(|array| {
+                SerializedComponentBatch::new(array.clone(), Self::descriptor_keypoint_ids())
+            });
         Ok(Self {
             positions,
             radii,
             colors,
             labels,
+            show_labels,
             class_ids,
             keypoint_ids,
         })
@@ -324,33 +435,26 @@ impl ::re_types_core::Archetype for Points3D {
 }
 
 impl ::re_types_core::AsComponents for Points3D {
-    fn as_component_batches(&self) -> Vec<MaybeOwnedComponentBatch<'_>> {
-        re_tracing::profile_function!();
+    #[inline]
+    fn as_serialized_batches(&self) -> Vec<SerializedComponentBatch> {
         use ::re_types_core::Archetype as _;
         [
             Some(Self::indicator()),
-            Some((&self.positions as &dyn ComponentBatch).into()),
-            self.radii
-                .as_ref()
-                .map(|comp_batch| (comp_batch as &dyn ComponentBatch).into()),
-            self.colors
-                .as_ref()
-                .map(|comp_batch| (comp_batch as &dyn ComponentBatch).into()),
-            self.labels
-                .as_ref()
-                .map(|comp_batch| (comp_batch as &dyn ComponentBatch).into()),
-            self.class_ids
-                .as_ref()
-                .map(|comp_batch| (comp_batch as &dyn ComponentBatch).into()),
-            self.keypoint_ids
-                .as_ref()
-                .map(|comp_batch| (comp_batch as &dyn ComponentBatch).into()),
+            self.positions.clone(),
+            self.radii.clone(),
+            self.colors.clone(),
+            self.labels.clone(),
+            self.show_labels.clone(),
+            self.class_ids.clone(),
+            self.keypoint_ids.clone(),
         ]
         .into_iter()
         .flatten()
         .collect()
     }
 }
+
+impl ::re_types_core::ArchetypeReflectionMarker for Points3D {}
 
 impl Points3D {
     /// Create a new `Points3D`.
@@ -359,13 +463,142 @@ impl Points3D {
         positions: impl IntoIterator<Item = impl Into<crate::components::Position3D>>,
     ) -> Self {
         Self {
-            positions: positions.into_iter().map(Into::into).collect(),
+            positions: try_serialize_field(Self::descriptor_positions(), positions),
             radii: None,
             colors: None,
             labels: None,
+            show_labels: None,
             class_ids: None,
             keypoint_ids: None,
         }
+    }
+
+    /// Update only some specific fields of a `Points3D`.
+    #[inline]
+    pub fn update_fields() -> Self {
+        Self::default()
+    }
+
+    /// Clear all the fields of a `Points3D`.
+    #[inline]
+    pub fn clear_fields() -> Self {
+        use ::re_types_core::Loggable as _;
+        Self {
+            positions: Some(SerializedComponentBatch::new(
+                crate::components::Position3D::arrow_empty(),
+                Self::descriptor_positions(),
+            )),
+            radii: Some(SerializedComponentBatch::new(
+                crate::components::Radius::arrow_empty(),
+                Self::descriptor_radii(),
+            )),
+            colors: Some(SerializedComponentBatch::new(
+                crate::components::Color::arrow_empty(),
+                Self::descriptor_colors(),
+            )),
+            labels: Some(SerializedComponentBatch::new(
+                crate::components::Text::arrow_empty(),
+                Self::descriptor_labels(),
+            )),
+            show_labels: Some(SerializedComponentBatch::new(
+                crate::components::ShowLabels::arrow_empty(),
+                Self::descriptor_show_labels(),
+            )),
+            class_ids: Some(SerializedComponentBatch::new(
+                crate::components::ClassId::arrow_empty(),
+                Self::descriptor_class_ids(),
+            )),
+            keypoint_ids: Some(SerializedComponentBatch::new(
+                crate::components::KeypointId::arrow_empty(),
+                Self::descriptor_keypoint_ids(),
+            )),
+        }
+    }
+
+    /// Partitions the component data into multiple sub-batches.
+    ///
+    /// Specifically, this transforms the existing [`SerializedComponentBatch`]es data into [`SerializedComponentColumn`]s
+    /// instead, via [`SerializedComponentBatch::partitioned`].
+    ///
+    /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+    ///
+    /// The specified `lengths` must sum to the total length of the component batch.
+    ///
+    /// [`SerializedComponentColumn`]: [::re_types_core::SerializedComponentColumn]
+    #[inline]
+    pub fn columns<I>(
+        self,
+        _lengths: I,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>>
+    where
+        I: IntoIterator<Item = usize> + Clone,
+    {
+        let columns = [
+            self.positions
+                .map(|positions| positions.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.radii
+                .map(|radii| radii.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.colors
+                .map(|colors| colors.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.labels
+                .map(|labels| labels.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.show_labels
+                .map(|show_labels| show_labels.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.class_ids
+                .map(|class_ids| class_ids.partitioned(_lengths.clone()))
+                .transpose()?,
+            self.keypoint_ids
+                .map(|keypoint_ids| keypoint_ids.partitioned(_lengths.clone()))
+                .transpose()?,
+        ];
+        Ok(columns
+            .into_iter()
+            .flatten()
+            .chain([::re_types_core::indicator_column::<Self>(
+                _lengths.into_iter().count(),
+            )?]))
+    }
+
+    /// Helper to partition the component data into unit-length sub-batches.
+    ///
+    /// This is semantically similar to calling [`Self::columns`] with `std::iter::take(1).repeat(n)`,
+    /// where `n` is automatically guessed.
+    #[inline]
+    pub fn columns_of_unit_batches(
+        self,
+    ) -> SerializationResult<impl Iterator<Item = ::re_types_core::SerializedComponentColumn>> {
+        let len_positions = self.positions.as_ref().map(|b| b.array.len());
+        let len_radii = self.radii.as_ref().map(|b| b.array.len());
+        let len_colors = self.colors.as_ref().map(|b| b.array.len());
+        let len_labels = self.labels.as_ref().map(|b| b.array.len());
+        let len_show_labels = self.show_labels.as_ref().map(|b| b.array.len());
+        let len_class_ids = self.class_ids.as_ref().map(|b| b.array.len());
+        let len_keypoint_ids = self.keypoint_ids.as_ref().map(|b| b.array.len());
+        let len = None
+            .or(len_positions)
+            .or(len_radii)
+            .or(len_colors)
+            .or(len_labels)
+            .or(len_show_labels)
+            .or(len_class_ids)
+            .or(len_keypoint_ids)
+            .unwrap_or(0);
+        self.columns(std::iter::repeat(1).take(len))
+    }
+
+    /// All the 3D positions at which the point cloud shows points.
+    #[inline]
+    pub fn with_positions(
+        mut self,
+        positions: impl IntoIterator<Item = impl Into<crate::components::Position3D>>,
+    ) -> Self {
+        self.positions = try_serialize_field(Self::descriptor_positions(), positions);
+        self
     }
 
     /// Optional radii for the points, effectively turning them into circles.
@@ -374,7 +607,7 @@ impl Points3D {
         mut self,
         radii: impl IntoIterator<Item = impl Into<crate::components::Radius>>,
     ) -> Self {
-        self.radii = Some(radii.into_iter().map(Into::into).collect());
+        self.radii = try_serialize_field(Self::descriptor_radii(), radii);
         self
     }
 
@@ -384,7 +617,7 @@ impl Points3D {
         mut self,
         colors: impl IntoIterator<Item = impl Into<crate::components::Color>>,
     ) -> Self {
-        self.colors = Some(colors.into_iter().map(Into::into).collect());
+        self.colors = try_serialize_field(Self::descriptor_colors(), colors);
         self
     }
 
@@ -397,7 +630,30 @@ impl Points3D {
         mut self,
         labels: impl IntoIterator<Item = impl Into<crate::components::Text>>,
     ) -> Self {
-        self.labels = Some(labels.into_iter().map(Into::into).collect());
+        self.labels = try_serialize_field(Self::descriptor_labels(), labels);
+        self
+    }
+
+    /// Optional choice of whether the text labels should be shown by default.
+    #[inline]
+    pub fn with_show_labels(
+        mut self,
+        show_labels: impl Into<crate::components::ShowLabels>,
+    ) -> Self {
+        self.show_labels = try_serialize_field(Self::descriptor_show_labels(), [show_labels]);
+        self
+    }
+
+    /// This method makes it possible to pack multiple [`crate::components::ShowLabels`] in a single component batch.
+    ///
+    /// This only makes sense when used in conjunction with [`Self::columns`]. [`Self::with_show_labels`] should
+    /// be used when logging a single row's worth of data.
+    #[inline]
+    pub fn with_many_show_labels(
+        mut self,
+        show_labels: impl IntoIterator<Item = impl Into<crate::components::ShowLabels>>,
+    ) -> Self {
+        self.show_labels = try_serialize_field(Self::descriptor_show_labels(), show_labels);
         self
     }
 
@@ -409,7 +665,7 @@ impl Points3D {
         mut self,
         class_ids: impl IntoIterator<Item = impl Into<crate::components::ClassId>>,
     ) -> Self {
-        self.class_ids = Some(class_ids.into_iter().map(Into::into).collect());
+        self.class_ids = try_serialize_field(Self::descriptor_class_ids(), class_ids);
         self
     }
 
@@ -426,7 +682,20 @@ impl Points3D {
         mut self,
         keypoint_ids: impl IntoIterator<Item = impl Into<crate::components::KeypointId>>,
     ) -> Self {
-        self.keypoint_ids = Some(keypoint_ids.into_iter().map(Into::into).collect());
+        self.keypoint_ids = try_serialize_field(Self::descriptor_keypoint_ids(), keypoint_ids);
         self
+    }
+}
+
+impl ::re_byte_size::SizeBytes for Points3D {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.positions.heap_size_bytes()
+            + self.radii.heap_size_bytes()
+            + self.colors.heap_size_bytes()
+            + self.labels.heap_size_bytes()
+            + self.show_labels.heap_size_bytes()
+            + self.class_ids.heap_size_bytes()
+            + self.keypoint_ids.heap_size_bytes()
     }
 }

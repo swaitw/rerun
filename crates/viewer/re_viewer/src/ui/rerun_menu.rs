@@ -2,9 +2,8 @@
 
 use egui::NumExt as _;
 
-use re_log_types::TimeZone;
-use re_ui::{UICommand, UiExt as _};
-use re_viewer_context::{StoreContext, SystemCommand, SystemCommandSender};
+use re_ui::UICommand;
+use re_viewer_context::StoreContext;
 
 use crate::App;
 
@@ -13,7 +12,7 @@ const SPACING: f32 = 12.0;
 impl App {
     pub fn rerun_menu_button_ui(
         &mut self,
-        frame: &eframe::Frame,
+        render_state: Option<&egui_wgpu::RenderState>,
         _store_context: Option<&StoreContext<'_>>,
         ui: &mut egui::Ui,
     ) {
@@ -26,89 +25,107 @@ impl App {
             .max_height(desired_icon_height);
 
         ui.menu_image_button(image, |ui| {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); // no wrapping: make as wide as needed
-
-            ui.menu_button("About", |ui| self.about_rerun_ui(frame, ui));
-
-            ui.add_space(SPACING);
-
-            UICommand::ToggleCommandPalette.menu_button_ui(ui, &self.command_sender);
-
-            ui.add_space(SPACING);
-
-            UICommand::Open.menu_button_ui(ui, &self.command_sender);
-
-            self.save_buttons_ui(ui, _store_context);
-
-            UICommand::SaveBlueprint.menu_button_ui(ui, &self.command_sender);
-
-            UICommand::CloseCurrentRecording.menu_button_ui(ui, &self.command_sender);
-
-            ui.add_space(SPACING);
-
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                // On the web the browser controls the zoom
-                let zoom_factor = ui.ctx().zoom_factor();
-                ui.weak(format!("Current zoom: {:.0}%", zoom_factor * 100.0))
-                    .on_hover_text(
-                        "The UI zoom level on top of the operating system's default value",
-                    );
-                UICommand::ZoomIn.menu_button_ui(ui, &self.command_sender);
-                UICommand::ZoomOut.menu_button_ui(ui, &self.command_sender);
-                ui.add_enabled_ui(zoom_factor != 1.0, |ui| {
-                    UICommand::ZoomReset.menu_button_ui(ui, &self.command_sender)
-                });
-
-                UICommand::ToggleFullscreen.menu_button_ui(ui, &self.command_sender);
-
-                ui.add_space(SPACING);
-            }
-
-            {
-                UICommand::ResetViewer.menu_button_ui(ui, &self.command_sender);
-
-                #[cfg(not(target_arch = "wasm32"))]
-                UICommand::OpenProfiler.menu_button_ui(ui, &self.command_sender);
-
-                UICommand::ToggleMemoryPanel.menu_button_ui(ui, &self.command_sender);
-
-                #[cfg(debug_assertions)]
-                UICommand::ToggleEguiDebugPanel.menu_button_ui(ui, &self.command_sender);
-            }
-
-            ui.add_space(SPACING);
-
-            ui.menu_button("Options", |ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                options_menu_ui(&self.command_sender, ui, frame, &mut self.state.app_options);
-            });
-
-            #[cfg(debug_assertions)]
-            ui.menu_button("Debug", |ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                debug_menu_options_ui(ui, &mut self.state.app_options, &self.command_sender);
-
-                ui.label("egui debug options:");
-                egui_debug_options_ui(ui);
-            });
-
-            ui.add_space(SPACING);
-
-            UICommand::OpenWebHelp.menu_button_ui(ui, &self.command_sender);
-            UICommand::OpenRerunDiscord.menu_button_ui(ui, &self.command_sender);
-
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                ui.add_space(SPACING);
-                UICommand::Quit.menu_button_ui(ui, &self.command_sender);
-            }
+            self.rerun_menu_ui(ui, render_state, _store_context);
         });
     }
 
-    fn about_rerun_ui(&self, frame: &eframe::Frame, ui: &mut egui::Ui) {
+    fn rerun_menu_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        render_state: Option<&egui_wgpu::RenderState>,
+        _store_context: Option<&StoreContext<'_>>,
+    ) {
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+        // no wrapping: make as wide as needed
+
+        ui.menu_button("About", |ui| self.about_rerun_ui(ui, render_state));
+
+        ui.add_space(SPACING);
+
+        UICommand::Undo.menu_button_ui(ui, &self.command_sender); // TODO(emilk): only enabled if there is something to undo
+        UICommand::Redo.menu_button_ui(ui, &self.command_sender); // TODO(emilk): only enabled if there is something to redo
+
+        UICommand::ToggleCommandPalette.menu_button_ui(ui, &self.command_sender);
+
+        ui.add_space(SPACING);
+
+        UICommand::Open.menu_button_ui(ui, &self.command_sender);
+        UICommand::Import.menu_button_ui(ui, &self.command_sender);
+
+        self.save_buttons_ui(ui, _store_context);
+
+        UICommand::SaveBlueprint.menu_button_ui(ui, &self.command_sender);
+
+        UICommand::CloseCurrentRecording.menu_button_ui(ui, &self.command_sender);
+
+        ui.add_space(SPACING);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // On the web the browser controls the zoom
+            let zoom_factor = ui.ctx().zoom_factor();
+            ui.weak(format!("Current zoom: {:.0}%", zoom_factor * 100.0))
+                .on_hover_text("The UI zoom level on top of the operating system's default value");
+            UICommand::ZoomIn.menu_button_ui(ui, &self.command_sender);
+            UICommand::ZoomOut.menu_button_ui(ui, &self.command_sender);
+            ui.add_enabled_ui(zoom_factor != 1.0, |ui| {
+                UICommand::ZoomReset.menu_button_ui(ui, &self.command_sender)
+            });
+
+            UICommand::ToggleFullscreen.menu_button_ui(ui, &self.command_sender);
+
+            ui.add_space(SPACING);
+        }
+
+        {
+            UICommand::ResetViewer.menu_button_ui(ui, &self.command_sender);
+
+            #[cfg(not(target_arch = "wasm32"))]
+            UICommand::OpenProfiler.menu_button_ui(ui, &self.command_sender);
+
+            UICommand::ToggleMemoryPanel.menu_button_ui(ui, &self.command_sender);
+            UICommand::ToggleChunkStoreBrowser.menu_button_ui(ui, &self.command_sender);
+
+            #[cfg(debug_assertions)]
+            UICommand::ToggleEguiDebugPanel.menu_button_ui(ui, &self.command_sender);
+        }
+
+        ui.add_space(SPACING);
+
+        UICommand::Settings.menu_button_ui(ui, &self.command_sender);
+
+        #[cfg(target_arch = "wasm32")]
+        backend_menu_ui(&self.command_sender, ui, render_state);
+
+        #[cfg(debug_assertions)]
+        ui.menu_button("Debug", |ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            debug_menu_options_ui(ui, &mut self.state.app_options, &self.command_sender);
+
+            ui.label("egui debug options:");
+            ui.weak(format!(
+                "pixels_per_point: {:?}",
+                ui.ctx().pixels_per_point()
+            ));
+            egui_debug_options_ui(ui);
+        });
+
+        ui.add_space(SPACING);
+
+        UICommand::OpenWebHelp.menu_button_ui(ui, &self.command_sender);
+        UICommand::OpenRerunDiscord.menu_button_ui(ui, &self.command_sender);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            ui.add_space(SPACING);
+            UICommand::Quit.menu_button_ui(ui, &self.command_sender);
+        }
+    }
+
+    fn about_rerun_ui(&self, ui: &mut egui::Ui, render_state: Option<&egui_wgpu::RenderState>) {
         let re_build_info::BuildInfo {
             crate_name,
+            features,
             version,
             rustc_version,
             llvm_version,
@@ -133,6 +150,12 @@ impl App {
             {target_triple}"
         );
 
+        // It is really the features of `rerun-cli` (the `rerun` binary) that are interesting.
+        // For the web-viewer we get `crate_name: "re_viewer"` here, which is much less interesting.
+        if crate_name == "rerun-cli" && !features.is_empty() {
+            label += &format!("\n{crate_name} features: {features}");
+        }
+
         if !rustc_version.is_empty() {
             label += &format!("\nrustc {rustc_version}");
             if !llvm_version.is_empty() {
@@ -146,12 +169,12 @@ impl App {
 
         ui.label(label);
 
-        if let Some(render_state) = frame.wgpu_render_state() {
+        if let Some(render_state) = render_state {
             render_state_ui(ui, render_state);
         }
     }
 
-    fn save_buttons_ui(&mut self, ui: &mut egui::Ui, store_ctx: Option<&StoreContext<'_>>) {
+    fn save_buttons_ui(&self, ui: &mut egui::Ui, store_ctx: Option<&StoreContext<'_>>) {
         use re_ui::UICommandSender;
 
         let file_save_in_progress = self.background_tasks.is_file_save_in_progress();
@@ -171,7 +194,7 @@ impl App {
                 });
             });
         } else {
-            let entity_db_is_nonempty = store_ctx.map_or(false, |ctx| !ctx.recording.is_empty());
+            let entity_db_is_nonempty = store_ctx.is_some_and(|ctx| !ctx.recording.is_empty());
             ui.add_enabled_ui(entity_db_is_nonempty, |ui| {
                 if ui
                     .add(save_recording_button)
@@ -289,98 +312,28 @@ fn render_state_ui(ui: &mut egui::Ui, render_state: &egui_wgpu::RenderState) {
     });
 }
 
-fn options_menu_ui(
+/// Adapter switching UI.
+// Only implemented for web so far. For native it's less well defined since the application may be
+// embedded in another application that reads arguments differently.
+#[cfg(target_arch = "wasm32")]
+fn backend_menu_ui(
     command_sender: &re_viewer_context::CommandSender,
     ui: &mut egui::Ui,
-    frame: &eframe::Frame,
-    app_options: &mut re_viewer_context::AppOptions,
+    render_state: Option<&egui_wgpu::RenderState>,
 ) {
-    ui.re_checkbox(&mut app_options.show_metrics, "Show performance metrics")
-        .on_hover_text("Show metrics for milliseconds/frame and RAM usage in the top bar");
-
-    ui.horizontal(|ui| {
-        ui.label("Timezone:");
-    });
-    ui.horizontal(|ui| {
-        ui.re_radio_value(&mut app_options.time_zone, TimeZone::Utc, "UTC")
-            .on_hover_text("Display timestamps in UTC");
-        ui.re_radio_value(&mut app_options.time_zone, TimeZone::Local, "Local")
-            .on_hover_text("Display timestamps in the local timezone");
-        ui.re_radio_value(
-            &mut app_options.time_zone,
-            TimeZone::UnixEpoch,
-            "Unix epoch",
-        )
-        .on_hover_text("Display timestamps in seconds since unix epoch");
-    });
-
-    ui.re_checkbox(
-        &mut app_options.include_welcome_screen_button_in_recordings_panel,
-        "Show 'Welcome screen' button",
-    );
-
-    {
-        ui.add_space(SPACING);
-        ui.label("Experimental features:");
-        experimental_feature_ui(command_sender, ui, app_options);
-    }
-
-    if let Some(_backend) = frame
-        .wgpu_render_state()
-        .map(|state| state.adapter.get_info().backend)
-    {
-        // Adapter switching only implemented for web so far.
-        // For native it's less well defined since the application may be embedded in another application that reads arguments differently.
-        #[cfg(target_arch = "wasm32")]
-        {
-            ui.add_space(SPACING);
-            if _backend == wgpu::Backend::BrowserWebGpu {
-                UICommand::RestartWithWebGl.menu_button_ui(ui, command_sender);
-            } else {
-                UICommand::RestartWithWebGpu.menu_button_ui(ui, command_sender);
-            }
+    if let Some(backend) = render_state.map(|state| state.adapter.get_info().backend) {
+        if backend == wgpu::Backend::BrowserWebGpu {
+            UICommand::RestartWithWebGl.menu_button_ui(ui, command_sender);
+        } else {
+            UICommand::RestartWithWebGpu.menu_button_ui(ui, command_sender);
         }
     }
 }
 
-fn experimental_feature_ui(
-    command_sender: &re_viewer_context::CommandSender,
-    ui: &mut egui::Ui,
-    app_options: &mut re_viewer_context::AppOptions,
-) {
-    #[cfg(not(target_arch = "wasm32"))]
-    ui
-        .re_checkbox(&mut app_options.experimental_space_view_screenshots, "Space view screenshots")
-        .on_hover_text("Allow taking screenshots of 2D and 3D space views via their context menu. Does not contain labels.");
-
-    if ui
-        .re_checkbox(
-            &mut app_options.experimental_dataframe_space_view,
-            "Dataframe space view",
-        )
-        .on_hover_text("Enable the experimental dataframe space view.")
-        .clicked()
-    {
-        command_sender.send_system(SystemCommand::EnableExperimentalDataframeSpaceView(
-            app_options.experimental_dataframe_space_view,
-        ));
-    }
-
-    ui.re_checkbox(
-        &mut app_options.experimental_plot_query_clamping,
-        "Plots: query clamping",
-    )
-    .on_hover_text("Toggle query clamping for the plot visualizers.");
-
-    ui.re_checkbox(
-        &mut app_options.experimental_chunk_based_data_density_graph,
-        "Chunk-based data density graph",
-    )
-    .on_hover_text("Toggle chunk-based data density graph");
-}
-
 #[cfg(debug_assertions)]
 fn egui_debug_options_ui(ui: &mut egui::Ui) {
+    use re_ui::UiExt as _;
+
     let mut debug = ui.style().debug;
     let mut any_clicked = false;
 
@@ -423,6 +376,8 @@ fn debug_menu_options_ui(
     app_options: &mut re_viewer_context::AppOptions,
     command_sender: &CommandSender,
 ) {
+    use re_ui::UiExt as _;
+
     #[cfg(not(target_arch = "wasm32"))]
     {
         if ui.button("Mobile size").clicked() {

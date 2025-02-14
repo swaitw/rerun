@@ -8,11 +8,12 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 from .media_type_ext import MediaTypeExt
 
-__all__ = ["MediaType", "MediaTypeBatch", "MediaTypeType"]
+__all__ = ["MediaType", "MediaTypeBatch"]
 
 
 class MediaType(MediaTypeExt, datatypes.Utf8, ComponentMixin):
@@ -30,12 +31,8 @@ class MediaType(MediaTypeExt, datatypes.Utf8, ComponentMixin):
     pass
 
 
-class MediaTypeType(datatypes.Utf8Type):
-    _TYPE_NAME: str = "rerun.components.MediaType"
-
-
 class MediaTypeBatch(datatypes.Utf8Batch, ComponentBatchMixin):
-    _ARROW_TYPE = MediaTypeType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.MediaType")
 
 
 # This is patched in late to avoid circular dependencies.

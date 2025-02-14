@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use crate::{
-    ComponentBatch, ComponentName, DeserializationResult, MaybeOwnedComponentBatch,
-    SerializationResult, _Backtrace,
+    ComponentBatch, ComponentDescriptor, ComponentName, DeserializationResult, SerializationResult,
+    SerializedComponentBatch, _Backtrace,
 };
 
 #[allow(unused_imports)] // used in docstrings
@@ -42,49 +42,40 @@ pub trait Archetype {
     /// The fully-qualified name of this archetype, e.g. `rerun.archetypes.Points2D`.
     fn name() -> ArchetypeName;
 
-    /// Readable name for displaying in ui.
+    /// Readable name for displaying in UI.
     fn display_name() -> &'static str;
 
     // ---
 
-    // TODO(cmc): Should we also generate and return static IntSets?
-
     /// Creates a [`ComponentBatch`] out of the associated [`Self::Indicator`] component.
     ///
     /// This allows for associating arbitrary indicator components with arbitrary data.
-    /// Check out the `manual_indicator` API example to see what's possible.
+    fn indicator() -> SerializedComponentBatch;
+
+    /// Returns all component descriptors that _must_ be provided by the user when constructing this archetype.
+    fn required_components() -> std::borrow::Cow<'static, [ComponentDescriptor]>;
+
+    /// Returns all component descriptors that _should_ be provided by the user when constructing this archetype.
     #[inline]
-    fn indicator() -> MaybeOwnedComponentBatch<'static> {
-        MaybeOwnedComponentBatch::Owned(Box::<<Self as Archetype>::Indicator>::default())
+    fn recommended_components() -> std::borrow::Cow<'static, [ComponentDescriptor]> {
+        std::borrow::Cow::Owned(vec![Self::indicator().descriptor.clone()])
     }
 
-    /// Returns the names of all components that _must_ be provided by the user when constructing
-    /// this archetype.
-    fn required_components() -> std::borrow::Cow<'static, [ComponentName]>;
-
-    /// Returns the names of all components that _should_ be provided by the user when constructing
-    /// this archetype.
+    /// Returns all component descriptors that _may_ be provided by the user when constructing this archetype.
     #[inline]
-    fn recommended_components() -> std::borrow::Cow<'static, [ComponentName]> {
-        std::borrow::Cow::Owned(vec![Self::indicator().name()])
-    }
-
-    /// Returns the names of all components that _may_ be provided by the user when constructing
-    /// this archetype.
-    #[inline]
-    fn optional_components() -> std::borrow::Cow<'static, [ComponentName]> {
+    fn optional_components() -> std::borrow::Cow<'static, [ComponentDescriptor]> {
         std::borrow::Cow::Borrowed(&[])
     }
 
-    /// Returns the names of all components that must, should and may be provided by the user when
-    /// constructing this archetype.
+    /// Returns all component descriptors that must, should and may be provided by the user when constructing
+    /// this archetype.
     ///
     /// The default implementation always does the right thing, at the cost of some runtime
     /// allocations.
-    /// If you know all your components statically, you can override this method to get rid of the
+    /// If you know all your component descriptors statically, you can override this method to get rid of the
     /// extra allocations.
     #[inline]
-    fn all_components() -> std::borrow::Cow<'static, [ComponentName]> {
+    fn all_components() -> std::borrow::Cow<'static, [ComponentDescriptor]> {
         [
             Self::required_components().into_owned(),
             Self::recommended_components().into_owned(),
@@ -105,14 +96,14 @@ pub trait Archetype {
     /// logged to stderr.
     #[inline]
     fn from_arrow(
-        data: impl IntoIterator<Item = (arrow2::datatypes::Field, Box<dyn ::arrow2::array::Array>)>,
+        data: impl IntoIterator<Item = (arrow::datatypes::Field, ::arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self>
     where
         Self: Sized,
     {
         Self::from_arrow_components(
             data.into_iter()
-                .map(|(field, array)| (field.name.into(), array)),
+                .map(|(field, array)| (ComponentDescriptor::from(field), array)),
         )
     }
 
@@ -123,7 +114,7 @@ pub trait Archetype {
     /// logged to stderr.
     #[inline]
     fn from_arrow_components(
-        data: impl IntoIterator<Item = (ComponentName, Box<dyn ::arrow2::array::Array>)>,
+        data: impl IntoIterator<Item = (ComponentDescriptor, ::arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self>
     where
         Self: Sized,
@@ -136,23 +127,35 @@ pub trait Archetype {
     }
 }
 
-/// Indicates that the archetype has the `attr.rust.generate_field_info`
-/// attribute, meaning it will have runtime reflection data available for it.
+/// Indicates that the archetype has reflection data available for it.
 pub trait ArchetypeReflectionMarker {}
 
 // ---
 
 re_string_interner::declare_new_type!(
     /// The fully-qualified name of an [`Archetype`], e.g. `rerun.archetypes.Points3D`.
+    #[cfg_attr(feature = "serde", derive(::serde::Deserialize, ::serde::Serialize))]
     pub struct ArchetypeName;
 );
 
 impl ArchetypeName {
+    /// Runs some asserts in debug mode to make sure the name is not weird.
+    #[inline]
+    #[track_caller]
+    pub fn sanity_check(&self) {
+        let full_name = self.0.as_str();
+        debug_assert!(
+            !full_name.starts_with("rerun.archetypes.rerun.archetypes.") && !full_name.contains(':'),
+            "DEBUG ASSERT: Found archetype with full name {full_name:?}. Maybe some bad round-tripping?"
+        );
+    }
+
     /// Returns the fully-qualified name, e.g. `rerun.archetypes.Points3D`.
     ///
     /// This is the default `Display` implementation for [`ArchetypeName`].
     #[inline]
     pub fn full_name(&self) -> &'static str {
+        self.sanity_check();
         self.0.as_str()
     }
 
@@ -166,6 +169,7 @@ impl ArchetypeName {
     /// ```
     #[inline]
     pub fn short_name(&self) -> &'static str {
+        self.sanity_check();
         let full_name = self.0.as_str();
         if let Some(short_name) = full_name.strip_prefix("rerun.archetypes.") {
             short_name
@@ -176,6 +180,28 @@ impl ArchetypeName {
         } else {
             full_name
         }
+    }
+}
+
+impl re_byte_size::SizeBytes for ArchetypeName {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        0
+    }
+}
+
+// ---
+
+re_string_interner::declare_new_type!(
+    /// The name of an [`Archetype`]'s field, e.g. `positions`.
+    #[cfg_attr(feature = "serde", derive(::serde::Deserialize, ::serde::Serialize))]
+    pub struct ArchetypeFieldName;
+);
+
+impl re_byte_size::SizeBytes for ArchetypeFieldName {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        0
     }
 }
 
@@ -197,6 +223,18 @@ impl<A: Archetype> GenericIndicatorComponent<A> {
     pub const DEFAULT: Self = Self {
         _phantom: std::marker::PhantomData::<A>,
     };
+
+    /// Create an array of indicator components of this type with the given length.
+    ///
+    /// This can be useful when sending columns of indicators with
+    /// `rerun::RecordingStream::send_columns`.
+    #[inline]
+    pub fn new_array(len: usize) -> GenericIndicatorComponentArray<A> {
+        GenericIndicatorComponentArray {
+            len,
+            _phantom: std::marker::PhantomData::<A>,
+        }
+    }
 }
 
 impl<A: Archetype> Default for GenericIndicatorComponent<A> {
@@ -206,44 +244,48 @@ impl<A: Archetype> Default for GenericIndicatorComponent<A> {
 }
 
 impl<A: Archetype> crate::LoggableBatch for GenericIndicatorComponent<A> {
-    type Name = ComponentName;
-
     #[inline]
-    fn name(&self) -> Self::Name {
-        format!("{}Indicator", A::name().full_name())
-            .replace("archetypes", "components")
-            .into()
-    }
-
-    #[inline]
-    fn num_instances(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn arrow_field(&self) -> arrow2::datatypes::Field {
-        let name = self.name().to_string();
-        arrow2::datatypes::Field::new(
-            name.clone(),
-            arrow2::datatypes::DataType::Extension(
-                name,
-                Arc::new(arrow2::datatypes::DataType::Null),
-                None,
-            ),
-            false,
-        )
-    }
-
-    #[inline]
-    fn to_arrow(&self) -> SerializationResult<Box<dyn arrow2::array::Array>> {
-        Ok(
-            arrow2::array::NullArray::new(arrow2::datatypes::DataType::Null, self.num_instances())
-                .boxed(),
-        )
+    fn to_arrow(&self) -> SerializationResult<arrow::array::ArrayRef> {
+        Ok(Arc::new(arrow::array::NullArray::new(1)))
     }
 }
 
-impl<A: Archetype> crate::ComponentBatch for GenericIndicatorComponent<A> {}
+impl<A: Archetype> crate::ComponentBatch for GenericIndicatorComponent<A> {
+    #[inline]
+    fn descriptor(&self) -> Cow<'_, ComponentDescriptor> {
+        let component_name =
+            format!("{}Indicator", A::name().full_name()).replace("archetypes", "components");
+        ComponentDescriptor::new(component_name).into()
+    }
+}
+
+/// A generic [indicator component] array of a given length.
+///
+/// This can be useful when sending columns of indicators with
+/// `rerun::RecordingStream::send_columns`.
+///
+/// To create this type, call [`GenericIndicatorComponent::new_array`].
+///
+/// [indicator component]: [`Archetype::Indicator`]
+#[derive(Debug, Clone, Copy)]
+pub struct GenericIndicatorComponentArray<A: Archetype> {
+    len: usize,
+    _phantom: std::marker::PhantomData<A>,
+}
+
+impl<A: Archetype> crate::LoggableBatch for GenericIndicatorComponentArray<A> {
+    #[inline]
+    fn to_arrow(&self) -> SerializationResult<arrow::array::ArrayRef> {
+        Ok(Arc::new(arrow::array::NullArray::new(self.len)))
+    }
+}
+
+impl<A: Archetype> crate::ComponentBatch for GenericIndicatorComponentArray<A> {
+    #[inline]
+    fn descriptor(&self) -> Cow<'_, ComponentDescriptor> {
+        ComponentDescriptor::new(GenericIndicatorComponent::<A>::DEFAULT.name()).into()
+    }
+}
 
 // ---
 
@@ -253,52 +295,16 @@ impl<A: Archetype> crate::ComponentBatch for GenericIndicatorComponent<A> {}
 #[derive(Debug, Clone, Copy)]
 pub struct NamedIndicatorComponent(pub ComponentName);
 
-impl NamedIndicatorComponent {
-    #[inline]
-    pub fn as_batch(&self) -> MaybeOwnedComponentBatch<'_> {
-        MaybeOwnedComponentBatch::Ref(self)
-    }
-
-    #[inline]
-    pub fn to_batch(self) -> MaybeOwnedComponentBatch<'static> {
-        MaybeOwnedComponentBatch::Owned(Box::new(self))
-    }
-}
-
 impl crate::LoggableBatch for NamedIndicatorComponent {
-    type Name = ComponentName;
-
     #[inline]
-    fn name(&self) -> Self::Name {
-        self.0
-    }
-
-    #[inline]
-    fn num_instances(&self) -> usize {
-        1
-    }
-
-    #[inline]
-    fn arrow_field(&self) -> arrow2::datatypes::Field {
-        let name = self.name().to_string();
-        arrow2::datatypes::Field::new(
-            name.clone(),
-            arrow2::datatypes::DataType::Extension(
-                name,
-                Arc::new(arrow2::datatypes::DataType::Null),
-                None,
-            ),
-            false,
-        )
-    }
-
-    #[inline]
-    fn to_arrow(&self) -> SerializationResult<Box<dyn arrow2::array::Array>> {
-        Ok(
-            arrow2::array::NullArray::new(arrow2::datatypes::DataType::Null, self.num_instances())
-                .boxed(),
-        )
+    fn to_arrow(&self) -> SerializationResult<arrow::array::ArrayRef> {
+        Ok(Arc::new(arrow::array::NullArray::new(1)))
     }
 }
 
-impl crate::ComponentBatch for NamedIndicatorComponent {}
+impl crate::ComponentBatch for NamedIndicatorComponent {
+    #[inline]
+    fn descriptor(&self) -> Cow<'_, ComponentDescriptor> {
+        ComponentDescriptor::new(self.0).into()
+    }
+}

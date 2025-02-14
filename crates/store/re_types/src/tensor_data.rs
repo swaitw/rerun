@@ -3,14 +3,8 @@
 
 use half::f16;
 
-#[cfg(feature = "image")]
-use crate::datatypes::TensorDimension;
-
 #[allow(unused_imports)] // Used for docstring links
 use crate::datatypes::TensorData;
-
-// Much of the following duplicates code from: `crates/re_components/src/tensor.rs`, which
-// will eventually go away as the Tensor migration is completed.
 
 // ----------------------------------------------------------------------------
 
@@ -61,20 +55,6 @@ impl From<std::io::Error> for TensorImageLoadError {
     fn from(err: std::io::Error) -> Self {
         Self::ReadError(std::sync::Arc::new(err))
     }
-}
-
-/// Errors when converting [`TensorData`] to [`image`] images.
-#[cfg(feature = "image")]
-#[derive(thiserror::Error, Debug)]
-pub enum TensorImageSaveError {
-    #[error("Expected image-shaped tensor, got {0:?}")]
-    ShapeNotAnImage(Vec<TensorDimension>),
-
-    #[error("Cannot convert tensor with {0} channels and datatype {1} to an image")]
-    UnsupportedChannelsDtype(u64, TensorDataType),
-
-    #[error("The tensor data did not match tensor dimensions")]
-    BadData,
 }
 
 // ----------------------------------------------------------------------------
@@ -166,7 +146,7 @@ impl TensorDataType {
         }
     }
 
-    /// What is the minimum value representable by this datatype?
+    /// What is the minimum finite value representable by this datatype?
     #[inline]
     pub fn min_value(&self) -> f64 {
         match self {
@@ -186,7 +166,7 @@ impl TensorDataType {
         }
     }
 
-    /// What is the maximum value representable by this datatype?
+    /// What is the maximum finite value representable by this datatype?
     #[inline]
     pub fn max_value(&self) -> f64 {
         match self {
@@ -312,7 +292,7 @@ pub enum TensorElement {
     ///
     /// Uses the standard IEEE 754-2008 binary16 format.
     /// Set <https://en.wikipedia.org/wiki/Half-precision_floating-point_format>.
-    F16(arrow2::types::f16),
+    F16(half::f16),
 
     /// 32-bit floating point number.
     F32(f32),
@@ -389,23 +369,4 @@ impl std::fmt::Display for TensorElement {
             Self::F64(elem) => std::fmt::Display::fmt(elem, f),
         }
     }
-}
-
-// ----------------------------------------------------------------------------
-
-// Backwards comparabillity shim
-// TODO(jleibs): fully express this in terms of indicator components
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum TensorDataMeaning {
-    /// Default behavior: guess based on shape
-    Unknown,
-
-    /// A segmentation image.
-    ///
-    /// The data is an annotated [`crate::components::ClassId`] which should be
-    /// looked up using the appropriate [`crate::components::AnnotationContext`]
-    ClassId,
-
-    /// Image data interpreted as depth map.
-    Depth,
 }

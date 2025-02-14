@@ -1,7 +1,7 @@
 use crate::AppEnvironment;
 
 use re_analytics::{
-    event::{Id, Identify, OpenRecording, StoreInfo, ViewerStarted},
+    event::{Id, Identify, OpenRecording, StoreInfo, ViewerRuntimeInformation, ViewerStarted},
     Config, Property,
 };
 
@@ -32,10 +32,19 @@ pub fn identify(
     }
 }
 
-pub fn viewer_started(app_env: &AppEnvironment) -> ViewerStarted {
+pub fn viewer_started(
+    app_env: &AppEnvironment,
+    adapter_backend: wgpu::Backend,
+    device_tier: re_renderer::device_caps::DeviceCapabilityTier,
+) -> ViewerStarted {
     ViewerStarted {
         url: app_env.url().cloned(),
         app_env: app_env.name(),
+        runtime_info: ViewerRuntimeInformation {
+            is_wsl: super::wsl::is_wsl(),
+            graphics_adapter_backend: adapter_backend.to_string(),
+            re_renderer_device_tier: device_tier.to_string(),
+        },
     }
 }
 
@@ -75,8 +84,9 @@ pub fn open_recording(
             S::RustSdk { .. } => "rust_sdk".to_owned(),
             S::File { file_source } => match file_source {
                 re_log_types::FileSource::Cli => "file_cli".to_owned(),
-                re_log_types::FileSource::DragAndDrop => "file_drag_and_drop".to_owned(),
-                re_log_types::FileSource::FileDialog => "file_dialog".to_owned(),
+                re_log_types::FileSource::Uri => "file_uri".to_owned(),
+                re_log_types::FileSource::DragAndDrop { .. } => "file_drag_and_drop".to_owned(),
+                re_log_types::FileSource::FileDialog { .. } => "file_dialog".to_owned(),
                 re_log_types::FileSource::Sdk => "file_sdk".to_owned(),
             },
             S::Viewer => "viewer".to_owned(),
@@ -131,11 +141,12 @@ pub fn open_recording(
     let data_source = entity_db.data_source.as_ref().map(|v| match v {
         re_smart_channel::SmartChannelSource::File(_) => "file", // .rrd, .png, .glb, …
         re_smart_channel::SmartChannelSource::RrdHttpStream { .. } => "http",
+        re_smart_channel::SmartChannelSource::RerunGrpcStream { .. } => "grpc",
+        // vvv spawn(), connect() vvv
+        re_smart_channel::SmartChannelSource::MessageProxy { .. } => "temp", // TODO(#8761): URL prefix
         re_smart_channel::SmartChannelSource::RrdWebEventListener { .. } => "web_event",
         re_smart_channel::SmartChannelSource::JsChannel { .. } => "javascript", // mediated via rerun-js
         re_smart_channel::SmartChannelSource::Sdk => "sdk",                     // show()
-        re_smart_channel::SmartChannelSource::WsClient { .. } => "ws_client",   // spawn()
-        re_smart_channel::SmartChannelSource::TcpServer { .. } => "tcp_server", // connect()
         re_smart_channel::SmartChannelSource::Stdin => "stdin",
     });
 

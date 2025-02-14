@@ -1,6 +1,5 @@
 //! Web-specific tools used by various parts of the application.
 
-use anyhow::Context as _;
 use re_log::ResultExt;
 use serde::Deserialize;
 use std::{ops::ControlFlow, sync::Arc};
@@ -14,12 +13,15 @@ pub trait JsResultExt<T> {
     fn ok_or_log_js_error(self) -> Option<T>;
 
     /// Logs an error if the result is an error and returns the result, but only once.
+    #[allow(unused)]
     fn ok_or_log_js_error_once(self) -> Option<T>;
 
     /// Log a warning if there is an `Err`, but only log the exact same message once.
+    #[allow(unused)]
     fn warn_on_js_err_once(self, msg: impl std::fmt::Display) -> Option<T>;
 
     /// Unwraps in debug builds otherwise logs an error if the result is an error and returns the result.
+    #[allow(unused)]
     fn unwrap_debug_or_log_js_error(self) -> Option<T>;
 }
 
@@ -82,29 +84,39 @@ enum EndpointCategory {
     /// Could be a link to either an `.rrd` recording or a `.rbl` blueprint.
     HttpRrd(String),
 
-    /// A remote Rerun server.
-    WebSocket(String),
+    /// gRPC Rerun Data Platform URL, e.g. `rerun://ip:port/recording/1234`
+    RerunGrpc(String),
 
     /// An eventListener for rrd posted from containing html
     WebEventListener(String),
+
+    /// A stream of messages over gRPC, relayed from the SDK.
+    MessageProxy(String),
 }
 
 impl EndpointCategory {
     fn categorize_uri(uri: String) -> Self {
         if uri.starts_with("http") || uri.ends_with(".rrd") || uri.ends_with(".rbl") {
             Self::HttpRrd(uri)
-        } else if uri.starts_with("ws:") || uri.starts_with("wss:") {
-            Self::WebSocket(uri)
+        } else if uri.starts_with("rerun://")
+            || uri.starts_with("rerun+http://")
+            || uri.starts_with("rerun+https://")
+        {
+            Self::RerunGrpc(uri)
         } else if uri.starts_with("web_event:") {
             Self::WebEventListener(uri)
+        } else if uri.starts_with("temp:") {
+            // TODO(#8761): URL prefix
+            Self::MessageProxy(uri)
         } else {
             // If this is something like `foo.com` we can't know what it is until we connect to it.
             // We could/should connect and see what it is, but for now we just take a wild guess instead:
-            re_log::info!("Assuming WebSocket endpoint");
+            re_log::info!("Assuming gRPC endpoint");
             if uri.contains("://") {
-                Self::WebSocket(uri)
+                Self::MessageProxy(uri)
             } else {
-                Self::WebSocket(format!("{}://{uri}", re_ws_comms::PROTOCOL))
+                // TODO(jan): this should be `https` if it's not localhost or same-origin
+                Self::MessageProxy(format!("http://{uri}"))
             }
         }
     }
@@ -129,6 +141,15 @@ pub fn url_to_receiver(
                 Some(ui_waker),
             ),
         ),
+
+        #[cfg(feature = "grpc")]
+        EndpointCategory::RerunGrpc(url) => {
+            re_grpc_client::redap::stream_from_redap(url, Some(ui_waker)).map_err(|err| err.into())
+        }
+        #[cfg(not(feature = "grpc"))]
+        EndpointCategory::RerunGrpc(_url) => {
+            anyhow::bail!("Missing 'grpc' feature flag");
+        }
         EndpointCategory::WebEventListener(url) => {
             // Process an rrd when it's posted via `window.postMessage`
             let (tx, rx) = re_smart_channel::smart_channel(
@@ -162,8 +183,11 @@ pub fn url_to_receiver(
             }));
             Ok(rx)
         }
-        EndpointCategory::WebSocket(url) => re_data_source::connect_to_ws_url(&url, Some(ui_waker))
-            .with_context(|| format!("Failed to connect to WebSocket server at {url}.")),
+
+        EndpointCategory::MessageProxy(url) => {
+            re_grpc_client::message_proxy::read::stream(&url, Some(ui_waker))
+                .map_err(|err| err.into())
+        }
     }
 }
 
@@ -174,9 +198,21 @@ pub struct Callback(#[serde(with = "serde_wasm_bindgen::preserve")] js_sys::Func
 
 impl Callback {
     #[inline]
-    pub fn call(&self) -> Result<JsValue, JsValue> {
+    pub fn call0(&self) -> Result<JsValue, JsValue> {
         let window: JsValue = window()?.into();
         self.0.call0(&window)
+    }
+
+    #[inline]
+    pub fn call1(&self, arg0: &JsValue) -> Result<JsValue, JsValue> {
+        let window: JsValue = window()?.into();
+        self.0.call1(&window, arg0)
+    }
+
+    #[inline]
+    pub fn call2(&self, arg0: &JsValue, arg1: &JsValue) -> Result<JsValue, JsValue> {
+        let window: JsValue = window()?.into();
+        self.0.call2(&window, arg0, arg1)
     }
 }
 

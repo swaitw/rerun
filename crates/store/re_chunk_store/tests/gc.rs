@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use arrow2::array::Array as ArrowArray;
-use itertools::Itertools as _;
+use arrow::array::ArrayRef;
 use rand::Rng as _;
 
 use re_chunk::{Chunk, ChunkId, ComponentName, LatestAtQuery, RowId, TimeInt, TimePoint};
@@ -12,10 +11,10 @@ use re_chunk_store::{
 use re_log_types::{
     build_frame_nr, build_log_time,
     example_components::{MyColor, MyIndex, MyPoint},
-    EntityPath, Time, TimeType, Timeline,
+    EntityPath, ResolvedTimeRange, Time, TimeType, Timeline,
 };
 use re_types::testing::build_some_large_structs;
-use re_types_core::Loggable as _;
+use re_types_core::Component as _;
 
 // ---
 
@@ -24,22 +23,22 @@ fn query_latest_array(
     entity_path: &EntityPath,
     component_name: ComponentName,
     query: &LatestAtQuery,
-) -> Option<(TimeInt, RowId, Box<dyn ArrowArray>)> {
+) -> Option<(TimeInt, RowId, ArrayRef)> {
     re_tracing::profile_function!();
 
-    let (data_time, row_id, array) = store
+    let ((data_time, row_id), unit) = store
         .latest_at_relevant_chunks(query, entity_path, component_name)
         .into_iter()
-        .flat_map(|chunk| {
+        .filter_map(|chunk| {
             chunk
                 .latest_at(query, component_name)
-                .iter_rows(&query.timeline(), &component_name)
-                .collect_vec()
+                .into_unit()
+                .and_then(|chunk| chunk.index(&query.timeline()).map(|index| (index, chunk)))
         })
-        .max_by_key(|(data_time, row_id, _)| (*data_time, *row_id))
-        .and_then(|(data_time, row_id, array)| array.map(|array| (data_time, row_id, array)))?;
+        .max_by_key(|(index, _chunk)| *index)?;
 
-    Some((data_time, row_id, array))
+    unit.component_batch_raw(&component_name)
+        .map(|array| (data_time, row_id, array))
 }
 
 // ---
@@ -52,11 +51,7 @@ fn simple() -> anyhow::Result<()> {
 
     let mut store = ChunkStore::new(
         re_log_types::StoreId::random(re_log_types::StoreKind::Recording),
-        ChunkStoreConfig {
-            chunk_max_bytes: 0,
-            chunk_max_rows: 0,
-            ..ChunkStoreConfig::DEFAULT
-        },
+        ChunkStoreConfig::COMPACTION_DISABLED,
     );
 
     for _ in 0..2 {
@@ -83,8 +78,7 @@ fn simple() -> anyhow::Result<()> {
 
         let (_store_events, stats_diff) = store.gc(&GarbageCollectionOptions {
             target: GarbageCollectionTarget::DropAtLeastFraction(1.0 / 3.0),
-            protect_latest: 0,
-            time_budget: std::time::Duration::MAX,
+            ..GarbageCollectionOptions::gc_everything()
         });
 
         // NOTE: only temporal data gets purged!
@@ -175,9 +169,8 @@ fn simple_static() -> anyhow::Result<()> {
     store.insert_chunk(&Arc::new(chunk2_static))?;
 
     store.gc(&GarbageCollectionOptions {
-        target: GarbageCollectionTarget::Everything,
         protect_latest: 1,
-        time_budget: std::time::Duration::MAX,
+        ..GarbageCollectionOptions::gc_everything()
     });
 
     let assert_latest_components = |frame_nr: TimeInt, rows: &[(ComponentName, RowId)]| {
@@ -216,11 +209,7 @@ fn protected() -> anyhow::Result<()> {
 
     let mut store = ChunkStore::new(
         re_log_types::StoreId::random(re_log_types::StoreKind::Recording),
-        ChunkStoreConfig {
-            chunk_max_bytes: 0,
-            chunk_max_rows: 0,
-            ..ChunkStoreConfig::DEFAULT
-        },
+        ChunkStoreConfig::COMPACTION_DISABLED,
     );
 
     let entity_path = EntityPath::from("this/that");
@@ -268,9 +257,8 @@ fn protected() -> anyhow::Result<()> {
     store.insert_chunk(&Arc::new(chunk4))?;
 
     store.gc(&GarbageCollectionOptions {
-        target: GarbageCollectionTarget::Everything,
         protect_latest: 1,
-        time_budget: std::time::Duration::MAX,
+        ..GarbageCollectionOptions::gc_everything()
     });
 
     let assert_latest_components = |frame_nr: TimeInt, rows: &[(ComponentName, Option<RowId>)]| {
@@ -326,6 +314,91 @@ fn protected() -> anyhow::Result<()> {
             (MyPoint::name(), Some(row_id3)),
         ],
     );
+
+    Ok(())
+}
+
+#[test]
+fn protected_time_ranges() -> anyhow::Result<()> {
+    re_log::setup_logging();
+
+    let mut store = ChunkStore::new(
+        re_log_types::StoreId::random(re_log_types::StoreKind::Recording),
+        ChunkStoreConfig::COMPACTION_DISABLED,
+    );
+
+    let entity_path = EntityPath::from("this/that");
+
+    let frame1 = TimeInt::new_temporal(1);
+    let frame2 = TimeInt::new_temporal(2);
+    let frame3 = TimeInt::new_temporal(3);
+    let frame4 = TimeInt::new_temporal(4);
+
+    let row_id1 = RowId::new();
+    let (indices1, colors1) = (MyIndex::from_iter(0..3), MyColor::from_iter(0..3));
+    let chunk1 = Chunk::builder(entity_path.clone())
+        .with_component_batches(
+            row_id1,
+            [build_frame_nr(frame1)],
+            [&indices1 as _, &colors1 as _],
+        )
+        .build()?;
+
+    let row_id2 = RowId::new();
+    let points2 = MyPoint::from_iter(0..3);
+    let chunk2 = Chunk::builder(entity_path.clone())
+        .with_component_batches(
+            row_id2,
+            [build_frame_nr(frame2)],
+            [&indices1 as _, &points2 as _],
+        )
+        .build()?;
+
+    let row_id3 = RowId::new();
+    let points3 = MyPoint::from_iter(0..10);
+    let chunk3 = Chunk::builder(entity_path.clone())
+        .with_component_batches(row_id3, [build_frame_nr(frame3)], [&points3 as _])
+        .build()?;
+
+    let row_id4 = RowId::new();
+    let colors4 = MyColor::from_iter(0..5);
+    let chunk4 = Chunk::builder(entity_path.clone())
+        .with_component_batches(row_id4, [build_frame_nr(frame4)], [&colors4 as _])
+        .build()?;
+
+    let chunk1 = Arc::new(chunk1);
+    let chunk2 = Arc::new(chunk2);
+    let chunk3 = Arc::new(chunk3);
+    let chunk4 = Arc::new(chunk4);
+
+    store.insert_chunk(&chunk1)?;
+    store.insert_chunk(&chunk2)?;
+    store.insert_chunk(&chunk3)?;
+    store.insert_chunk(&chunk4)?;
+
+    fn protect_time_range(time_range: ResolvedTimeRange) -> GarbageCollectionOptions {
+        GarbageCollectionOptions {
+            protected_time_ranges: std::iter::once((
+                Timeline::new_sequence("frame_nr"),
+                time_range,
+            ))
+            .collect(),
+            ..GarbageCollectionOptions::gc_everything()
+        }
+    }
+
+    eprintln!("{store}");
+
+    let (events, _) = store.gc(&protect_time_range(ResolvedTimeRange::new(1, 4)));
+    assert_eq!(events.len(), 0);
+
+    let (events, _) = store.gc(&protect_time_range(ResolvedTimeRange::new(2, 4)));
+    assert_eq!(events.len(), 1);
+    assert!(Arc::ptr_eq(&events[0].diff.chunk, &chunk1));
+
+    let (events, _) = store.gc(&protect_time_range(ResolvedTimeRange::new(2, 3)));
+    assert_eq!(events.len(), 1);
+    assert!(Arc::ptr_eq(&events[0].diff.chunk, &chunk4));
 
     Ok(())
 }

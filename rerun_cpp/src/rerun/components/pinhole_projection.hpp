@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../datatypes/mat3x3.hpp"
 #include "../result.hpp"
 
@@ -25,13 +26,13 @@ namespace rerun::components {
     struct PinholeProjection {
         rerun::datatypes::Mat3x3 image_from_camera;
 
-      public:
-        // Extensions to generated type defined in 'pinhole_projection_ext.cpp'
-
+      public: // START of extensions from pinhole_projection_ext.cpp:
         /// Construct a new 3x3 pinhole matrix from a pointer to 9 floats (in column major order).
         static PinholeProjection from_mat3x3(const float* elements) {
             return PinholeProjection(rerun::datatypes::Mat3x3(elements));
         }
+
+        // END of extensions from pinhole_projection_ext.cpp, start of generated code:
 
       public:
         PinholeProjection() = default;
@@ -64,7 +65,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::PinholeProjection> {
-        static constexpr const char Name[] = "rerun.components.PinholeProjection";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.PinholeProjection";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -75,10 +76,19 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const components::PinholeProjection* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::Mat3x3>::to_arrow(
-                &instances->image_from_camera,
-                num_instances
-            );
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::Mat3x3>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::Mat3x3>::to_arrow(
+                    &instances->image_from_camera,
+                    num_instances
+                );
+            }
         }
     };
 } // namespace rerun

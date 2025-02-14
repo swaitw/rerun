@@ -12,12 +12,12 @@ fn is_blank<T: AsRef<str>>(line: T) -> bool {
     line.as_ref().chars().all(char::is_whitespace)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ExampleInfo<'a> {
     /// Path to the snippet relative to the snippet directory.
     pub path: &'a str,
 
-    /// The snake_case name of the example.
+    /// The `snake_case` name of the example.
     pub name: String,
 
     /// The human-readable name of the example.
@@ -28,6 +28,9 @@ pub struct ExampleInfo<'a> {
 
     /// If true, use this example only for the manual, not for documentation embedded in the emitted code.
     pub exclude_from_api_docs: bool,
+
+    /// Any of the extensions lists here are allowed to be missing.
+    pub missing_extensions: Vec<String>,
 }
 
 impl<'a> ExampleInfo<'a> {
@@ -63,6 +66,8 @@ impl<'a> ExampleInfo<'a> {
 
         let (mut title, mut image, mut exclude_from_api_docs) = (None, None, false);
 
+        let mut missing_extensions = Vec::new();
+
         if let Some(args) = args {
             let args = args.trim();
 
@@ -77,9 +82,12 @@ impl<'a> ExampleInfo<'a> {
                 // \example example_name "Example Title"
                 title = args.strip_prefix('"').and_then(|v| v.strip_suffix('"'));
             } else {
-                // \example example_name title="Example Title" image="https://static.rerun.io/annotation_context_rects/9b446c36011ed30fce7dc6ed03d5fd9557460f70/1200w.png"
+                // \example example_name title="Example Title" image="https://static.rerun.io/annotation_context_rects/9b446c36011ed30fce7dc6ed03d5fd9557460f70/1200w.png" missing="cpp, py"
                 title = find_keyed("title", args);
                 image = find_keyed("image", args).map(ImageUrl::parse);
+                if let Some(missing) = find_keyed("missing", args) {
+                    missing_extensions.extend(missing.split(',').map(|s| s.trim().to_owned()));
+                }
             }
         }
 
@@ -89,11 +97,12 @@ impl<'a> ExampleInfo<'a> {
             title,
             image,
             exclude_from_api_docs,
+            missing_extensions,
         }
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum ImageUrl<'a> {
     /// A URL with our specific format:
     ///
@@ -108,7 +117,7 @@ pub enum ImageUrl<'a> {
     Other(&'a str),
 }
 
-impl<'a> ImageUrl<'a> {
+impl ImageUrl<'_> {
     pub fn parse(s: &str) -> ImageUrl<'_> {
         RerunImageUrl::parse(s).map_or(ImageUrl::Other(s), ImageUrl::Rerun)
     }
@@ -169,13 +178,13 @@ impl<'a> ImageStack<'a> {
 
 pub struct SnippetId<'a>(pub &'a str);
 
-impl<'a> std::fmt::Display for SnippetId<'a> {
+impl std::fmt::Display for SnippetId<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "snippets/{}", self.0)
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct RerunImageUrl<'a> {
     pub name: &'a str,
     pub hash: &'a str,
@@ -301,16 +310,49 @@ pub fn collect_snippets_for_api_docs<'a>(
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(_) if !required => continue,
-            Err(err) => return Err(err).with_context(|| format!("couldn't open snippet {path:?}")),
+            Err(err) => {
+                if base.missing_extensions.iter().any(|ext| ext == extension) {
+                    continue;
+                } else {
+                    return Err(err).with_context(|| format!("couldn't open snippet {path:?}"));
+                }
+            }
         };
         let mut content = content
-            .split('\n')
-            .map(String::from)
-            .skip_while(|line| line.starts_with("//") || line.starts_with(r#"""""#)) // Skip leading comments.
+            .lines()
+            .map(ToOwned::to_owned)
+            .skip_while(|line| line.starts_with("//")) // Skip leading comments.
             .skip_while(|line| line.trim().is_empty()) // Strip leading empty lines.
             .collect_vec();
 
+        // Remove multi-line Python docstrings, otherwise we can't embed this.
+        if content
+            .first()
+            .map_or(false, |line| line.trim() == "\"\"\"")
+        {
+            if let Some((i, _)) = content
+                .iter()
+                .skip(1)
+                .find_position(|line| line.trim() == "\"\"\"")
+            {
+                content = content.into_iter().skip(i + 2).collect();
+            }
+        }
+
+        // Remove one-line Python docstrings, otherwise we can't embed this.
+        if let Some(first_line) = content.first() {
+            if first_line.starts_with("\"\"\"")
+                && first_line.ends_with("\"\"\"")
+                && first_line.len() > 6
+            {
+                content.remove(0);
+            }
+        }
+
         // trim trailing blank lines
+        while content.first().is_some_and(is_blank) {
+            content.remove(0);
+        }
         while content.last().is_some_and(is_blank) {
             content.pop();
         }

@@ -40,10 +40,9 @@ center = bs2.center - bs1.center * scale
 ```
 
 ```python
-# Logging the 3D asset with the unit sphere
-mesh3d = rr.Asset3D(path=path)
-mesh3d.transform = rr.OutOfTreeTransform3DBatch(rr.TranslationRotationScale3D(translation=center, scale=scale))
-rr.log("world/mesh", mesh3d)
+# Logging the 3D asset within the unit sphere
+rr.log("world/mesh", rr.Asset3D(path=path))
+rr.log("world/mesh", rr.Transform3D(translation=center, scale=scale))
 ```
 
 ### Sample SDF
@@ -52,7 +51,7 @@ The sampled points and their corresponding signed distances are visualized using
 
 ```python
 # Points inside the object are highlighted in red, while those outside are marked in green.
-rr.log("world/sdf", rr.AnnotationContext([(0, "inside", (255, 0, 0)), (1, "outside", (0, 255, 0))]), timeless=False)
+rr.log("world/sdf", rr.AnnotationContext([(0, "inside", (255, 0, 0)), (1, "outside", (0, 255, 0))]), static=False)
 ```
 
 ```python

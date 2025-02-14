@@ -8,10 +8,11 @@ from __future__ import annotations
 from ... import datatypes
 from ..._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["RootContainer", "RootContainerBatch", "RootContainerType"]
+__all__ = ["RootContainer", "RootContainerBatch"]
 
 
 class RootContainer(datatypes.Uuid, ComponentMixin):
@@ -24,12 +25,8 @@ class RootContainer(datatypes.Uuid, ComponentMixin):
     pass
 
 
-class RootContainerType(datatypes.UuidType):
-    _TYPE_NAME: str = "rerun.blueprint.components.RootContainer"
-
-
 class RootContainerBatch(datatypes.UuidBatch, ComponentBatchMixin):
-    _ARROW_TYPE = RootContainerType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.blueprint.components.RootContainer")
 
 
 # This is patched in late to avoid circular dependencies.

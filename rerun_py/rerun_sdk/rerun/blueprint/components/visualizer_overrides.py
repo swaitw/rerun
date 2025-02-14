@@ -7,11 +7,12 @@ from __future__ import annotations
 
 from ..._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 from ...blueprint import datatypes as blueprint_datatypes
 
-__all__ = ["VisualizerOverrides", "VisualizerOverridesBatch", "VisualizerOverridesType"]
+__all__ = ["VisualizerOverrides", "VisualizerOverridesBatch"]
 
 
 class VisualizerOverrides(blueprint_datatypes.Utf8List, ComponentMixin):
@@ -35,12 +36,8 @@ class VisualizerOverrides(blueprint_datatypes.Utf8List, ComponentMixin):
     pass
 
 
-class VisualizerOverridesType(blueprint_datatypes.Utf8ListType):
-    _TYPE_NAME: str = "rerun.blueprint.components.VisualizerOverrides"
-
-
 class VisualizerOverridesBatch(blueprint_datatypes.Utf8ListBatch, ComponentBatchMixin):
-    _ARROW_TYPE = VisualizerOverridesType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.blueprint.components.VisualizerOverrides")
 
 
 # This is patched in late to avoid circular dependencies.

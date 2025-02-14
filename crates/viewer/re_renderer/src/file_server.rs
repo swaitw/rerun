@@ -254,7 +254,7 @@ mod file_server_impl {
                     .ok()
             }
 
-            let paths = self
+            let paths: HashSet<PathBuf> = self
                 .events_rx
                 .try_iter()
                 .flat_map(|ev| {
@@ -306,7 +306,7 @@ mod file_server_impl {
             f(&mut Self)
         }
 
-        #[allow(clippy::unused_self)]
+        #[allow(clippy::needless_pass_by_ref_mut, clippy::unused_self)]
         pub fn collect<Fs: FileSystem>(
             &mut self,
             _resolver: &FileResolver<Fs>,

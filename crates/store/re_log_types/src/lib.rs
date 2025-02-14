@@ -35,8 +35,9 @@ mod vec_deque_ext;
 use std::sync::Arc;
 
 use re_build_info::CrateVersion;
+use re_byte_size::SizeBytes;
 
-pub use self::arrow_msg::{ArrowChunkReleaseCallback, ArrowMsg};
+pub use self::arrow_msg::{ArrowMsg, ArrowRecordBatchReleaseCallback};
 pub use self::instance::Instance;
 pub use self::path::*;
 pub use self::resolved_time_range::{ResolvedTimeRange, ResolvedTimeRangeF};
@@ -48,7 +49,7 @@ pub use self::time_real::TimeReal;
 pub use self::vec_deque_ext::{VecDequeInsertionExt, VecDequeRemovalExt, VecDequeSortingExt};
 
 pub mod external {
-    pub use arrow2;
+    pub use arrow;
 
     pub use re_tuid;
     pub use re_types_core;
@@ -206,7 +207,7 @@ impl std::fmt::Display for ApplicationId {
 /// This command serves two purposes:
 /// - It is important that a blueprint is never activated before it has been fully
 ///   transmitted. Displaying, or allowing a user to modify, a half-transmitted
-///   blueprint can cause confusion and bad interactions with the space view heuristics.
+///   blueprint can cause confusion and bad interactions with the view heuristics.
 /// - Additionally, this command allows fine-tuning the activation behavior itself
 ///   by specifying whether the blueprint should be immediately activated, or only
 ///   become the default for future activations.
@@ -258,6 +259,7 @@ impl BlueprintActivationCommand {
 #[derive(Clone, Debug, PartialEq)] // `PartialEq` used for tests in another crate
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[allow(clippy::large_enum_variant)]
+// TODO(#8631): Remove `LogMsg`
 pub enum LogMsg {
     /// A new recording has begun.
     ///
@@ -273,7 +275,7 @@ pub enum LogMsg {
     ///
     /// This is so that the viewer can wait with activating the blueprint until it is
     /// fully transmitted. Showing a half-transmitted blueprint can cause confusion,
-    /// and also lead to problems with space-view heuristics.
+    /// and also lead to problems with view heuristics.
     BlueprintActivationCommand(BlueprintActivationCommand),
 }
 
@@ -297,6 +299,18 @@ impl LogMsg {
             Self::BlueprintActivationCommand(cmd) => {
                 cmd.blueprint_id = new_store_id;
             }
+        }
+    }
+
+    // TODO(#3741): remove this once we are all in on arrow-rs
+    /// USE ONLY FOR TESTS
+    pub fn strip_arrow_extension_types(self) -> Self {
+        match self {
+            Self::ArrowMsg(store_id, mut arrow_msg) => {
+                strip_arrow_extension_types_from_batch(&mut arrow_msg.batch);
+                Self::ArrowMsg(store_id, arrow_msg)
+            }
+            other => other,
         }
     }
 }
@@ -405,13 +419,159 @@ impl std::fmt::Display for PythonVersion {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+impl std::str::FromStr for PythonVersion {
+    type Err = PythonVersionParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Err(PythonVersionParseError::MissingMajor);
+        }
+        let (major, rest) = s
+            .split_once('.')
+            .ok_or(PythonVersionParseError::MissingMinor)?;
+        if rest.is_empty() {
+            return Err(PythonVersionParseError::MissingMinor);
+        }
+        let (minor, rest) = rest
+            .split_once('.')
+            .ok_or(PythonVersionParseError::MissingPatch)?;
+        if rest.is_empty() {
+            return Err(PythonVersionParseError::MissingPatch);
+        }
+        let pos = rest.bytes().position(|v| !v.is_ascii_digit());
+        let (patch, suffix) = match pos {
+            Some(pos) => rest.split_at(pos),
+            None => (rest, ""),
+        };
+
+        Ok(Self {
+            major: major
+                .parse()
+                .map_err(PythonVersionParseError::InvalidMajor)?,
+            minor: minor
+                .parse()
+                .map_err(PythonVersionParseError::InvalidMinor)?,
+            patch: patch
+                .parse()
+                .map_err(PythonVersionParseError::InvalidPatch)?,
+            suffix: suffix.into(),
+        })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PythonVersionParseError {
+    #[error("missing major version")]
+    MissingMajor,
+
+    #[error("missing minor version")]
+    MissingMinor,
+
+    #[error("missing patch version")]
+    MissingPatch,
+
+    #[error("invalid major version: {0}")]
+    InvalidMajor(std::num::ParseIntError),
+
+    #[error("invalid minor version: {0}")]
+    InvalidMinor(std::num::ParseIntError),
+
+    #[error("invalid patch version: {0}")]
+    InvalidPatch(std::num::ParseIntError),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum FileSource {
     Cli,
-    DragAndDrop,
-    FileDialog,
+
+    /// The user clicked on a recording URI in the viewer.
+    Uri,
+
+    DragAndDrop {
+        /// The [`ApplicationId`] that the viewer heuristically recommends should be used when loading
+        /// this data source, based on the surrounding context.
+        #[cfg_attr(feature = "serde", serde(skip))]
+        recommended_application_id: Option<ApplicationId>,
+
+        /// The [`StoreId`] that the viewer heuristically recommends should be used when loading
+        /// this data source, based on the surrounding context.
+        #[cfg_attr(feature = "serde", serde(skip))]
+        recommended_recording_id: Option<StoreId>,
+
+        /// Whether `SetStoreInfo`s should be sent, regardless of the surrounding context.
+        ///
+        /// Only useful when creating a recording just-in-time directly in the viewer (which is what
+        /// happens when importing things into the welcome screen).
+        #[cfg_attr(feature = "serde", serde(skip))]
+        force_store_info: bool,
+    },
+
+    FileDialog {
+        /// The [`ApplicationId`] that the viewer heuristically recommends should be used when loading
+        /// this data source, based on the surrounding context.
+        #[cfg_attr(feature = "serde", serde(skip))]
+        recommended_application_id: Option<ApplicationId>,
+
+        /// The [`StoreId`] that the viewer heuristically recommends should be used when loading
+        /// this data source, based on the surrounding context.
+        #[cfg_attr(feature = "serde", serde(skip))]
+        recommended_recording_id: Option<StoreId>,
+
+        /// Whether `SetStoreInfo`s should be sent, regardless of the surrounding context.
+        ///
+        /// Only useful when creating a recording just-in-time directly in the viewer (which is what
+        /// happens when importing things into the welcome screen).
+        #[cfg_attr(feature = "serde", serde(skip))]
+        force_store_info: bool,
+    },
+
     Sdk,
+}
+
+impl FileSource {
+    #[inline]
+    pub fn recommended_application_id(&self) -> Option<&ApplicationId> {
+        match self {
+            Self::FileDialog {
+                recommended_application_id,
+                ..
+            }
+            | Self::DragAndDrop {
+                recommended_application_id,
+                ..
+            } => recommended_application_id.as_ref(),
+            Self::Cli | Self::Uri | Self::Sdk => None,
+        }
+    }
+
+    #[inline]
+    pub fn recommended_recording_id(&self) -> Option<&StoreId> {
+        match self {
+            Self::FileDialog {
+                recommended_recording_id,
+                ..
+            }
+            | Self::DragAndDrop {
+                recommended_recording_id,
+                ..
+            } => recommended_recording_id.as_ref(),
+            Self::Cli | Self::Uri | Self::Sdk => None,
+        }
+    }
+
+    #[inline]
+    pub fn force_store_info(&self) -> bool {
+        match self {
+            Self::FileDialog {
+                force_store_info, ..
+            }
+            | Self::DragAndDrop {
+                force_store_info, ..
+            } => *force_store_info,
+            Self::Cli | Self::Uri | Self::Sdk => false,
+        }
+    }
 }
 
 /// The source of a recording or blueprint.
@@ -456,8 +616,9 @@ impl std::fmt::Display for StoreSource {
             Self::RustSdk { rustc_version, .. } => write!(f, "Rust SDK (rustc {rustc_version})"),
             Self::File { file_source, .. } => match file_source {
                 FileSource::Cli => write!(f, "File via CLI"),
-                FileSource::DragAndDrop => write!(f, "File via drag-and-drop"),
-                FileSource::FileDialog => write!(f, "File via file dialog"),
+                FileSource::Uri => write!(f, "File via URI"),
+                FileSource::DragAndDrop { .. } => write!(f, "File via drag-and-drop"),
+                FileSource::FileDialog { .. } => write!(f, "File via file dialog"),
                 FileSource::Sdk => write!(f, "File via SDK"),
             },
             Self::Viewer => write!(f, "Viewer-generated"),
@@ -484,4 +645,262 @@ pub fn build_frame_nr(frame_nr: impl TryInto<TimeInt>) -> (Timeline, TimeInt) {
         Timeline::new("frame_nr", TimeType::Sequence),
         frame_nr.try_into().unwrap_or(TimeInt::MIN),
     )
+}
+
+impl SizeBytes for ApplicationId {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.0.heap_size_bytes()
+    }
+}
+
+impl SizeBytes for StoreId {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.id.heap_size_bytes()
+    }
+}
+
+impl SizeBytes for PythonVersion {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        let Self {
+            major: _,
+            minor: _,
+            patch: _,
+            suffix,
+        } = self;
+
+        suffix.heap_size_bytes()
+    }
+}
+
+impl SizeBytes for FileSource {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        match self {
+            Self::Uri | Self::Sdk | Self::Cli => 0,
+            Self::DragAndDrop {
+                recommended_application_id,
+                recommended_recording_id,
+                force_store_info,
+            }
+            | Self::FileDialog {
+                recommended_application_id,
+                recommended_recording_id,
+                force_store_info,
+            } => {
+                recommended_application_id.heap_size_bytes()
+                    + recommended_recording_id.heap_size_bytes()
+                    + force_store_info.heap_size_bytes()
+            }
+        }
+    }
+}
+
+impl SizeBytes for StoreSource {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        match self {
+            Self::Unknown | Self::CSdk | Self::Viewer => 0,
+            Self::PythonSdk(python_version) => python_version.heap_size_bytes(),
+            Self::RustSdk {
+                rustc_version,
+                llvm_version,
+            } => rustc_version.heap_size_bytes() + llvm_version.heap_size_bytes(),
+            Self::File { file_source } => file_source.heap_size_bytes(),
+            Self::Other(description) => description.heap_size_bytes(),
+        }
+    }
+}
+
+impl SizeBytes for StoreInfo {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        let Self {
+            application_id,
+            store_id,
+            cloned_from: _,
+            is_official_example: _,
+            started: _,
+            store_source,
+            store_version,
+        } = self;
+
+        application_id.heap_size_bytes()
+            + store_id.heap_size_bytes()
+            + store_source.heap_size_bytes()
+            + store_version.heap_size_bytes()
+    }
+}
+
+impl SizeBytes for SetStoreInfo {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        let Self { row_id, info } = self;
+
+        row_id.heap_size_bytes() + info.heap_size_bytes()
+    }
+}
+
+impl SizeBytes for BlueprintActivationCommand {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        0
+    }
+}
+
+impl SizeBytes for ArrowMsg {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        let Self {
+            chunk_id,
+            timepoint_max,
+            batch,
+            on_release: _,
+        } = self;
+
+        chunk_id.heap_size_bytes() + timepoint_max.heap_size_bytes() + batch.heap_size_bytes()
+    }
+}
+
+impl SizeBytes for LogMsg {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        match self {
+            Self::SetStoreInfo(set_store_info) => set_store_info.heap_size_bytes(),
+            Self::ArrowMsg(store_id, arrow_msg) => {
+                store_id.heap_size_bytes() + arrow_msg.heap_size_bytes()
+            }
+            Self::BlueprintActivationCommand(blueprint_activation_command) => {
+                blueprint_activation_command.heap_size_bytes()
+            }
+        }
+    }
+}
+
+/// USE ONLY FOR TESTS
+// TODO(#3741): remove once <https://github.com/apache/arrow-rs/issues/6803> is released
+use arrow::array::RecordBatch as ArrowRecordBatch;
+
+pub fn strip_arrow_extension_types_from_batch(batch: &mut ArrowRecordBatch) {
+    use arrow::datatypes::{Field, Schema};
+
+    fn strip_arrow_extensions_from_field(field: &Field) -> Field {
+        let mut metadata = field.metadata().clone();
+        metadata.retain(|key, _| !key.starts_with("ARROW:extension"));
+        field.clone().with_metadata(metadata)
+    }
+
+    let old_schema = batch.schema();
+    let new_fields: arrow::datatypes::Fields = old_schema
+        .fields()
+        .iter()
+        .map(|field| strip_arrow_extensions_from_field(field))
+        .collect();
+    let new_schema = Schema::new_with_metadata(new_fields, old_schema.metadata().clone());
+
+    #[allow(clippy::unwrap_used)] // The invariants of the input aren't changed
+    {
+        *batch = ArrowRecordBatch::try_new(new_schema.into(), batch.columns().to_vec()).unwrap();
+    }
+}
+
+// ----------------------------------------------------------------------------
+
+/// Runtime asserts that an archetype has the given components.
+///
+/// In particular, this is useful to statically check that an archetype
+/// has a specific component.
+///
+/// ```
+/// # #[macro_use] extern crate re_log_types;
+/// # use re_log_types::example_components::*;
+/// debug_assert_archetype_has_components!(MyPoints, colors: MyColor);
+/// ```
+///
+/// This will panic because the type is wrong:
+///
+/// ```should_panic
+/// # #[macro_use] extern crate re_log_types;
+/// # use re_log_types::example_components::*;
+/// debug_assert_archetype_has_components!(MyPoints, colors: MyPoint);
+/// ```
+///
+/// This will fail to compile because the field is missing:
+///
+/// ```compile_fail
+/// # #[macro_use] extern crate re_log_types;
+/// # use re_log_types::example_components::*;
+/// debug_assert_archetype_has_components!(MyPoints, colours: MyColor);
+/// ```
+///
+#[macro_export]
+macro_rules! debug_assert_archetype_has_components {
+    ($arch:ty, $($field:ident: $field_typ:ty),+ $(,)?) => {
+        #[cfg(debug_assertions)]
+        {
+            use re_log_types::external::re_types_core::{Component as _};
+            let archetype = <$arch>::clear_fields();
+            $(
+                assert_eq!(archetype.$field.map(|batch| batch.descriptor.component_name), Some(<$field_typ>::name()));
+            )+
+        }
+    };
+}
+
+// ----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_python_version() {
+        macro_rules! assert_parse_err {
+            ($input:literal, $expected:pat) => {
+                let actual = $input.parse::<PythonVersion>();
+
+                assert!(
+                    matches!(actual, Err($expected)),
+                    "actual: {actual:?}, expected: {}",
+                    stringify!($expected)
+                );
+            };
+        }
+
+        macro_rules! assert_parse_ok {
+            ($input:literal, $expected:expr) => {
+                let actual = $input.parse::<PythonVersion>().expect("failed to parse");
+                assert_eq!(actual, $expected);
+            };
+        }
+
+        assert_parse_err!("", PythonVersionParseError::MissingMajor);
+        assert_parse_err!("3", PythonVersionParseError::MissingMinor);
+        assert_parse_err!("3.", PythonVersionParseError::MissingMinor);
+        assert_parse_err!("3.11", PythonVersionParseError::MissingPatch);
+        assert_parse_err!("3.11.", PythonVersionParseError::MissingPatch);
+        assert_parse_err!("a.11.0", PythonVersionParseError::InvalidMajor(_));
+        assert_parse_err!("3.b.0", PythonVersionParseError::InvalidMinor(_));
+        assert_parse_err!("3.11.c", PythonVersionParseError::InvalidPatch(_));
+        assert_parse_ok!(
+            "3.11.0",
+            PythonVersion {
+                major: 3,
+                minor: 11,
+                patch: 0,
+                suffix: String::new(),
+            }
+        );
+        assert_parse_ok!(
+            "3.11.0a1",
+            PythonVersion {
+                major: 3,
+                minor: 11,
+                patch: 0,
+                suffix: "a1".to_owned(),
+            }
+        );
+    }
 }

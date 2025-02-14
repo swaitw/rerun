@@ -3,21 +3,18 @@
 //! This crate contains all the GUI code for the Rerun Viewer,
 //! including all 2D and 3D visualization code.
 
-// TODO(#3408): remove unwrap()
-#![allow(clippy::unwrap_used)]
-
 mod app;
 mod app_blueprint;
 mod app_state;
 mod background_tasks;
 pub mod env_vars;
-#[cfg(not(target_arch = "wasm32"))]
-mod loading;
-mod reflection;
 mod saving;
 mod screenshotter;
 mod ui;
 mod viewer_analytics;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod loading;
 
 /// Auto-generated blueprint-related types.
 ///
@@ -30,11 +27,13 @@ pub(crate) use {app_state::AppState, ui::memory_panel};
 
 pub use app::{App, StartupOptions};
 
+pub use re_capabilities::MainThreadToken;
+
 pub mod external {
     pub use {eframe, egui};
     pub use {
         re_chunk, re_chunk::external::*, re_chunk_store, re_chunk_store::external::*, re_data_ui,
-        re_entity_db, re_log, re_log_types, re_memory, re_query, re_renderer, re_types, re_ui,
+        re_entity_db, re_log, re_log_types, re_memory, re_renderer, re_types, re_ui,
         re_viewer_context, re_viewer_context::external::*, re_viewport, re_viewport::external::*,
     };
 }
@@ -93,7 +92,7 @@ pub enum AppEnvironment {
     /// We are a web-viewer running in a browser as Wasm.
     Web { url: String },
 
-    /// Some custom application wrapping re_viewer
+    /// Some custom application wrapping `re_viewer`.
     Custom(String),
 }
 
@@ -151,27 +150,7 @@ impl AppEnvironment {
 
 // ---------------------------------------------------------------------------
 
-fn supported_graphics_backends(force_wgpu_backend: Option<String>) -> wgpu::Backends {
-    if let Some(force_wgpu_backend) = force_wgpu_backend {
-        if let Some(backend) = re_renderer::config::parse_graphics_backend(&force_wgpu_backend) {
-            if let Err(err) = re_renderer::config::validate_graphics_backend_applicability(backend)
-            {
-                re_log::error!("Failed to force rendering backend parsed from {force_wgpu_backend:?}: {err}\nUsing default backend instead.");
-                re_renderer::config::supported_backends()
-            } else {
-                re_log::info!("Forcing graphics backend to {backend:?}.");
-                backend.into()
-            }
-        } else {
-            re_log::error!("Failed to parse rendering backend string {force_wgpu_backend:?}. Using default backend instead.");
-            re_renderer::config::supported_backends()
-        }
-    } else {
-        re_renderer::config::supported_backends()
-    }
-}
-
-pub(crate) fn wgpu_options(force_wgpu_backend: Option<String>) -> egui_wgpu::WgpuConfiguration {
+pub(crate) fn wgpu_options(force_wgpu_backend: Option<&str>) -> egui_wgpu::WgpuConfiguration {
     re_tracing::profile_function!();
 
     egui_wgpu::WgpuConfiguration {
@@ -193,8 +172,19 @@ pub(crate) fn wgpu_options(force_wgpu_backend: Option<String>) -> egui_wgpu::Wgp
                     egui_wgpu::SurfaceErrorAction::SkipFrame
                 }
             }),
-            supported_backends: supported_graphics_backends(force_wgpu_backend),
-            device_descriptor: std::sync::Arc::new(|adapter| re_renderer::config::DeviceCaps::from_adapter(adapter).device_descriptor()),
+
+            wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(egui_wgpu::WgpuSetupCreateNew {
+                instance_descriptor: re_renderer::device_caps::instance_descriptor(force_wgpu_backend),
+
+                // TODO(#8475): Install custom native adapter selector with more extensive logging and the ability to pick adapter by name
+                // (user may e.g. request "nvidia" or "intel" and it should just work!)
+                // ideally producing structured reasoning of why which one was picked in the process.
+                // This should live in re_renderer::config so that we can reuse it in tests & re_renderer examples.
+                native_adapter_selector: None,
+                device_descriptor: std::sync::Arc::new(|adapter| re_renderer::device_caps::DeviceCaps::from_adapter_without_validation(adapter).device_descriptor()),
+
+                ..Default::default()
+             }),
             ..Default::default()
         }
 }
@@ -206,20 +196,18 @@ pub fn customize_eframe_and_setup_renderer(
     re_tracing::profile_function!();
 
     if let Some(render_state) = &cc.wgpu_render_state {
-        use re_renderer::{config::RenderContextConfig, RenderContext};
+        use re_renderer::RenderContext;
 
+        // Put the renderer into paint callback resources, so we have access to the renderer
+        // when we need to process egui draw callbacks.
         let paint_callback_resources = &mut render_state.renderer.write().callback_resources;
-
         let render_ctx = RenderContext::new(
             &render_state.adapter,
             render_state.device.clone(),
             render_state.queue.clone(),
-            RenderContextConfig {
-                output_format_color: render_state.target_format,
-                device_caps: re_renderer::config::DeviceCaps::from_adapter(&render_state.adapter),
-            },
+            render_state.target_format,
+            re_renderer::RenderConfig::best_for_device_caps,
         )?;
-
         paint_callback_resources.insert(render_ctx);
     }
 
@@ -230,7 +218,6 @@ pub fn customize_eframe_and_setup_renderer(
 // ---------------------------------------------------------------------------
 
 /// This wakes up the ui thread each time we receive a new message.
-#[cfg(not(feature = "web_viewer"))]
 #[cfg(not(target_arch = "wasm32"))]
 pub fn wake_up_ui_thread_on_each_msg<T: Send + 'static>(
     rx: re_smart_channel::Receiver<T>,
@@ -252,9 +239,9 @@ pub fn wake_up_ui_thread_on_each_msg<T: Send + 'static>(
                     break;
                 }
             }
-            re_log::debug!("Shutting down ui_waker thread");
+            re_log::trace!("Shutting down ui_waker thread");
         })
-        .unwrap();
+        .expect("Failed to spawn UI waker thread");
     new_rx
 }
 
@@ -287,6 +274,18 @@ pub fn reset_viewer_persistence() -> anyhow::Result<()> {
             }
         } else {
             re_log::info!("Rerun state was already cleared.");
+        }
+
+        // Clear the default cache directory if it exists
+        //TODO(#8064): should clear the _actual_ cache directory, not the default one
+        if let Some(cache_dir) = re_viewer_context::AppOptions::default_cache_directory() {
+            if let Err(err) = std::fs::remove_dir_all(&cache_dir) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    anyhow::bail!("Failed to remove {cache_dir:?}: {err}");
+                }
+            } else {
+                re_log::info!("Cleared {cache_dir:?}.");
+            }
         }
     }
     #[cfg(target_arch = "wasm32")]

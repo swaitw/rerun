@@ -58,7 +58,7 @@ const RERUN_BINARY: &str = "rerun";
 impl Default for SpawnOptions {
     fn default() -> Self {
         Self {
-            port: crate::default_server_addr().port(),
+            port: re_grpc_server::DEFAULT_SERVER_PORT,
             wait_for_bind: false,
             memory_limit: "75%".into(),
             executable_name: RERUN_BINARY.into(),
@@ -85,6 +85,15 @@ impl SpawnOptions {
     pub fn executable_path(&self) -> String {
         if let Some(path) = self.executable_path.as_deref() {
             return path.to_owned();
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            let local_build_path = format!("target/debug/{RERUN_BINARY}");
+            if std::fs::metadata(&local_build_path).is_ok() {
+                re_log::info!("Spawning the locally built rerun at {local_build_path}");
+                return local_build_path;
+            }
         }
 
         self.executable_name.clone()
@@ -131,7 +140,7 @@ impl std::fmt::Debug for SpawnError {
     }
 }
 
-/// Spawns a new Rerun Viewer process ready to listen for TCP connections.
+/// Spawns a new Rerun Viewer process ready to listen for connections.
 ///
 /// If there is already a process listening on this port (Rerun or not), this function returns `Ok`
 /// WITHOUT spawning a `rerun` process (!).

@@ -80,28 +80,30 @@ impl SerializationError {
     }
 }
 
-/// A cloneable wrapper around `arrow2::error::Error`, for easier use.
-///
-/// The motivation behind this type is that we often use code that can return a `arrow2::error::Error`
-/// inside functions that return a `SerializationError`. By wrapping it we can use the ? operator and simplify the code.
-/// Second, normally also `arrow2::error::Error` isn't clonable, but `SerializationError` is.
-#[derive(Clone, Debug)]
-pub struct ArcArrowError(std::sync::Arc<arrow2::error::Error>);
+// ----------------------------------------------------------------------------
 
-impl From<arrow2::error::Error> for ArcArrowError {
-    fn from(e: arrow2::error::Error) -> Self {
+/// A cloneable wrapper around [`arrow::error::ArrowError`], for easier use.
+///
+/// The motivation behind this type is that we often use code that can return a [`arrow::error::ArrowError`]
+/// inside functions that return a `SerializationError`. By wrapping it we can use the ? operator and simplify the code.
+/// Second, normally also [`arrow::error::ArrowError`] isn't cloneable, but `SerializationError` is.
+#[derive(Clone, Debug)]
+pub struct ArcArrowError(std::sync::Arc<arrow::error::ArrowError>);
+
+impl From<arrow::error::ArrowError> for ArcArrowError {
+    fn from(e: arrow::error::ArrowError) -> Self {
         Self(std::sync::Arc::new(e))
     }
 }
 
-impl From<arrow2::error::Error> for SerializationError {
-    fn from(e: arrow2::error::Error) -> Self {
+impl From<arrow::error::ArrowError> for SerializationError {
+    fn from(e: arrow::error::ArrowError) -> Self {
         Self::ArrowError(ArcArrowError::from(e))
     }
 }
 
 impl Deref for ArcArrowError {
-    type Target = arrow2::error::Error;
+    type Target = arrow::error::ArrowError;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -114,6 +116,8 @@ impl Display for ArcArrowError {
         self.0.fmt(f)
     }
 }
+
+// ----------------------------------------------------------------------------
 
 pub type SerializationResult<T> = ::std::result::Result<T, SerializationError>;
 
@@ -145,7 +149,7 @@ pub enum DeserializationError {
 
     #[error("Expected field {field_name:?} to be present in {datatype:#?}")]
     MissingStructField {
-        datatype: ::arrow2::datatypes::DataType,
+        datatype: arrow::datatypes::DataType,
         field_name: String,
         backtrace: _Backtrace,
     },
@@ -163,7 +167,7 @@ pub enum DeserializationError {
 
     #[error("Expected union arm {arm_name:?} (#{arm_index}) to be present in {datatype:#?}")]
     MissingUnionArm {
-        datatype: ::arrow2::datatypes::DataType,
+        datatype: arrow::datatypes::DataType,
         arm_name: String,
         arm_index: usize,
         backtrace: _Backtrace,
@@ -171,8 +175,8 @@ pub enum DeserializationError {
 
     #[error("Expected {expected:#?} but found {got:#?} instead")]
     DatatypeMismatch {
-        expected: ::arrow2::datatypes::DataType,
-        got: ::arrow2::datatypes::DataType,
+        expected: arrow::datatypes::DataType,
+        got: arrow::datatypes::DataType,
         backtrace: _Backtrace,
     },
 
@@ -229,11 +233,11 @@ impl DeserializationError {
 
     #[inline]
     pub fn missing_struct_field(
-        datatype: arrow2::datatypes::DataType,
+        datatype: impl Into<arrow::datatypes::DataType>,
         field_name: impl AsRef<str>,
     ) -> Self {
         Self::MissingStructField {
-            datatype,
+            datatype: datatype.into(),
             field_name: field_name.as_ref().into(),
             backtrace: ::backtrace::Backtrace::new_unresolved(),
         }
@@ -257,12 +261,12 @@ impl DeserializationError {
 
     #[inline]
     pub fn missing_union_arm(
-        datatype: arrow2::datatypes::DataType,
+        datatype: impl Into<arrow::datatypes::DataType>,
         arm_name: impl AsRef<str>,
         arm_index: usize,
     ) -> Self {
         Self::MissingUnionArm {
-            datatype,
+            datatype: datatype.into(),
             arm_name: arm_name.as_ref().into(),
             arm_index,
             backtrace: ::backtrace::Backtrace::new_unresolved(),
@@ -271,12 +275,12 @@ impl DeserializationError {
 
     #[inline]
     pub fn datatype_mismatch(
-        expected: arrow2::datatypes::DataType,
-        got: arrow2::datatypes::DataType,
+        expected: impl Into<arrow::datatypes::DataType>,
+        got: impl Into<arrow::datatypes::DataType>,
     ) -> Self {
         Self::DatatypeMismatch {
-            expected,
-            got,
+            expected: expected.into(),
+            got: got.into(),
             backtrace: ::backtrace::Backtrace::new_unresolved(),
         }
     }
@@ -329,6 +333,14 @@ impl DeserializationError {
             | Self::OffsetSliceOutOfBounds { backtrace, .. }
             | Self::DowncastError { backtrace, .. } => Some(backtrace.clone()),
             Self::DataCellError(_) | Self::ValidationError(_) => None,
+        }
+    }
+
+    /// The source of the error, without any [`Self::Context`].
+    pub fn without_context(self) -> Self {
+        match self {
+            Self::Context { source, .. } => source.without_context(),
+            _ => self,
         }
     }
 }

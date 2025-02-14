@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use itertools::Itertools as _;
+use re_chunk_store::ChunkStoreDiffKind;
 use re_chunk_store::{ChunkStoreEvent, ChunkStoreSubscriber};
 use re_log_types::Timeline;
 
@@ -10,10 +12,10 @@ pub type TimeHistogram = re_int_histogram::Int64Histogram;
 
 /// Number of messages per time per timeline.
 ///
-/// Does NOT include timeless.
+/// Does NOT include static data.
 #[derive(Default)]
 pub struct TimeHistogramPerTimeline {
-    /// When do we have data? Ignores timeless.
+    /// When do we have data? Ignores static data.
     times: BTreeMap<Timeline, TimeHistogram>,
 
     /// Extra bookkeeping used to seed any timelines that include static msgs.
@@ -62,6 +64,8 @@ impl TimeHistogramPerTimeline {
     }
 
     pub fn add(&mut self, times_per_timeline: &[(Timeline, &[i64])], n: u32) {
+        re_tracing::profile_function!();
+
         if times_per_timeline.is_empty() {
             self.num_static_messages = self
                 .num_static_messages
@@ -85,6 +89,8 @@ impl TimeHistogramPerTimeline {
     }
 
     pub fn remove(&mut self, times_per_timeline: &[(Timeline, &[i64])], n: u32) {
+        re_tracing::profile_function!();
+
         if times_per_timeline.is_empty() {
             self.num_static_messages = self
                 .num_static_messages
@@ -132,9 +138,24 @@ impl ChunkStoreSubscriber for TimeHistogramPerTimeline {
     }
 
     #[allow(clippy::unimplemented)]
-    fn on_events(&mut self, _events: &[ChunkStoreEvent]) {
-        unimplemented!(
-            r"TimeHistogramPerTimeline view is maintained as a sub-view of `EntityTree`",
-        );
+    fn on_events(&mut self, events: &[ChunkStoreEvent]) {
+        re_tracing::profile_function!();
+
+        for event in events {
+            let times = event
+                .chunk
+                .timelines()
+                .iter()
+                .map(|(&timeline, time_column)| (timeline, time_column.times_raw()))
+                .collect_vec();
+            match event.kind {
+                ChunkStoreDiffKind::Addition => {
+                    self.add(&times, event.num_components() as _);
+                }
+                ChunkStoreDiffKind::Deletion => {
+                    self.remove(&times, event.num_components() as _);
+                }
+            }
+        }
     }
 }

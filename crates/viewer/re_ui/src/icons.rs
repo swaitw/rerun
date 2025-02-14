@@ -24,7 +24,16 @@ impl Icon {
 
     #[inline]
     pub fn as_image(&self) -> Image<'static> {
-        Image::new(self.as_image_source())
+        // Default size is the same size as the source data specifies
+        const ICON_SCALE: f32 = 0.5; // Because we save all icons as 2x
+        Image::new(self.as_image_source()).fit_to_original_size(ICON_SCALE)
+    }
+}
+
+impl From<&'static Icon> for Image<'static> {
+    #[inline]
+    fn from(icon: &'static Icon) -> Self {
+        icon.as_image()
     }
 }
 
@@ -50,12 +59,17 @@ pub const ARROW_RIGHT: Icon = icon_from_path!("../data/icons/arrow_right.png");
 pub const ARROW_DOWN: Icon = icon_from_path!("../data/icons/arrow_down.png");
 pub const LOOP: Icon = icon_from_path!("../data/icons/loop.png");
 
+pub const NOTIFICATION: Icon = icon_from_path!("../data/icons/notification.png");
 pub const RIGHT_PANEL_TOGGLE: Icon = icon_from_path!("../data/icons/right_panel_toggle.png");
 pub const BOTTOM_PANEL_TOGGLE: Icon = icon_from_path!("../data/icons/bottom_panel_toggle.png");
 pub const LEFT_PANEL_TOGGLE: Icon = icon_from_path!("../data/icons/left_panel_toggle.png");
 
 pub const MINIMIZE: Icon = icon_from_path!("../data/icons/minimize.png");
 pub const MAXIMIZE: Icon = icon_from_path!("../data/icons/maximize.png");
+
+pub const COLLAPSE: Icon = icon_from_path!("../data/icons/collapse.png");
+pub const EXPAND: Icon = icon_from_path!("../data/icons/expand.png");
+pub const COLUMN_VISIBILITY: Icon = icon_from_path!("../data/icons/column_visibility.png");
 
 pub const VISIBLE: Icon = icon_from_path!("../data/icons/visible.png");
 pub const INVISIBLE: Icon = icon_from_path!("../data/icons/invisible.png");
@@ -83,16 +97,18 @@ pub const CONTAINER_GRID: Icon = icon_from_path!("../data/icons/container_grid.p
 pub const CONTAINER_TABS: Icon = icon_from_path!("../data/icons/container_tabs.png");
 pub const CONTAINER_VERTICAL: Icon = icon_from_path!("../data/icons/container_vertical.png");
 
-pub const SPACE_VIEW_2D: Icon = icon_from_path!("../data/icons/spaceview_2d.png");
-pub const SPACE_VIEW_3D: Icon = icon_from_path!("../data/icons/spaceview_3d.png");
-pub const SPACE_VIEW_DATAFRAME: Icon = icon_from_path!("../data/icons/spaceview_dataframe.png");
-pub const SPACE_VIEW_GENERIC: Icon = icon_from_path!("../data/icons/spaceview_generic.png");
-pub const SPACE_VIEW_HISTOGRAM: Icon = icon_from_path!("../data/icons/spaceview_histogram.png");
-pub const SPACE_VIEW_LOG: Icon = icon_from_path!("../data/icons/spaceview_log.png");
-pub const SPACE_VIEW_TENSOR: Icon = icon_from_path!("../data/icons/spaceview_tensor.png");
-pub const SPACE_VIEW_TEXT: Icon = icon_from_path!("../data/icons/spaceview_text.png");
-pub const SPACE_VIEW_TIMESERIES: Icon = icon_from_path!("../data/icons/spaceview_timeseries.png");
-pub const SPACE_VIEW_UNKNOWN: Icon = icon_from_path!("../data/icons/spaceview_unknown.png");
+pub const VIEW_2D: Icon = icon_from_path!("../data/icons/view_2d.png");
+pub const VIEW_3D: Icon = icon_from_path!("../data/icons/view_3d.png");
+pub const VIEW_DATAFRAME: Icon = icon_from_path!("../data/icons/view_dataframe.png");
+pub const VIEW_GRAPH: Icon = icon_from_path!("../data/icons/view_graph.png");
+pub const VIEW_GENERIC: Icon = icon_from_path!("../data/icons/view_generic.png");
+pub const VIEW_HISTOGRAM: Icon = icon_from_path!("../data/icons/view_histogram.png");
+pub const VIEW_LOG: Icon = icon_from_path!("../data/icons/view_log.png");
+pub const VIEW_MAP: Icon = icon_from_path!("../data/icons/view_map.png");
+pub const VIEW_TENSOR: Icon = icon_from_path!("../data/icons/view_tensor.png");
+pub const VIEW_TEXT: Icon = icon_from_path!("../data/icons/view_text.png");
+pub const VIEW_TIMESERIES: Icon = icon_from_path!("../data/icons/view_timeseries.png");
+pub const VIEW_UNKNOWN: Icon = icon_from_path!("../data/icons/view_unknown.png");
 
 pub const GROUP: Icon = icon_from_path!("../data/icons/group.png");
 pub const ENTITY: Icon = icon_from_path!("../data/icons/entity.png");
@@ -110,3 +126,21 @@ pub const RECORDING: Icon = icon_from_path!("../data/icons/recording.png");
 pub const BLUEPRINT: Icon = icon_from_path!("../data/icons/blueprint.png");
 
 pub const GITHUB: Icon = icon_from_path!("../data/icons/github.png");
+
+pub const VIDEO_ERROR: Icon = icon_from_path!("../data/icons/video_error.png");
+
+// drag and drop icons
+pub const DND_ADD_NEW: Icon = icon_from_path!("../data/icons/dnd_add_new.png");
+pub const DND_ADD_TO_EXISTING: Icon = icon_from_path!("../data/icons/dnd_add_to_existing.png");
+pub const DND_MOVE: Icon = icon_from_path!("../data/icons/dnd_move.png");
+
+/// `>`
+pub const BREADCRUMBS_SEPARATOR: Icon = icon_from_path!("../data/icons/breadcrumbs_separator.png");
+
+pub const SEARCH: Icon = icon_from_path!("../data/icons/search.png");
+
+/// Shortcut icons
+pub const LEFT_MOUSE_CLICK: Icon = icon_from_path!("../data/icons/lmc.png");
+pub const RIGHT_MOUSE_CLICK: Icon = icon_from_path!("../data/icons/rmc.png");
+pub const SCROLL: Icon = icon_from_path!("../data/icons/scroll.png");
+pub const SHIFT: Icon = icon_from_path!("../data/icons/shift.png");

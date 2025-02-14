@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../result.hpp"
 #include "keypoint_id.hpp"
 
@@ -24,14 +25,14 @@ namespace rerun::datatypes {
         /// The second point of the pair.
         rerun::datatypes::KeypointId keypoint1;
 
-      public:
-        // Extensions to generated type defined in 'keypoint_pair_ext.cpp'
-
+      public: // START of extensions from keypoint_pair_ext.cpp:
         KeypointPair(uint16_t _keypoint0, uint16_t _keypoint1)
             : keypoint0(_keypoint0), keypoint1(_keypoint1) {}
 
         KeypointPair(std::pair<uint16_t, uint16_t> pair)
             : keypoint0(pair.first), keypoint1(pair.second) {}
+
+        // END of extensions from keypoint_pair_ext.cpp, start of generated code:
 
       public:
         KeypointPair() = default;
@@ -45,7 +46,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::KeypointPair> {
-        static constexpr const char Name[] = "rerun.datatypes.KeypointPair";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.KeypointPair";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

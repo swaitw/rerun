@@ -197,17 +197,17 @@ pub fn setup_welcome_screen_blueprint(welcome_screen_blueprint: &mut EntityDb) {
         let chunk = Chunk::builder(entity_path)
             .with_component_batches(RowId::new(), timepoint, [&value as &dyn ComponentBatch])
             .build()
-            .unwrap(); // Can only fail if we have the wrong number of instances for the component, and we don't
+            .expect("Failed to build chunk - incorrect number of instances for the component");
 
         welcome_screen_blueprint
             .add_chunk(&Arc::new(chunk))
-            .unwrap(); // Can only fail if we have the wrong number of instances for the component, and we don't
+            .expect("Failed to add new chunk for welcome screen");
     }
 }
 
 // ----------------------------------------------------------------------------
 
-impl<'a> AppBlueprint<'a> {
+impl AppBlueprint<'_> {
     pub(crate) fn send_panel_state(
         &self,
         panel_name: &str,
@@ -222,7 +222,7 @@ impl<'a> AppBlueprint<'a> {
             let chunk = Chunk::builder(entity_path)
                 .with_component_batches(RowId::new(), timepoint, [&value as &dyn ComponentBatch])
                 .build()
-                .unwrap(); // Can only fail if we have the wrong number of instances for the component, and we don't
+                .expect("Failed to build chunk - incorrect number of instances for the component");
 
             command_sender.send_system(SystemCommand::UpdateBlueprint(
                 store_ctx.blueprint.store_id().clone(),
@@ -238,8 +238,7 @@ fn load_panel_state(
     query: &LatestAtQuery,
 ) -> Option<PanelState> {
     re_tracing::profile_function!();
-    // TODO(#5607): what should happen if the promise is still pending?
     blueprint_db
         .latest_at_component_quiet::<PanelState>(path, query)
-        .map(|p| p.value)
+        .map(|(_index, p)| p)
 }

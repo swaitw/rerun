@@ -15,7 +15,7 @@ This checks whether the heuristics do the right thing with mixed 2D and 3D data.
 Reset the blueprint to make sure you are viewing new heuristics and not a cached blueprint.
 
 ### Action
-You should see 5 space-views:
+You should see 5 views:
  - 2D: `image1` with an all red image
  - 2D: `image2` with an all green image
  - 2D: `3D/camera` with an all blue image
@@ -55,6 +55,8 @@ def run(args: Namespace) -> None:
     log_readme()
     log_images()
     log_3d_scene()
+
+    rr.send_blueprint(rr.blueprint.Blueprint(auto_layout=True, auto_views=True), make_active=True, make_default=True)
 
 
 if __name__ == "__main__":

@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["AlbedoFactor", "AlbedoFactorBatch", "AlbedoFactorType"]
+__all__ = ["AlbedoFactor", "AlbedoFactorBatch"]
 
 
 class AlbedoFactor(datatypes.Rgba32, ComponentMixin):
@@ -24,12 +25,8 @@ class AlbedoFactor(datatypes.Rgba32, ComponentMixin):
     pass
 
 
-class AlbedoFactorType(datatypes.Rgba32Type):
-    _TYPE_NAME: str = "rerun.components.AlbedoFactor"
-
-
 class AlbedoFactorBatch(datatypes.Rgba32Batch, ComponentBatchMixin):
-    _ARROW_TYPE = AlbedoFactorType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.AlbedoFactor")
 
 
 # This is patched in late to avoid circular dependencies.

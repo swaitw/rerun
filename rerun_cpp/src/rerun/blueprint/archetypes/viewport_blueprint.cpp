@@ -5,49 +5,109 @@
 
 #include "../../collection_adapter_builtins.hpp"
 
-namespace rerun::blueprint::archetypes {}
+namespace rerun::blueprint::archetypes {
+    ViewportBlueprint ViewportBlueprint::clear_fields() {
+        auto archetype = ViewportBlueprint();
+        archetype.root_container =
+            ComponentBatch::empty<rerun::blueprint::components::RootContainer>(
+                Descriptor_root_container
+            )
+                .value_or_throw();
+        archetype.maximized =
+            ComponentBatch::empty<rerun::blueprint::components::ViewMaximized>(Descriptor_maximized)
+                .value_or_throw();
+        archetype.auto_layout =
+            ComponentBatch::empty<rerun::blueprint::components::AutoLayout>(Descriptor_auto_layout)
+                .value_or_throw();
+        archetype.auto_views =
+            ComponentBatch::empty<rerun::blueprint::components::AutoViews>(Descriptor_auto_views)
+                .value_or_throw();
+        archetype.past_viewer_recommendations =
+            ComponentBatch::empty<rerun::blueprint::components::ViewerRecommendationHash>(
+                Descriptor_past_viewer_recommendations
+            )
+                .value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> ViewportBlueprint::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(6);
+        if (root_container.has_value()) {
+            columns.push_back(root_container.value().partitioned(lengths_).value_or_throw());
+        }
+        if (maximized.has_value()) {
+            columns.push_back(maximized.value().partitioned(lengths_).value_or_throw());
+        }
+        if (auto_layout.has_value()) {
+            columns.push_back(auto_layout.value().partitioned(lengths_).value_or_throw());
+        }
+        if (auto_views.has_value()) {
+            columns.push_back(auto_views.value().partitioned(lengths_).value_or_throw());
+        }
+        if (past_viewer_recommendations.has_value()) {
+            columns.push_back(
+                past_viewer_recommendations.value().partitioned(lengths_).value_or_throw()
+            );
+        }
+        columns.push_back(ComponentColumn::from_indicators<ViewportBlueprint>(
+                              static_cast<uint32_t>(lengths_.size())
+        )
+                              .value_or_throw());
+        return columns;
+    }
+
+    Collection<ComponentColumn> ViewportBlueprint::columns() {
+        if (root_container.has_value()) {
+            return columns(std::vector<uint32_t>(root_container.value().length(), 1));
+        }
+        if (maximized.has_value()) {
+            return columns(std::vector<uint32_t>(maximized.value().length(), 1));
+        }
+        if (auto_layout.has_value()) {
+            return columns(std::vector<uint32_t>(auto_layout.value().length(), 1));
+        }
+        if (auto_views.has_value()) {
+            return columns(std::vector<uint32_t>(auto_views.value().length(), 1));
+        }
+        if (past_viewer_recommendations.has_value()) {
+            return columns(std::vector<uint32_t>(past_viewer_recommendations.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::blueprint::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<blueprint::archetypes::ViewportBlueprint>::serialize(
-        const blueprint::archetypes::ViewportBlueprint& archetype
-    ) {
+    Result<Collection<ComponentBatch>>
+        AsComponents<blueprint::archetypes::ViewportBlueprint>::as_batches(
+            const blueprint::archetypes::ViewportBlueprint& archetype
+        ) {
         using namespace blueprint::archetypes;
-        std::vector<DataCell> cells;
+        std::vector<ComponentBatch> cells;
         cells.reserve(6);
 
         if (archetype.root_container.has_value()) {
-            auto result = DataCell::from_loggable(archetype.root_container.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.root_container.value());
         }
         if (archetype.maximized.has_value()) {
-            auto result = DataCell::from_loggable(archetype.maximized.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.maximized.value());
         }
         if (archetype.auto_layout.has_value()) {
-            auto result = DataCell::from_loggable(archetype.auto_layout.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.auto_layout.value());
         }
-        if (archetype.auto_space_views.has_value()) {
-            auto result = DataCell::from_loggable(archetype.auto_space_views.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.auto_views.has_value()) {
+            cells.push_back(archetype.auto_views.value());
         }
         if (archetype.past_viewer_recommendations.has_value()) {
-            auto result = DataCell::from_loggable(archetype.past_viewer_recommendations.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.past_viewer_recommendations.value());
         }
         {
-            auto indicator = ViewportBlueprint::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<ViewportBlueprint>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

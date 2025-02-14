@@ -1,33 +1,115 @@
 use std::hash::Hash;
 
 use egui::{
-    emath::Rot2, pos2, Align2, CollapsingResponse, Color32, NumExt, Rangef, Rect, Shape, Vec2,
-    Widget,
+    emath::{GuiRounding, Rot2},
+    pos2, Align2, Button, CollapsingResponse, Color32, NumExt, Rangef, Rect, Vec2, Widget,
 };
 
-use crate::{
-    design_tokens, icons, list_item,
-    list_item::{LabelContent, ListItem},
-    ContextExt, DesignTokens, Icon, LabelStyle,
-};
+use crate::{design_tokens, icons, list_item, DesignTokens, Icon, LabelStyle, SUCCESS_COLOR};
 
 static FULL_SPAN_TAG: &str = "rerun_full_span";
+
+fn error_label_bg_color(fg_color: Color32) -> Color32 {
+    fg_color.gamma_multiply(0.35)
+}
+
+/// success, warning, error…
+fn notification_label(
+    ui: &mut egui::Ui,
+    fg_color: Color32,
+    icon: &str,
+    visible_text: &str,
+    full_text: &str,
+) -> egui::Response {
+    egui::Frame::new()
+        .stroke((1.0, fg_color))
+        .fill(error_label_bg_color(fg_color))
+        .corner_radius(4)
+        .inner_margin(3.0)
+        .outer_margin(1.0) // Needed because we set clip_rect_margin. TODO(emilk): https://github.com/emilk/egui/issues/4019
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.colored_label(fg_color, icon);
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                let response = ui.strong(visible_text).on_hover_ui(|ui| {
+                    if visible_text != full_text {
+                        ui.label(full_text);
+                        ui.add_space(8.0);
+                    }
+                    ui.label("Click to copy text.");
+                });
+                if response.clicked() {
+                    ui.ctx().copy_text(full_text.to_owned());
+                };
+            });
+        })
+        .response
+}
 
 /// Rerun custom extensions to [`egui::Ui`].
 pub trait UiExt {
     fn ui(&self) -> &egui::Ui;
     fn ui_mut(&mut self) -> &mut egui::Ui;
 
-    /// Shows a small error label with the given text on hover and copies the text to the clipboard on click.
-    fn error_label(&mut self, error_text: &str) -> egui::Response {
-        let label = egui::Label::new(self.ui().ctx().error_text("Error"))
-            .selectable(false)
-            .sense(egui::Sense::click());
-        let response = self.ui_mut().add(label);
-        if response.clicked() {
-            self.ui().ctx().copy_text(error_text.to_owned());
-        }
-        response.on_hover_text(error_text)
+    /// Shows a success label with a large border.
+    ///
+    /// If you don't want a border, use [`crate::ContextExt::success_text`].
+    fn success_label(&mut self, success_text: impl Into<String>) -> egui::Response {
+        let ui = self.ui_mut();
+        let success_text = success_text.into();
+        notification_label(ui, SUCCESS_COLOR, "✅", &success_text, &success_text)
+    }
+
+    /// Shows a warning label with a large border.
+    ///
+    /// If you don't want a border, use [`crate::ContextExt::warning_text`].
+    fn warning_label(&mut self, warning_text: impl Into<String>) -> egui::Response {
+        let ui = self.ui_mut();
+        let warning_text = warning_text.into();
+        notification_label(
+            ui,
+            ui.style().visuals.warn_fg_color,
+            "⚠",
+            &warning_text,
+            &warning_text,
+        )
+    }
+
+    /// Shows a small error label with the given text on hover and copies the text to the clipboard on click with a large border.
+    ///
+    /// This has a large border! If you don't want a border, use [`crate::ContextExt::error_text`].
+    fn error_with_details_on_hover(&mut self, error_text: impl Into<String>) -> egui::Response {
+        let ui = self.ui_mut();
+        notification_label(
+            ui,
+            ui.style().visuals.error_fg_color,
+            "⚠",
+            "Error",
+            &error_text.into(),
+        )
+    }
+
+    fn error_label_background_color(&self) -> egui::Color32 {
+        error_label_bg_color(self.ui().style().visuals.error_fg_color)
+    }
+
+    /// Shows an error label with the entire error text and copies the text to the clipboard on click.
+    ///
+    /// Use this only if the error message is short, or you have a lot of room.
+    /// Otherwise, use [`Self::error_with_details_on_hover`].
+    ///
+    /// This has a large border! If you don't want a border, use [`crate::ContextExt::error_text`].
+    fn error_label(&mut self, error_text: impl Into<String>) -> egui::Response {
+        let ui = self.ui_mut();
+        let error_text = error_text.into();
+        notification_label(
+            ui,
+            ui.style().visuals.error_fg_color,
+            "⚠",
+            &error_text,
+            &error_text,
+        )
     }
 
     fn small_icon_button(&mut self, icon: &Icon) -> egui::Response {
@@ -35,13 +117,28 @@ pub trait UiExt {
         self.ui_mut().add(widget)
     }
 
-    fn small_icon_button_widget<'a>(&self, icon: &'a Icon) -> egui::ImageButton<'a> {
+    fn small_icon_button_widget<'a>(&self, icon: &'a Icon) -> egui::Button<'a> {
         // TODO(emilk): change color and size on hover
-        egui::ImageButton::new(
+        egui::Button::image(
             icon.as_image()
-                .fit_to_exact_size(DesignTokens::small_icon_size()),
+                .fit_to_exact_size(DesignTokens::small_icon_size())
+                .tint(self.ui().visuals().widgets.inactive.fg_stroke.color),
         )
-        .tint(self.ui().visuals().widgets.inactive.fg_stroke.color)
+    }
+
+    /// Adds a non-interactive, optionally tinted small icon.
+    ///
+    /// Uses [`DesignTokens::small_icon_size`]. Returns the rect where the icon was painted.
+    fn small_icon(&mut self, icon: &Icon, tint: Option<egui::Color32>) -> egui::Rect {
+        let ui = self.ui_mut();
+        let (_, rect) = ui.allocate_space(DesignTokens::small_icon_size());
+        let mut image = icon.as_image();
+        if let Some(tint) = tint {
+            image = image.tint(tint);
+        }
+        image.paint_at(ui, rect);
+
+        rect
     }
 
     fn medium_icon_toggle_button(&mut self, icon: &Icon, selected: &mut bool) -> egui::Response {
@@ -50,7 +147,7 @@ pub trait UiExt {
         let tint = if *selected {
             self.ui().visuals().widgets.inactive.fg_stroke.color
         } else {
-            egui::Color32::from_gray(100) // TODO(emilk): get from design tokens
+            self.ui().visuals().widgets.noninteractive.fg_stroke.color
         };
         let mut response = self
             .ui_mut()
@@ -84,7 +181,7 @@ pub trait UiExt {
 
         let button_size = Vec2::splat(22.0);
         let icon_size = Vec2::splat(12.0); // centered inside the button
-        let rounding = 6.0;
+        let corner_radius = 6.0;
 
         let (rect, response) = ui.allocate_exact_size(button_size, egui::Sense::click());
         response.widget_info(|| egui::WidgetInfo::new(egui::WidgetType::ImageButton));
@@ -98,7 +195,7 @@ pub trait UiExt {
             // let image_rect = image_rect.expand2(expansion); // can make it blurry, so let's not
 
             ui.painter()
-                .rect_filled(rect.expand(visuals.expansion), rounding, bg_fill);
+                .rect_filled(rect.expand(visuals.expansion), corner_radius, bg_fill);
 
             icon.as_image().tint(tint).paint_at(ui, image_rect);
         }
@@ -199,7 +296,7 @@ pub trait UiExt {
 
             painter.hline(
                 ui.full_span(),
-                painter.round_to_pixel(rect.center().y),
+                rect.center().y.round_to_pixels(painter.pixels_per_point()),
                 stroke,
             );
         }
@@ -247,7 +344,7 @@ pub trait UiExt {
                             egui::ScrollArea::vertical().show(ui, |ui| {
                                 egui::Frame {
                                     //TODO(ab): use design token
-                                    inner_margin: egui::Margin::symmetric(8.0, 0.0),
+                                    inner_margin: egui::Margin::symmetric(8, 0),
                                     ..Default::default()
                                 }
                                 .show(ui, |ui| ret = Some(add_contents(ui)))
@@ -452,7 +549,7 @@ pub trait UiExt {
         }
     }
 
-    /// Paint a collapsing triangle with rounded corners.
+    /// Paint a collapsing triangle in the Rerun's style.
     ///
     /// Alternative to [`egui::collapsing_header::paint_default_icon`]. Note that the triangle is
     /// painted with a fixed size.
@@ -467,21 +564,17 @@ pub trait UiExt {
         static TRIANGLE_SIZE: f32 = 8.0;
 
         // Normalized in [0, 1]^2 space.
-        // Note on how these coords have been computed: https://github.com/rerun-io/rerun/pull/2920
-        // Discussion on the future of icons:  https://github.com/rerun-io/rerun/issues/2960
+        //
+        // Note on how these coords were originally computed: https://github.com/rerun-io/rerun/pull/2920
+        // Since then, the coordinates have been manually updated to Look Good(tm).
+        //
+        // Discussion on the future of icons: https://github.com/rerun-io/rerun/issues/2960
         let mut points = vec![
-            pos2(0.80387, 0.470537),
-            pos2(0.816074, 0.5),
-            pos2(0.80387, 0.529463),
-            pos2(0.316248, 1.017085),
-            pos2(0.286141, 1.029362),
-            pos2(0.257726, 1.017592),
-            pos2(0.245118, 0.987622),
-            pos2(0.245118, 0.012378),
-            pos2(0.257726, -0.017592),
-            pos2(0.286141, -0.029362),
-            pos2(0.316248, -0.017085),
-            pos2(0.80387, 0.470537),
+            pos2(0.306248, -0.017085), // top left end
+            pos2(0.79387, 0.470537),   // ┐
+            pos2(0.806074, 0.5),       // ├ "rounded" corner
+            pos2(0.79387, 0.529463),   // ┘
+            pos2(0.306248, 1.017085),  // bottom left end
         ];
 
         use std::f32::consts::TAU;
@@ -490,11 +583,9 @@ pub trait UiExt {
             *p = center + rotation * (*p - pos2(0.5, 0.5)) * TRIANGLE_SIZE;
         }
 
-        self.ui().painter().add(Shape::convex_polygon(
-            points,
-            visuals.fg_stroke.color,
-            egui::Stroke::NONE,
-        ));
+        self.ui()
+            .painter()
+            .line(points, (1.0, visuals.fg_stroke.color));
     }
 
     /// Workaround for putting a label into a grid at the top left of its row.
@@ -560,6 +651,16 @@ pub trait UiExt {
         self.ui().painter().add(shadow);
     }
 
+    /// Convenience function to create a [`list_item::list_item_scope`].
+    #[inline]
+    fn list_item_scope<R>(
+        &mut self,
+        id_salt: impl std::hash::Hash,
+        content: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> R {
+        list_item::list_item_scope(self.ui_mut(), id_salt, content)
+    }
+
     /// Convenience function to create a [`list_item::ListItem`].
     #[allow(clippy::unused_self)]
     fn list_item(&self) -> list_item::ListItem {
@@ -574,6 +675,29 @@ pub trait UiExt {
         self.list_item()
             .interactive(false)
             .show_flat(self.ui_mut(), content)
+    }
+
+    /// Convenience to create a non-interactive, collapsible [`list_item::ListItem`] with just a
+    /// label. The children UI is wrapped in a [`list_item::list_item_scope`].
+    fn list_item_collapsible_noninteractive_label<R>(
+        &mut self,
+        label: impl Into<egui::WidgetText>,
+        default_open: bool,
+        children_ui: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> Option<R> {
+        let label = label.into();
+        let id = self.ui().id().with(egui::Id::new(label.text()));
+        self.list_item()
+            .interactive(false)
+            .show_hierarchical_with_children(
+                self.ui_mut(),
+                id,
+                default_open,
+                list_item::LabelContent::new(label),
+                |ui| list_item::list_item_scope(ui, id, children_ui),
+            )
+            .body_response
+            .map(|r| r.inner)
     }
 
     /// Convenience function to create a [`crate::SectionCollapsingHeader`].
@@ -638,19 +762,21 @@ pub trait UiExt {
 
                 ui.painter().rect(
                     rect,
-                    visuals.rounding,
+                    visuals.corner_radius,
                     visuals.weak_bg_fill,
                     visuals.bg_stroke,
+                    egui::StrokeKind::Inside,
                 );
             }
 
             // Draw icon
             let image_size = DesignTokens::small_icon_size();
             let image_rect = egui::Rect::from_min_size(
-                ui.painter().round_pos_to_pixels(egui::pos2(
+                egui::pos2(
                     rect.min.x.ceil(),
                     (rect.center().y - 0.5 * DesignTokens::small_icon_size().y).ceil(),
-                )),
+                )
+                .round_to_pixels(ui.pixels_per_point()),
                 image_size,
             );
 
@@ -742,7 +868,7 @@ pub trait UiExt {
     /// The `add_contents` closure is executed in the context of a vertical layout.
     fn center<R>(
         &mut self,
-        id_source: impl Hash,
+        id_salt: impl Hash,
         add_contents: impl FnOnce(&mut egui::Ui) -> R,
     ) -> R {
         // Strategy:
@@ -756,7 +882,7 @@ pub trait UiExt {
         struct TextSize(egui::Vec2);
 
         let ui = self.ui_mut();
-        let id = ui.make_persistent_id(id_source);
+        let id = ui.make_persistent_id(id_salt);
 
         let text_size: Option<TextSize> = ui.data(|reader| reader.get_temp(id));
 
@@ -816,11 +942,11 @@ pub trait UiExt {
             let fg_fill = fg_fill_off.lerp_to_gamma(fg_fill_on, how_on);
             let bg_fill_off = visuals.text_color();
 
-            let rounding = 0.5 * expanded_rect.height();
+            let corner_radius = 0.5 * expanded_rect.height();
             ui.painter()
-                .rect_filled(expanded_rect, rounding, bg_fill_off);
+                .rect_filled(expanded_rect, corner_radius, bg_fill_off);
             let circle_x = egui::lerp(
-                (expanded_rect.left() + rounding)..=(expanded_rect.right() - rounding),
+                (expanded_rect.left() + corner_radius)..=(expanded_rect.right() - corner_radius),
                 how_on,
             );
 
@@ -844,16 +970,23 @@ pub trait UiExt {
         url: impl ToString,
     ) -> egui::Response {
         let ui = self.ui_mut();
-        let response = ListItem::new()
-            .show_flat(
-                ui,
-                LabelContent::new(text).with_icon(&crate::icons::EXTERNAL_LINK),
-            )
-            .on_hover_cursor(egui::CursorIcon::PointingHand);
-        if response.clicked() {
-            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-        }
-        response
+        ui.scope(|ui| {
+            let style = ui.style_mut();
+            style.visuals.button_frame = false;
+
+            let tint = ui.style().visuals.widgets.noninteractive.fg_stroke.color;
+            let image = crate::icons::EXTERNAL_LINK.as_image().tint(tint);
+            let response = ui
+                .add(Button::image_and_text(image, text))
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+            if response.clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+            }
+
+            response
+        })
+        .response
     }
 
     /// Show some close/maximize/minimize buttons for the native window.
@@ -911,7 +1044,7 @@ pub trait UiExt {
     }
 
     /// Show some markdown
-    fn markdown_ui(&mut self, id: egui::Id, markdown: &str) {
+    fn markdown_ui(&mut self, markdown: &str) {
         use parking_lot::Mutex;
         use std::sync::Arc;
 
@@ -923,7 +1056,7 @@ pub trait UiExt {
             .clone()
         });
 
-        egui_commonmark::CommonMarkViewer::new(id).show(ui, &mut commonmark_cache.lock(), markdown);
+        egui_commonmark::CommonMarkViewer::new().show(ui, &mut commonmark_cache.lock(), markdown);
     }
 
     /// A drop-down menu with a list of options.
@@ -933,12 +1066,12 @@ pub trait UiExt {
     /// Use this instead of using [`egui::ComboBox`] directly.
     fn drop_down_menu(
         &mut self,
-        id_source: impl std::hash::Hash,
+        id_salt: impl std::hash::Hash,
         selected_text: String,
         content: impl FnOnce(&mut egui::Ui),
     ) {
         // TODO(emilk): make the button itself a `ListItem2`
-        egui::ComboBox::from_id_source(id_source)
+        egui::ComboBox::from_id_salt(id_salt)
             .selected_text(selected_text)
             .show_ui(self.ui_mut(), |ui| {
                 list_item::list_item_scope(ui, "inner_scope", |ui| {
@@ -956,8 +1089,10 @@ pub trait UiExt {
         content: impl FnOnce(&mut egui::Ui) -> R,
     ) -> R {
         self.ui_mut()
-            .push_stack_info(
-                egui::UiStackInfo::default().with_tag_value(FULL_SPAN_TAG, span.into()),
+            .scope_builder(
+                egui::UiBuilder::new().ui_stack_info(
+                    egui::UiStackInfo::default().with_tag_value(FULL_SPAN_TAG, span.into()),
+                ),
                 content,
             )
             .inner
@@ -975,9 +1110,9 @@ pub trait UiExt {
             }
 
             if node.has_visible_frame()
+                || node.is_area_ui()
                 || node.is_panel_ui()
                 || node.is_root_ui()
-                || node.kind() == Some(egui::UiKind::TableCell)
             {
                 return (node.max_rect + node.frame().inner_margin).x_range();
             }
@@ -985,6 +1120,53 @@ pub trait UiExt {
 
         // should never happen
         egui::Rangef::EVERYTHING
+    }
+
+    /// Style [`egui::Ui::selectable_value`]s and friends into a horizontal, toggle-like widget.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # egui::__run_test_ui(|ui| {
+    /// # use re_ui::UiExt as _;
+    /// let mut flag = false;
+    /// ui.selectable_toggle(|ui| {
+    ///     ui.selectable_value(&mut flag, false, "Inactive");
+    ///     ui.selectable_value(&mut flag, true, "Active");
+    /// });
+    /// # });
+    /// ```
+    fn selectable_toggle<R>(&mut self, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        let ui = self.ui_mut();
+
+        egui::Frame {
+            inner_margin: egui::Margin::same(3),
+            stroke: design_tokens().bottom_bar_stroke,
+            corner_radius: ui.visuals().widgets.hovered.corner_radius + egui::CornerRadius::same(3),
+            ..Default::default()
+        }
+        .show(ui, |ui| {
+            ui.visuals_mut().widgets.hovered.expansion = 0.0;
+            ui.visuals_mut().widgets.active.expansion = 0.0;
+            ui.visuals_mut().widgets.inactive.expansion = 0.0;
+
+            ui.visuals_mut().selection.bg_fill = ui.visuals_mut().widgets.inactive.bg_fill;
+            ui.visuals_mut().selection.stroke = ui.visuals_mut().widgets.inactive.fg_stroke;
+            ui.visuals_mut().widgets.hovered.weak_bg_fill = egui::Color32::TRANSPARENT;
+
+            ui.visuals_mut().widgets.hovered.fg_stroke.color =
+                ui.visuals().widgets.inactive.fg_stroke.color;
+            ui.visuals_mut().widgets.active.fg_stroke.color =
+                ui.visuals().widgets.inactive.fg_stroke.color;
+            ui.visuals_mut().widgets.inactive.fg_stroke.color =
+                ui.visuals().widgets.noninteractive.fg_stroke.color;
+
+            ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+            ui.spacing_mut().item_spacing.x = 3.0;
+
+            ui.horizontal(content).inner
+        })
+        .inner
     }
 }
 

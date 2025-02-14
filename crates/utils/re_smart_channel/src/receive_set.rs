@@ -53,7 +53,16 @@ impl<T: Send> ReceiveSet<T> {
             // - aren't network sources
             // - don't point at the given `uri`
             SmartChannelSource::RrdHttpStream { url, .. } => url != uri,
-            SmartChannelSource::WsClient { ws_server_url } => ws_server_url != uri,
+            SmartChannelSource::MessageProxy { url } => {
+                fn strip_prefix(s: &str) -> &str {
+                    // TODO(#8761): URL prefix
+                    s.strip_prefix("http")
+                        .or_else(|| s.strip_prefix("temp"))
+                        .unwrap_or(s)
+                }
+
+                strip_prefix(url) != strip_prefix(uri)
+            }
             _ => true,
         });
     }
@@ -75,12 +84,12 @@ impl<T: Send> ReceiveSet<T> {
         !self.is_empty()
     }
 
-    /// Does this viewer accept inbound TCP connections?
-    pub fn accepts_tcp_connections(&self) -> bool {
+    /// Does this viewer accept inbound gRPC connections?
+    pub fn accepts_grpc_connections(&self) -> bool {
         re_tracing::profile_function!();
         self.sources()
             .iter()
-            .any(|s| matches!(**s, SmartChannelSource::TcpServer { .. }))
+            .any(|s| matches!(**s, SmartChannelSource::MessageProxy { .. }))
     }
 
     /// No connected receivers?
@@ -118,23 +127,15 @@ impl<T: Send> ReceiveSet<T> {
 
         let mut rx = self.receivers.lock();
 
-        loop {
-            rx.retain(|r| r.is_connected());
-            if rx.is_empty() {
-                return Err(RecvError);
-            }
-
-            let mut sel = Select::new();
-            for r in rx.iter() {
-                sel.recv(&r.rx);
-            }
-
-            let oper = sel.select();
-            let index = oper.index();
-            if let Ok(msg) = oper.recv(&rx[index].rx) {
-                return Ok(msg);
-            }
+        rx.retain(|r| r.is_connected());
+        let mut sel = Select::new();
+        for r in rx.iter() {
+            sel.recv(&r.rx);
         }
+
+        let oper = sel.select();
+        let index = oper.index();
+        oper.recv(&rx[index].rx).map_err(|_err| RecvError)
     }
 
     /// Returns immediately if there is nothing to receive.

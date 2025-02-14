@@ -5,29 +5,53 @@
 
 #include "../collection_adapter_builtins.hpp"
 
-namespace rerun::archetypes {}
+namespace rerun::archetypes {
+    Scalar Scalar::clear_fields() {
+        auto archetype = Scalar();
+        archetype.scalar =
+            ComponentBatch::empty<rerun::components::Scalar>(Descriptor_scalar).value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> Scalar::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(2);
+        if (scalar.has_value()) {
+            columns.push_back(scalar.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(
+            ComponentColumn::from_indicators<Scalar>(static_cast<uint32_t>(lengths_.size()))
+                .value_or_throw()
+        );
+        return columns;
+    }
+
+    Collection<ComponentColumn> Scalar::columns() {
+        if (scalar.has_value()) {
+            return columns(std::vector<uint32_t>(scalar.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<archetypes::Scalar>::serialize(
+    Result<Collection<ComponentBatch>> AsComponents<archetypes::Scalar>::as_batches(
         const archetypes::Scalar& archetype
     ) {
         using namespace archetypes;
-        std::vector<DataCell> cells;
+        std::vector<ComponentBatch> cells;
         cells.reserve(2);
 
-        {
-            auto result = DataCell::from_loggable(archetype.scalar);
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.scalar.has_value()) {
+            cells.push_back(archetype.scalar.value());
         }
         {
-            auto indicator = Scalar::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<Scalar>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

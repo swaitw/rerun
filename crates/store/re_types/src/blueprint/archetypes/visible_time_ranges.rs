@@ -12,15 +12,15 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Archetype**: Configures what range of each timeline is shown on a view.
 ///
-/// Whenever no visual time range applies, queries are done with "latest at" semantics.
+/// Whenever no visual time range applies, queries are done with "latest-at" semantics.
 /// This means that the view will, starting from the time cursor position,
 /// query the latest data available for each component type.
 ///
@@ -32,35 +32,45 @@ pub struct VisibleTimeRanges {
     /// The time ranges to show for each timeline unless specified otherwise on a per-entity basis.
     ///
     /// If a timeline is specified more than once, the first entry will be used.
-    pub ranges: Vec<crate::blueprint::components::VisibleTimeRange>,
+    pub ranges: Option<SerializedComponentBatch>,
 }
 
-impl ::re_types_core::SizeBytes for VisibleTimeRanges {
+impl VisibleTimeRanges {
+    /// Returns the [`ComponentDescriptor`] for [`Self::ranges`].
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.ranges.heap_size_bytes()
+    pub fn descriptor_ranges() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.blueprint.archetypes.VisibleTimeRanges".into()),
+            component_name: "rerun.blueprint.components.VisibleTimeRange".into(),
+            archetype_field_name: Some("ranges".into()),
+        }
     }
 
+    /// Returns the [`ComponentDescriptor`] for the associated indicator component.
     #[inline]
-    fn is_pod() -> bool {
-        <Vec<crate::blueprint::components::VisibleTimeRange>>::is_pod()
+    pub fn descriptor_indicator() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("rerun.blueprint.archetypes.VisibleTimeRanges".into()),
+            component_name: "rerun.blueprint.components.VisibleTimeRangesIndicator".into(),
+            archetype_field_name: None,
+        }
     }
 }
 
-static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.blueprint.components.VisibleTimeRange".into()]);
+static REQUIRED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [VisibleTimeRanges::descriptor_ranges()]);
 
-static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 1usize]> =
-    once_cell::sync::Lazy::new(|| ["rerun.blueprint.components.VisibleTimeRangesIndicator".into()]);
+static RECOMMENDED_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 1usize]> =
+    once_cell::sync::Lazy::new(|| [VisibleTimeRanges::descriptor_indicator()]);
 
-static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 0usize]> =
+static OPTIONAL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 0usize]> =
     once_cell::sync::Lazy::new(|| []);
 
-static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentName; 2usize]> =
+static ALL_COMPONENTS: once_cell::sync::Lazy<[ComponentDescriptor; 2usize]> =
     once_cell::sync::Lazy::new(|| {
         [
-            "rerun.blueprint.components.VisibleTimeRange".into(),
-            "rerun.blueprint.components.VisibleTimeRangesIndicator".into(),
+            VisibleTimeRanges::descriptor_ranges(),
+            VisibleTimeRanges::descriptor_indicator(),
         ]
     });
 
@@ -86,70 +96,57 @@ impl ::re_types_core::Archetype for VisibleTimeRanges {
     }
 
     #[inline]
-    fn indicator() -> MaybeOwnedComponentBatch<'static> {
-        static INDICATOR: VisibleTimeRangesIndicator = VisibleTimeRangesIndicator::DEFAULT;
-        MaybeOwnedComponentBatch::Ref(&INDICATOR)
+    fn indicator() -> SerializedComponentBatch {
+        #[allow(clippy::unwrap_used)]
+        VisibleTimeRangesIndicator::DEFAULT.serialized().unwrap()
     }
 
     #[inline]
-    fn required_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn required_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         REQUIRED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn recommended_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         RECOMMENDED_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn optional_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         OPTIONAL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
-    fn all_components() -> ::std::borrow::Cow<'static, [ComponentName]> {
+    fn all_components() -> ::std::borrow::Cow<'static, [ComponentDescriptor]> {
         ALL_COMPONENTS.as_slice().into()
     }
 
     #[inline]
     fn from_arrow_components(
-        arrow_data: impl IntoIterator<Item = (ComponentName, Box<dyn arrow2::array::Array>)>,
+        arrow_data: impl IntoIterator<Item = (ComponentDescriptor, arrow::array::ArrayRef)>,
     ) -> DeserializationResult<Self> {
         re_tracing::profile_function!();
         use ::re_types_core::{Loggable as _, ResultExt as _};
-        let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data
-            .into_iter()
-            .map(|(name, array)| (name.full_name(), array))
-            .collect();
-        let ranges = {
-            let array = arrays_by_name
-                .get("rerun.blueprint.components.VisibleTimeRange")
-                .ok_or_else(DeserializationError::missing_data)
-                .with_context("rerun.blueprint.archetypes.VisibleTimeRanges#ranges")?;
-            <crate::blueprint::components::VisibleTimeRange>::from_arrow_opt(&**array)
-                .with_context("rerun.blueprint.archetypes.VisibleTimeRanges#ranges")?
-                .into_iter()
-                .map(|v| v.ok_or_else(DeserializationError::missing_data))
-                .collect::<DeserializationResult<Vec<_>>>()
-                .with_context("rerun.blueprint.archetypes.VisibleTimeRanges#ranges")?
-        };
+        let arrays_by_descr: ::nohash_hasher::IntMap<_, _> = arrow_data.into_iter().collect();
+        let ranges = arrays_by_descr
+            .get(&Self::descriptor_ranges())
+            .map(|array| SerializedComponentBatch::new(array.clone(), Self::descriptor_ranges()));
         Ok(Self { ranges })
     }
 }
 
 impl ::re_types_core::AsComponents for VisibleTimeRanges {
-    fn as_component_batches(&self) -> Vec<MaybeOwnedComponentBatch<'_>> {
-        re_tracing::profile_function!();
+    #[inline]
+    fn as_serialized_batches(&self) -> Vec<SerializedComponentBatch> {
         use ::re_types_core::Archetype as _;
-        [
-            Some(Self::indicator()),
-            Some((&self.ranges as &dyn ComponentBatch).into()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
+        [Some(Self::indicator()), self.ranges.clone()]
+            .into_iter()
+            .flatten()
+            .collect()
     }
 }
+
+impl ::re_types_core::ArchetypeReflectionMarker for VisibleTimeRanges {}
 
 impl VisibleTimeRanges {
     /// Create a new `VisibleTimeRanges`.
@@ -158,7 +155,44 @@ impl VisibleTimeRanges {
         ranges: impl IntoIterator<Item = impl Into<crate::blueprint::components::VisibleTimeRange>>,
     ) -> Self {
         Self {
-            ranges: ranges.into_iter().map(Into::into).collect(),
+            ranges: try_serialize_field(Self::descriptor_ranges(), ranges),
         }
+    }
+
+    /// Update only some specific fields of a `VisibleTimeRanges`.
+    #[inline]
+    pub fn update_fields() -> Self {
+        Self::default()
+    }
+
+    /// Clear all the fields of a `VisibleTimeRanges`.
+    #[inline]
+    pub fn clear_fields() -> Self {
+        use ::re_types_core::Loggable as _;
+        Self {
+            ranges: Some(SerializedComponentBatch::new(
+                crate::blueprint::components::VisibleTimeRange::arrow_empty(),
+                Self::descriptor_ranges(),
+            )),
+        }
+    }
+
+    /// The time ranges to show for each timeline unless specified otherwise on a per-entity basis.
+    ///
+    /// If a timeline is specified more than once, the first entry will be used.
+    #[inline]
+    pub fn with_ranges(
+        mut self,
+        ranges: impl IntoIterator<Item = impl Into<crate::blueprint::components::VisibleTimeRange>>,
+    ) -> Self {
+        self.ranges = try_serialize_field(Self::descriptor_ranges(), ranges);
+        self
+    }
+}
+
+impl ::re_byte_size::SizeBytes for VisibleTimeRanges {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.ranges.heap_size_bytes()
     }
 }

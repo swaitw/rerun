@@ -6,24 +6,30 @@ use re_chunk::{Chunk, RowId};
 use re_chunk_store::LatestAtQuery;
 use re_data_ui::{sorted_component_list_for_ui, DataUi as _};
 use re_log_types::EntityPath;
-use re_types_core::ComponentName;
+use re_types_core::{ComponentDescriptor, ComponentName, ComponentNameSet};
 use re_ui::{list_item::LabelContent, UiExt as _};
 use re_viewer_context::{
     blueprint_timeline, ComponentUiTypes, QueryContext, SystemCommand, SystemCommandSender as _,
     UiLayout, ViewContext, ViewSystemIdentifier,
 };
-use re_viewport_blueprint::SpaceViewBlueprint;
+use re_viewport_blueprint::ViewBlueprint;
 
 pub fn view_components_defaults_section_ui(
     ctx: &ViewContext<'_>,
     ui: &mut egui::Ui,
-    view: &SpaceViewBlueprint,
+    view: &ViewBlueprint,
 ) {
     let db = ctx.viewer_ctx.blueprint_db();
     let query = ctx.viewer_ctx.blueprint_query;
 
     let active_defaults = active_defaults(ctx, view, db, query);
     let component_to_vis = component_to_vis(ctx);
+
+    // If there is nothing set by the user and nothing to be possibly added, we skip the section
+    // entirely.
+    if active_defaults.is_empty() && component_to_vis.is_empty() {
+        return;
+    }
 
     let components_to_show_in_add_menu =
         components_to_show_in_add_menu(ctx, &component_to_vis, &active_defaults);
@@ -73,9 +79,9 @@ Click on the `+` button to add a new default value.";
 fn active_default_ui(
     ctx: &ViewContext<'_>,
     ui: &mut egui::Ui,
-    active_defaults: &BTreeSet<ComponentName>,
+    active_defaults: &ComponentNameSet,
     component_to_vis: &BTreeMap<ComponentName, ViewSystemIdentifier>,
-    view: &SpaceViewBlueprint,
+    view: &ViewBlueprint,
     query: &LatestAtQuery,
     db: &re_entity_db::EntityDb,
 ) {
@@ -114,14 +120,15 @@ fn active_default_ui(
 
             // TODO(jleibs): We're already doing this query above as part of the filter. This is kind of silly to do it again.
             // Change the structure to avoid this.
-            let component_data = db
-                .query_caches()
-                .latest_at(db.store(), query, &view.defaults_path, [component_name])
-                .components
-                .get(&component_name)
-                .cloned(); /* arc */
+            let (row_id, component_array) = {
+                let results = db.latest_at(query, &view.defaults_path, [component_name]);
+                (
+                    results.component_row_id(&component_name),
+                    results.component_batch_raw(&component_name),
+                )
+            };
 
-            if let Some(component_data) = component_data {
+            if let Some(component_array) = component_array {
                 let value_fn = |ui: &mut egui::Ui| {
                     ctx.viewer_ctx.component_ui_registry.singleline_edit_ui(
                         &query_context,
@@ -129,8 +136,9 @@ fn active_default_ui(
                         db,
                         &view.defaults_path,
                         component_name,
-                        &component_data,
-                        visualizer.as_fallback_provider(),
+                        row_id,
+                        Some(&*component_array),
+                        visualizer.fallback_provider(),
                     );
                 };
 
@@ -138,7 +146,7 @@ fn active_default_ui(
                     re_ui::list_item::PropertyContent::new(component_name.short_name())
                         .min_desired_width(150.0)
                         .action_button(&re_ui::icons::CLOSE, || {
-                            ctx.save_empty_blueprint_component_by_name(
+                            ctx.clear_blueprint_component_by_name(
                                 &view.defaults_path,
                                 component_name,
                             );
@@ -177,26 +185,24 @@ fn component_to_vis(ctx: &ViewContext<'_>) -> BTreeMap<ComponentName, ViewSystem
 
 fn active_defaults(
     ctx: &ViewContext<'_>,
-    view: &SpaceViewBlueprint,
+    view: &ViewBlueprint,
     db: &re_entity_db::EntityDb,
     query: &LatestAtQuery,
-) -> BTreeSet<ComponentName> {
-    let resolver = Default::default();
-
+) -> ComponentNameSet {
     // Cleared components should act as unset, so we filter out everything that's empty,
     // even if they are listed in `all_components`.
     ctx.blueprint_db()
+        .storage_engine()
         .store()
-        .all_components(&blueprint_timeline(), &view.defaults_path)
+        .all_components_on_timeline(&blueprint_timeline(), &view.defaults_path)
         .unwrap_or_default()
         .into_iter()
         .filter(|c| {
-            db.query_caches()
-                .latest_at(db.store(), query, &view.defaults_path, [*c])
-                .components
-                .get(c)
-                .and_then(|data| data.resolved(&resolver).ok())
-                .map_or(false, |data| !data.is_empty())
+            db.storage_engine()
+                .cache()
+                .latest_at(query, &view.defaults_path, [*c])
+                .component_batch_raw(c)
+                .is_some_and(|data| !data.is_empty())
         })
         .collect::<BTreeSet<_>>()
 }
@@ -204,7 +210,7 @@ fn active_defaults(
 fn components_to_show_in_add_menu(
     ctx: &ViewContext<'_>,
     component_to_vis: &BTreeMap<ComponentName, ViewSystemIdentifier>,
-    active_defaults: &BTreeSet<ComponentName>,
+    active_defaults: &ComponentNameSet,
 ) -> Result<Vec<(ComponentName, ViewSystemIdentifier)>, String> {
     if component_to_vis.is_empty() {
         return Err("No components to visualize".to_owned());
@@ -286,24 +292,19 @@ fn add_popup_ui(
             // - Finally, fall back on the default value from the component registry.
 
             // TODO(jleibs): Is this the right place for fallbacks to come from?
-            let Some(initial_data) = ctx
-                .visualizer_collection
-                .get_by_identifier(viz)
-                .ok()
-                .and_then(|sys| sys.fallback_for(&query_context, component_name).ok())
-            else {
-                re_log::warn!(
-                    "Could not identify an initial value for: {}",
-                    component_name
-                );
+            let Ok(visualizer) = ctx.visualizer_collection.get_by_identifier(viz) else {
+                re_log::warn!("Could not find visualizer for: {}", viz);
                 return;
             };
+            let initial_data = visualizer
+                .fallback_provider()
+                .fallback_for(&query_context, component_name);
 
             match Chunk::builder(defaults_path.clone())
                 .with_row(
                     RowId::new(),
                     ctx.blueprint_timepoint_for_writes(),
-                    [(component_name, initial_data)],
+                    [(ComponentDescriptor::new(component_name), initial_data)],
                 )
                 .build()
             {
@@ -316,7 +317,7 @@ fn add_popup_ui(
                         ));
                 }
                 Err(err) => {
-                    re_log::warn!("Failed to create DataRow for blueprint component: {}", err);
+                    re_log::warn!("Failed to create Chunk for blueprint component: {}", err);
                 }
             }
 

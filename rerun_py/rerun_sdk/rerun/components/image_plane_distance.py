@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["ImagePlaneDistance", "ImagePlaneDistanceBatch", "ImagePlaneDistanceType"]
+__all__ = ["ImagePlaneDistance", "ImagePlaneDistanceBatch"]
 
 
 class ImagePlaneDistance(datatypes.Float32, ComponentMixin):
@@ -28,12 +29,8 @@ class ImagePlaneDistance(datatypes.Float32, ComponentMixin):
     pass
 
 
-class ImagePlaneDistanceType(datatypes.Float32Type):
-    _TYPE_NAME: str = "rerun.components.ImagePlaneDistance"
-
-
 class ImagePlaneDistanceBatch(datatypes.Float32Batch, ComponentBatchMixin):
-    _ARROW_TYPE = ImagePlaneDistanceType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.ImagePlaneDistance")
 
 
 # This is patched in late to avoid circular dependencies.

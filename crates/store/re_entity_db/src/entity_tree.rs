@@ -1,37 +1,26 @@
 use std::collections::BTreeMap;
 
 use ahash::HashSet;
-use itertools::Itertools;
-use nohash_hasher::IntMap;
+use nohash_hasher::{IntMap, IntSet};
 
 use re_chunk::RowId;
-use re_chunk_store::{ChunkStoreDiff, ChunkStoreDiffKind, ChunkStoreEvent, ChunkStoreSubscriber};
-use re_log_types::{ComponentPath, EntityPath, EntityPathHash, EntityPathPart, TimeInt, Timeline};
+use re_chunk_store::{ChunkStoreDiffKind, ChunkStoreEvent, ChunkStoreSubscriber};
+use re_log_types::{EntityPath, EntityPathHash, EntityPathPart, TimeInt, Timeline};
+use re_query::StorageEngineReadGuard;
 use re_types_core::ComponentName;
-
-// Used all over in docstrings.
-#[allow(unused_imports)]
-use re_chunk_store::ChunkStore;
-
-use crate::TimeHistogramPerTimeline;
 
 // ----------------------------------------------------------------------------
 
 /// A recursive, manually updated [`ChunkStoreSubscriber`] that maintains the entity hierarchy.
 ///
 /// The tree contains a list of subtrees, and so on recursively.
+#[derive(Debug)]
 pub struct EntityTree {
     /// Full path prefix to the root of this (sub)tree.
     pub path: EntityPath,
 
     /// Direct descendants of this (sub)tree.
     pub children: BTreeMap<EntityPathPart, EntityTree>,
-
-    /// Information about this specific entity (excluding children).
-    pub entity: EntityInfo,
-
-    /// Info about this subtree, including all children, recursively.
-    pub subtree: SubtreeInfo,
 }
 
 // NOTE: This is only to let people know that this is in fact a [`ChunkStoreSubscriber`], so they A) don't try
@@ -57,86 +46,6 @@ impl ChunkStoreSubscriber for EntityTree {
     }
 }
 
-/// Information about this specific entity (excluding children).
-#[derive(Default)]
-pub struct EntityInfo {
-    /// Flat time histograms for each component of this [`EntityTree`].
-    ///
-    /// Keeps track of the _number of times a component is logged_ per time per timeline, only for
-    /// this specific [`EntityTree`].
-    /// A component logged twice at the same timestamp is counted twice.
-    ///
-    /// ⚠ Auto-generated instance keys are _not_ accounted for. ⚠
-    pub components: BTreeMap<ComponentName, TimeHistogramPerTimeline>,
-}
-
-/// Info about stuff at a given [`EntityPath`], including all of its children, recursively.
-#[derive(Default)]
-pub struct SubtreeInfo {
-    /// Recursive time histogram for this [`EntityTree`].
-    ///
-    /// Keeps track of the _number of components logged_ per time per timeline, recursively across
-    /// all of the [`EntityTree`]'s children.
-    /// A component logged twice at the same timestamp is counted twice.
-    ///
-    /// ⚠ Auto-generated instance keys are _not_ accounted for. ⚠
-    pub time_histogram: TimeHistogramPerTimeline,
-
-    /// Number of bytes used by all arrow data
-    data_bytes: u64,
-}
-
-impl SubtreeInfo {
-    /// Assumes the event has been filtered to be part of this subtree.
-    fn on_event(&mut self, event: &ChunkStoreEvent) {
-        use re_types_core::SizeBytes as _;
-
-        match event.kind {
-            ChunkStoreDiffKind::Addition => {
-                let times = event
-                    .chunk
-                    .timelines()
-                    .iter()
-                    .map(|(&timeline, time_chunk)| (timeline, time_chunk.times_raw()))
-                    .collect_vec();
-                self.time_histogram.add(&times, event.num_components() as _);
-
-                self.data_bytes += event.chunk.total_size_bytes();
-            }
-            ChunkStoreDiffKind::Deletion => {
-                let times = event
-                    .chunk
-                    .timelines()
-                    .iter()
-                    .map(|(&timeline, time_chunk)| (timeline, time_chunk.times_raw()))
-                    .collect_vec();
-                self.time_histogram
-                    .remove(&times, event.num_components() as _);
-
-                let removed_bytes = event.chunk.total_size_bytes();
-                self.data_bytes
-                    .checked_sub(removed_bytes)
-                    .unwrap_or_else(|| {
-                        re_log::debug!(
-                            store_id = %event.store_id,
-                            entity_path = %event.chunk.entity_path(),
-                            current = self.data_bytes,
-                            removed = removed_bytes,
-                            "book keeping underflowed"
-                        );
-                        u64::MIN
-                    });
-            }
-        }
-    }
-
-    /// Number of bytes used by all arrow data in this tree (including their schemas, but otherwise ignoring book-keeping overhead).
-    #[inline]
-    pub fn data_bytes(&self) -> u64 {
-        self.data_bytes
-    }
-}
-
 /// Maintains an optimized representation of a batch of [`ChunkStoreEvent`]s specifically designed to
 /// accelerate garbage collection of [`EntityTree`]s.
 ///
@@ -149,8 +58,8 @@ pub struct CompactedStoreEvents {
     /// What time points were deleted for each entity+timeline+component?
     pub temporal: IntMap<EntityPathHash, IntMap<Timeline, IntMap<ComponentName, Vec<TimeInt>>>>,
 
-    /// For each entity+component, how many timeless entries were deleted?
-    pub timeless: IntMap<EntityPathHash, IntMap<ComponentName, u64>>,
+    /// For each entity+component, how many static entries were deleted?
+    pub static_: IntMap<EntityPathHash, IntMap<ComponentName, u64>>,
 }
 
 impl CompactedStoreEvents {
@@ -161,13 +70,13 @@ impl CompactedStoreEvents {
                 .flat_map(|event| event.chunk.row_ids())
                 .collect(),
             temporal: Default::default(),
-            timeless: Default::default(),
+            static_: Default::default(),
         };
 
         for event in store_events {
             if event.is_static() {
                 let per_component = this
-                    .timeless
+                    .static_
                     .entry(event.chunk.entity_path().hash())
                     .or_default();
                 for component_name in event.chunk.component_names() {
@@ -175,12 +84,12 @@ impl CompactedStoreEvents {
                         event.delta().unsigned_abs();
                 }
             } else {
-                for (&timeline, time_chunk) in event.chunk.timelines() {
+                for (&timeline, time_column) in event.chunk.timelines() {
                     let per_timeline = this
                         .temporal
                         .entry(event.chunk.entity_path().hash())
                         .or_default();
-                    for &time in time_chunk.times_raw() {
+                    for &time in time_column.times_raw() {
                         let per_component = per_timeline.entry(timeline).or_default();
                         for component_name in event.chunk.component_names() {
                             per_component
@@ -206,8 +115,6 @@ impl EntityTree {
         Self {
             path,
             children: Default::default(),
-            entity: Default::default(),
-            subtree: Default::default(),
         }
     }
 
@@ -216,29 +123,20 @@ impl EntityTree {
         self.children.is_empty()
     }
 
-    pub fn num_children_and_fields(&self) -> usize {
-        self.children.len() + self.entity.components.len()
-    }
-
-    /// Number of timeless messages in this tree, or any child, recursively.
-    pub fn num_static_messages_recursive(&self) -> u64 {
-        self.subtree.time_histogram.num_static_messages()
-    }
-
-    pub fn time_histogram_for_component(
-        &self,
-        timeline: &Timeline,
-        component_name: impl Into<ComponentName>,
-    ) -> Option<&crate::TimeHistogram> {
-        self.entity
-            .components
-            .get(&component_name.into())
-            .and_then(|per_timeline| per_timeline.get(timeline))
-    }
-
-    /// Updates the [`EntityTree`] by applying a batch of [`ChunkStoreEvent`]s.
+    /// Returns `true` if this entity has no children and no data.
     ///
-    /// Only reacts to deletions (`event.kind == StoreDiffKind::Deletion`).
+    /// Checking for the absence of data is neither costly nor totally free: do it a few hundreds or
+    /// thousands times a frame and it will absolutely kill framerate.
+    /// Don't blindly call this on every existing entity every frame: use [`ChunkStoreEvent`]s to make
+    /// sure anything changed at all first.
+    pub fn check_is_empty(&self, engine: &StorageEngineReadGuard<'_>) -> bool {
+        self.children.is_empty() && !engine.store().entity_has_data(&self.path)
+    }
+
+    /// Updates the [`EntityTree`] by applying a batch of [`ChunkStoreEvent`]s,
+    /// adding any new entities to the tree.
+    ///
+    /// Only reacts to additions (`event.kind == StoreDiffKind::Addition`).
     pub fn on_store_additions(&mut self, events: &[ChunkStoreEvent]) {
         re_tracing::profile_function!();
         for event in events
@@ -256,99 +154,44 @@ impl EntityTree {
 
         // Book-keeping for each level in the hierarchy:
         let mut tree = self;
-        tree.subtree.on_event(event);
-
         for (i, part) in entity_path.iter().enumerate() {
             tree = tree
                 .children
                 .entry(part.clone())
                 .or_insert_with(|| Self::new(entity_path.as_slice()[..=i].into()));
-            tree.subtree.on_event(event);
         }
-
-        // Finally book-keeping for the entity where data was actually added:
-        tree.on_added_data(&event.diff);
     }
 
-    /// Handles the addition of new data into the tree.
-    fn on_added_data(&mut self, store_diff: &ChunkStoreDiff) {
-        for component_name in store_diff.chunk.component_names() {
-            let component_path =
-                ComponentPath::new(store_diff.chunk.entity_path().clone(), component_name);
+    /// Updates the [`EntityTree`] by removing any entities which have no data and no children.
+    pub fn on_store_deletions(
+        &mut self,
+        engine: &StorageEngineReadGuard<'_>,
+        entity_paths_with_deletions: &IntSet<EntityPath>,
+        events: &[ChunkStoreEvent],
+    ) {
+        // We don't actually use the events for anything, we just want to
+        // have a direct dependency on the chunk store which must have
+        // produced them by the time this function was called.
+        let _ = events;
 
-            let per_component = self
-                .entity
-                .components
-                .entry(component_path.component_name)
-                .or_default();
-            per_component.add(
-                &store_diff
-                    .chunk
-                    .timelines()
+        self.children.retain(|_, entity| {
+            // this is placed first, because we'll only know if the child entity is empty after telling it to clear itself.
+            entity.on_store_deletions(engine, entity_paths_with_deletions, events);
+
+            let has_children = || !entity.children.is_empty();
+            // Checking for lack of data is not free, so make sure there is any reason to believe
+            // that any relevant data has changed first.
+            let has_recursive_deletion_events = || {
+                entity_paths_with_deletions
                     .iter()
-                    .map(|(&timeline, time_chunk)| (timeline, time_chunk.times_raw()))
-                    .collect_vec(),
-                1,
-            );
-        }
-    }
+                    .any(|removed_entity_path| removed_entity_path.starts_with(&entity.path))
+            };
+            let has_data = || engine.store().entity_has_data(&entity.path);
 
-    /// Updates the [`EntityTree`] by applying a batch of [`ChunkStoreEvent`]s.
-    ///
-    /// Only reacts to deletions (`event.kind == StoreDiffKind::Deletion`).
-    pub fn on_store_deletions(&mut self, store_events: &[ChunkStoreEvent]) {
-        re_tracing::profile_function!();
+            let should_be_removed =
+                !has_children() && (has_recursive_deletion_events() && !has_data());
 
-        let Self {
-            path,
-            children,
-            entity,
-            subtree,
-        } = self;
-
-        // Only keep events relevant to this branch of the tree.
-        let subtree_events = store_events
-            .iter()
-            .filter(|e| e.kind == ChunkStoreDiffKind::Deletion)
-            .filter(|&e| e.diff.chunk.entity_path().starts_with(path))
-            .cloned()
-            .collect_vec();
-
-        {
-            re_tracing::profile_scope!("entity");
-            for event in subtree_events
-                .iter()
-                .filter(|e| e.chunk.entity_path() == path)
-            {
-                for component_name in event.chunk.component_names() {
-                    if let Some(histo) = entity.components.get_mut(&component_name) {
-                        histo.remove(
-                            &event
-                                .chunk
-                                .timelines()
-                                .iter()
-                                .map(|(timeline, time_chunk)| (*timeline, time_chunk.times_raw()))
-                                .collect_vec(),
-                            1,
-                        );
-                        if histo.is_empty() {
-                            entity.components.remove(&component_name);
-                        }
-                    }
-                }
-            }
-        }
-
-        {
-            re_tracing::profile_scope!("subtree");
-            for event in &subtree_events {
-                subtree.on_event(event);
-            }
-        }
-
-        children.retain(|_, child| {
-            child.on_store_deletions(&subtree_events);
-            child.num_children_and_fields() > 0
+            !should_be_removed
         });
     }
 
@@ -359,7 +202,10 @@ impl EntityTree {
         ) -> Option<&'tree EntityTree> {
             match path {
                 [] => Some(this),
-                [first, rest @ ..] => subtree_recursive(this.children.get(first)?, rest),
+                [first, rest @ ..] => {
+                    let child = this.children.get(first)?;
+                    subtree_recursive(child, rest)
+                }
             }
         }
 
@@ -367,10 +213,126 @@ impl EntityTree {
     }
 
     // Invokes visitor for `self` and all children recursively.
-    pub fn visit_children_recursively(&self, visitor: &mut impl FnMut(&EntityPath, &EntityInfo)) {
-        visitor(&self.path, &self.entity);
-        for child in self.children.values() {
-            child.visit_children_recursively(visitor);
+    pub fn visit_children_recursively(&self, mut visitor: impl FnMut(&EntityPath)) {
+        fn visit(this: &EntityTree, visitor: &mut impl FnMut(&EntityPath)) {
+            visitor(&this.path);
+            for child in this.children.values() {
+                visit(child, visitor);
+            }
         }
+
+        visit(self, &mut visitor);
+    }
+
+    /// Invokes the `predicate` for `self` and all children recursively,
+    /// returning the _first_ entity for which the `predicate` returns `true`.
+    ///
+    /// Note that this function has early return semantics, meaning if multiple
+    /// entities would return `true`, only the first is returned.
+    /// The entities are yielded in order of their entity paths.
+    pub fn find_first_child_recursive(
+        &self,
+        mut predicate: impl FnMut(&EntityPath) -> bool,
+    ) -> Option<&Self> {
+        fn visit<'a>(
+            this: &'a EntityTree,
+            predicate: &mut impl FnMut(&EntityPath) -> bool,
+        ) -> Option<&'a EntityTree> {
+            if predicate(&this.path) {
+                return Some(this);
+            };
+
+            for child in this.children.values() {
+                if let Some(subtree) = visit(child, predicate) {
+                    // Early return
+                    return Some(subtree);
+                };
+            }
+
+            None
+        }
+
+        visit(self, &mut predicate)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use re_chunk::{Chunk, RowId};
+    use re_log_types::{example_components::MyPoint, EntityPath, StoreId, TimePoint, Timeline};
+
+    use crate::EntityDb;
+
+    #[test]
+    fn deleting_descendants() -> anyhow::Result<()> {
+        re_log::setup_logging();
+
+        let mut db = EntityDb::new(StoreId::random(re_log_types::StoreKind::Recording));
+
+        let timeline_frame = Timeline::new_sequence("frame");
+
+        let entity_path_parent: EntityPath = "parent".into();
+        let entity_path_child: EntityPath = "parent/child1".into();
+        let entity_path_grandchild: EntityPath = "parent/child1/grandchild".into();
+
+        assert!(db.tree().check_is_empty(&db.storage_engine()));
+
+        {
+            let row_id = RowId::new();
+            let timepoint = TimePoint::from_iter([(timeline_frame, 10)]);
+            let point = MyPoint::new(1.0, 2.0);
+            let chunk = Chunk::builder(entity_path_grandchild.clone())
+                .with_component_batches(row_id, timepoint, [&[point] as _])
+                .build()?;
+
+            db.add_chunk(&Arc::new(chunk))?;
+        }
+
+        {
+            let parent = db
+                .tree()
+                .find_first_child_recursive(|entity_path| *entity_path == entity_path_parent)
+                .unwrap();
+            let child = db
+                .tree()
+                .find_first_child_recursive(|entity_path| *entity_path == entity_path_child)
+                .unwrap();
+            let grandchild = db
+                .tree()
+                .find_first_child_recursive(|entity_path| *entity_path == entity_path_grandchild)
+                .unwrap();
+
+            assert_eq!(1, parent.children.len());
+            assert_eq!(1, child.children.len());
+            assert_eq!(0, grandchild.children.len());
+
+            assert!(!db.tree().check_is_empty(&db.storage_engine()));
+            assert!(!parent.check_is_empty(&db.storage_engine()));
+            assert!(!child.check_is_empty(&db.storage_engine()));
+            assert!(!grandchild.check_is_empty(&db.storage_engine()));
+        }
+
+        let _store_events = db.gc(&re_chunk_store::GarbageCollectionOptions::gc_everything());
+
+        {
+            let parent = db
+                .tree()
+                .find_first_child_recursive(|entity_path| *entity_path == entity_path_parent);
+            let child = db
+                .tree()
+                .find_first_child_recursive(|entity_path| *entity_path == entity_path_child);
+            let grandchild = db
+                .tree()
+                .find_first_child_recursive(|entity_path| *entity_path == entity_path_grandchild);
+
+            assert!(db.tree().check_is_empty(&db.storage_engine()));
+            assert!(parent.is_none());
+            assert!(child.is_none());
+            assert!(grandchild.is_none());
+        }
+
+        Ok(())
     }
 }

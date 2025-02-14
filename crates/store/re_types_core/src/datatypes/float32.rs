@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use crate::external::arrow2;
-use crate::ComponentName;
+use crate::try_serialize_field;
 use crate::SerializationResult;
-use crate::{ComponentBatch, MaybeOwnedComponentBatch};
+use crate::{ComponentBatch, SerializedComponentBatch};
+use crate::{ComponentDescriptor, ComponentName};
 use crate::{DeserializationError, DeserializationResult};
 
 /// **Datatype**: A single-precision 32-bit IEEE 754 floating point number.
@@ -23,15 +23,106 @@ use crate::{DeserializationError, DeserializationResult};
 #[repr(transparent)]
 pub struct Float32(pub f32);
 
-impl crate::SizeBytes for Float32 {
+crate::macros::impl_into_cow!(Float32);
+
+impl crate::Loggable for Float32 {
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.0.heap_size_bytes()
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        #![allow(clippy::wildcard_imports)]
+        use arrow::datatypes::*;
+        DataType::Float32
+    }
+
+    fn to_arrow_opt<'a>(
+        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+    ) -> SerializationResult<arrow::array::ArrayRef>
+    where
+        Self: Clone + 'a,
+    {
+        #![allow(clippy::wildcard_imports)]
+        #![allow(clippy::manual_is_variant_and)]
+        use crate::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
+        Ok({
+            let (somes, data0): (Vec<_>, Vec<_>) = data
+                .into_iter()
+                .map(|datum| {
+                    let datum: Option<::std::borrow::Cow<'a, Self>> = datum.map(Into::into);
+                    let datum = datum.map(|datum| datum.into_owned().0);
+                    (datum.is_some(), datum)
+                })
+                .unzip();
+            let data0_validity: Option<arrow::buffer::NullBuffer> = {
+                let any_nones = somes.iter().any(|some| !*some);
+                any_nones.then(|| somes.into())
+            };
+            as_array_ref(PrimitiveArray::<Float32Type>::new(
+                ScalarBuffer::from(
+                    data0
+                        .into_iter()
+                        .map(|v| v.unwrap_or_default())
+                        .collect::<Vec<_>>(),
+                ),
+                data0_validity,
+            ))
+        })
+    }
+
+    fn from_arrow_opt(
+        arrow_data: &dyn arrow::array::Array,
+    ) -> DeserializationResult<Vec<Option<Self>>>
+    where
+        Self: Sized,
+    {
+        #![allow(clippy::wildcard_imports)]
+        use crate::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
+        Ok(arrow_data
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .ok_or_else(|| {
+                let expected = Self::arrow_datatype();
+                let actual = arrow_data.data_type().clone();
+                DeserializationError::datatype_mismatch(expected, actual)
+            })
+            .with_context("rerun.datatypes.Float32#value")?
+            .into_iter()
+            .map(|v| v.ok_or_else(DeserializationError::missing_data))
+            .map(|res| res.map(|v| Some(Self(v))))
+            .collect::<DeserializationResult<Vec<Option<_>>>>()
+            .with_context("rerun.datatypes.Float32#value")
+            .with_context("rerun.datatypes.Float32")?)
     }
 
     #[inline]
-    fn is_pod() -> bool {
-        <f32>::is_pod()
+    fn from_arrow(arrow_data: &dyn arrow::array::Array) -> DeserializationResult<Vec<Self>>
+    where
+        Self: Sized,
+    {
+        #![allow(clippy::wildcard_imports)]
+        use crate::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
+        if let Some(nulls) = arrow_data.nulls() {
+            if nulls.null_count() != 0 {
+                return Err(DeserializationError::missing_data());
+            }
+        }
+        Ok({
+            let slice = arrow_data
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .ok_or_else(|| {
+                    let expected = DataType::Float32;
+                    let actual = arrow_data.data_type().clone();
+                    DeserializationError::datatype_mismatch(expected, actual)
+                })
+                .with_context("rerun.datatypes.Float32#value")?
+                .values()
+                .as_ref();
+            {
+                slice.iter().copied().map(Self).collect::<Vec<_>>()
+            }
+        })
     }
 }
 
@@ -49,109 +140,14 @@ impl From<Float32> for f32 {
     }
 }
 
-crate::macros::impl_into_cow!(Float32);
-
-impl crate::Loggable for Float32 {
-    type Name = crate::DatatypeName;
-
+impl ::re_byte_size::SizeBytes for Float32 {
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.datatypes.Float32".into()
+    fn heap_size_bytes(&self) -> u64 {
+        self.0.heap_size_bytes()
     }
 
     #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
-        DataType::Float32
-    }
-
-    fn to_arrow_opt<'a>(
-        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
-    where
-        Self: Clone + 'a,
-    {
-        #![allow(clippy::wildcard_imports)]
-        use crate::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
-        Ok({
-            let (somes, data0): (Vec<_>, Vec<_>) = data
-                .into_iter()
-                .map(|datum| {
-                    let datum: Option<::std::borrow::Cow<'a, Self>> = datum.map(Into::into);
-                    let datum = datum.map(|datum| datum.into_owned().0);
-                    (datum.is_some(), datum)
-                })
-                .unzip();
-            let data0_bitmap: Option<arrow2::bitmap::Bitmap> = {
-                let any_nones = somes.iter().any(|some| !*some);
-                any_nones.then(|| somes.into())
-            };
-            PrimitiveArray::new(
-                Self::arrow_datatype(),
-                data0.into_iter().map(|v| v.unwrap_or_default()).collect(),
-                data0_bitmap,
-            )
-            .boxed()
-        })
-    }
-
-    fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
-    ) -> DeserializationResult<Vec<Option<Self>>>
-    where
-        Self: Sized,
-    {
-        #![allow(clippy::wildcard_imports)]
-        use crate::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
-        Ok(arrow_data
-            .as_any()
-            .downcast_ref::<Float32Array>()
-            .ok_or_else(|| {
-                let expected = Self::arrow_datatype();
-                let actual = arrow_data.data_type().clone();
-                DeserializationError::datatype_mismatch(expected, actual)
-            })
-            .with_context("rerun.datatypes.Float32#value")?
-            .into_iter()
-            .map(|opt| opt.copied())
-            .map(|v| v.ok_or_else(DeserializationError::missing_data))
-            .map(|res| res.map(|v| Some(Self(v))))
-            .collect::<DeserializationResult<Vec<Option<_>>>>()
-            .with_context("rerun.datatypes.Float32#value")
-            .with_context("rerun.datatypes.Float32")?)
-    }
-
-    #[inline]
-    fn from_arrow(arrow_data: &dyn arrow2::array::Array) -> DeserializationResult<Vec<Self>>
-    where
-        Self: Sized,
-    {
-        #![allow(clippy::wildcard_imports)]
-        use crate::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
-        if let Some(validity) = arrow_data.validity() {
-            if validity.unset_bits() != 0 {
-                return Err(DeserializationError::missing_data());
-            }
-        }
-        Ok({
-            let slice = arrow_data
-                .as_any()
-                .downcast_ref::<Float32Array>()
-                .ok_or_else(|| {
-                    let expected = DataType::Float32;
-                    let actual = arrow_data.data_type().clone();
-                    DeserializationError::datatype_mismatch(expected, actual)
-                })
-                .with_context("rerun.datatypes.Float32#value")?
-                .values()
-                .as_slice();
-            {
-                slice.iter().copied().map(Self).collect::<Vec<_>>()
-            }
-        })
+    fn is_pod() -> bool {
+        <f32>::is_pod()
     }
 }

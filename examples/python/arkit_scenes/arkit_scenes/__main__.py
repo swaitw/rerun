@@ -67,18 +67,16 @@ def log_annotated_bboxes(annotation: dict[str, Any]) -> None:
 
         half_size = 0.5 * np.array(label_info["segments"]["obbAligned"]["axesLengths"]).reshape(-1, 3)[0]
         centroid = np.array(label_info["segments"]["obbAligned"]["centroid"]).reshape(-1, 3)[0]
-        rotation = np.array(label_info["segments"]["obbAligned"]["normalizedAxes"]).reshape(3, 3)
-
-        rot = R.from_matrix(rotation).inv()
+        mat3x3 = np.array(label_info["segments"]["obbAligned"]["normalizedAxes"]).reshape(3, 3)
 
         rr.log(
             f"world/annotations/box-{uid}-{label}",
             rr.Boxes3D(
                 half_sizes=half_size,
                 centers=centroid,
-                rotations=rr.Quaternion(xyzw=rot.as_quat()),
                 labels=label,
             ),
+            rr.InstancePoses3D(mat3x3=mat3x3),
             static=True,
         )
 
@@ -227,7 +225,6 @@ def log_arkit(recording_path: Path, include_highres: bool) -> None:
         rr.set_time_seconds("time", float(frame_timestamp))
         # load the lowres image and depth
         bgr = cv2.imread(f"{lowres_image_dir}/{video_id}_{frame_timestamp}.png")
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         depth = cv2.imread(f"{lowres_depth_dir}/{video_id}_{frame_timestamp}.png", cv2.IMREAD_ANYDEPTH)
 
         high_res_exists: bool = (image_dir / f"{video_id}_{frame_timestamp}.png").exists() and include_highres
@@ -242,7 +239,7 @@ def log_arkit(recording_path: Path, include_highres: bool) -> None:
                 LOWRES_POSED_ENTITY_PATH,
             )
 
-            rr.log(f"{LOWRES_POSED_ENTITY_PATH}/rgb", rr.Image(rgb).compress(jpeg_quality=95))
+            rr.log(f"{LOWRES_POSED_ENTITY_PATH}/bgr", rr.Image(bgr, color_model="BGR").compress(jpeg_quality=95))
             rr.log(f"{LOWRES_POSED_ENTITY_PATH}/depth", rr.DepthImage(depth, meter=1000))
 
         # log the high res camera
@@ -262,9 +259,7 @@ def log_arkit(recording_path: Path, include_highres: bool) -> None:
             highres_bgr = cv2.imread(f"{image_dir}/{video_id}_{frame_timestamp}.png")
             highres_depth = cv2.imread(f"{depth_dir}/{video_id}_{frame_timestamp}.png", cv2.IMREAD_ANYDEPTH)
 
-            highres_rgb = cv2.cvtColor(highres_bgr, cv2.COLOR_BGR2RGB)
-
-            rr.log(f"{HIGHRES_ENTITY_PATH}/rgb", rr.Image(highres_rgb).compress(jpeg_quality=75))
+            rr.log(f"{HIGHRES_ENTITY_PATH}/bgr", rr.Image(highres_bgr, color_model="BGR").compress(jpeg_quality=75))
             rr.log(f"{HIGHRES_ENTITY_PATH}/depth", rr.DepthImage(highres_depth, meter=1000))
 
 
@@ -295,9 +290,9 @@ def main() -> None:
                 # For this to work, the origin of the 2D views has to be a pinhole camera,
                 # this way the viewer knows how to project the 3D annotations into the 2D views.
                 rrb.Spatial2DView(
-                    name="RGB",
+                    name="BGR",
                     origin=primary_camera_entity,
-                    contents=["$origin/rgb", "/world/annotations/**"],
+                    contents=["$origin/bgr", "/world/annotations/**"],
                 ),
                 rrb.Spatial2DView(
                     name="Depth",

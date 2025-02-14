@@ -12,65 +12,46 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AffixFuzzer17(pub Option<Vec<crate::testing::datatypes::AffixFuzzer3>>);
 
-impl ::re_types_core::SizeBytes for AffixFuzzer17 {
+impl ::re_types_core::Component for AffixFuzzer17 {
     #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.0.heap_size_bytes()
-    }
-
-    #[inline]
-    fn is_pod() -> bool {
-        <Option<Vec<crate::testing::datatypes::AffixFuzzer3>>>::is_pod()
-    }
-}
-
-impl<I: Into<crate::testing::datatypes::AffixFuzzer3>, T: IntoIterator<Item = I>> From<Option<T>>
-    for AffixFuzzer17
-{
-    fn from(v: Option<T>) -> Self {
-        Self(v.map(|v| v.into_iter().map(|v| v.into()).collect()))
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("rerun.testing.components.AffixFuzzer17")
     }
 }
 
 ::re_types_core::macros::impl_into_cow!(AffixFuzzer17);
 
 impl ::re_types_core::Loggable for AffixFuzzer17 {
-    type Name = ::re_types_core::ComponentName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.testing.components.AffixFuzzer17".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
+    fn arrow_datatype() -> arrow::datatypes::DataType {
         #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
+        use arrow::datatypes::*;
         DataType::List(std::sync::Arc::new(Field::new(
             "item",
             <crate::testing::datatypes::AffixFuzzer3>::arrow_datatype(),
-            false,
+            true,
         )))
     }
 
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> SerializationResult<arrow::array::ArrayRef>
     where
         Self: Clone + 'a,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
+        #![allow(clippy::manual_is_variant_and)]
+        use ::re_types_core::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
             let (somes, data0): (Vec<_>, Vec<_>) = data
                 .into_iter()
@@ -80,49 +61,50 @@ impl ::re_types_core::Loggable for AffixFuzzer17 {
                     (datum.is_some(), datum)
                 })
                 .unzip();
-            let data0_bitmap: Option<arrow2::bitmap::Bitmap> = {
+            let data0_validity: Option<arrow::buffer::NullBuffer> = {
                 let any_nones = somes.iter().any(|some| !*some);
                 any_nones.then(|| somes.into())
             };
             {
-                use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
-                let offsets = arrow2::offset::Offsets::<i32>::try_from_lengths(
+                let offsets = arrow::buffer::OffsetBuffer::<i32>::from_lengths(
                     data0
                         .iter()
                         .map(|opt| opt.as_ref().map_or(0, |datum| datum.len())),
-                )?
-                .into();
+                );
                 let data0_inner_data: Vec<_> = data0.into_iter().flatten().flatten().collect();
-                let data0_inner_bitmap: Option<arrow2::bitmap::Bitmap> = None;
-                ListArray::try_new(
-                    Self::arrow_datatype(),
+                let data0_inner_validity: Option<arrow::buffer::NullBuffer> = None;
+                as_array_ref(ListArray::try_new(
+                    std::sync::Arc::new(Field::new(
+                        "item",
+                        <crate::testing::datatypes::AffixFuzzer3>::arrow_datatype(),
+                        true,
+                    )),
                     offsets,
                     {
-                        _ = data0_inner_bitmap;
+                        _ = data0_inner_validity;
                         crate::testing::datatypes::AffixFuzzer3::to_arrow_opt(
                             data0_inner_data.into_iter().map(Some),
                         )?
                     },
-                    data0_bitmap,
-                )?
-                .boxed()
+                    data0_validity,
+                )?)
             }
         })
     }
 
     fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
+        arrow_data: &dyn arrow::array::Array,
     ) -> DeserializationResult<Vec<Option<Self>>>
     where
         Self: Sized,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
+        use ::re_types_core::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
             let arrow_data = arrow_data
                 .as_any()
-                .downcast_ref::<arrow2::array::ListArray<i32>>()
+                .downcast_ref::<arrow::array::ListArray>()
                 .ok_or_else(|| {
                     let expected = Self::arrow_datatype();
                     let actual = arrow_data.data_type().clone();
@@ -142,33 +124,30 @@ impl ::re_types_core::Loggable for AffixFuzzer17 {
                         .collect::<Vec<_>>()
                 };
                 let offsets = arrow_data.offsets();
-                arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                    offsets.iter().zip(offsets.lengths()),
-                    arrow_data.validity(),
-                )
-                .map(|elem| {
-                    elem.map(|(start, len)| {
-                        let start = *start as usize;
-                        let end = start + len;
-                        if end > arrow_data_inner.len() {
-                            return Err(DeserializationError::offset_slice_oob(
-                                (start, end),
-                                arrow_data_inner.len(),
-                            ));
-                        }
+                ZipValidity::new_with_validity(offsets.windows(2), arrow_data.nulls())
+                    .map(|elem| {
+                        elem.map(|window| {
+                            let start = window[0] as usize;
+                            let end = window[1] as usize;
+                            if arrow_data_inner.len() < end {
+                                return Err(DeserializationError::offset_slice_oob(
+                                    (start, end),
+                                    arrow_data_inner.len(),
+                                ));
+                            }
 
-                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                        let data = unsafe { arrow_data_inner.get_unchecked(start..end) };
-                        let data = data
-                            .iter()
-                            .cloned()
-                            .map(Option::unwrap_or_default)
-                            .collect();
-                        Ok(data)
+                            #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                            let data = unsafe { arrow_data_inner.get_unchecked(start..end) };
+                            let data = data
+                                .iter()
+                                .cloned()
+                                .map(Option::unwrap_or_default)
+                                .collect();
+                            Ok(data)
+                        })
+                        .transpose()
                     })
-                    .transpose()
-                })
-                .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                    .collect::<DeserializationResult<Vec<Option<_>>>>()?
             }
             .into_iter()
         }
@@ -177,5 +156,25 @@ impl ::re_types_core::Loggable for AffixFuzzer17 {
         .collect::<DeserializationResult<Vec<Option<_>>>>()
         .with_context("rerun.testing.components.AffixFuzzer17#many_optional_unions")
         .with_context("rerun.testing.components.AffixFuzzer17")?)
+    }
+}
+
+impl<I: Into<crate::testing::datatypes::AffixFuzzer3>, T: IntoIterator<Item = I>> From<Option<T>>
+    for AffixFuzzer17
+{
+    fn from(v: Option<T>) -> Self {
+        Self(v.map(|v| v.into_iter().map(|v| v.into()).collect()))
+    }
+}
+
+impl ::re_byte_size::SizeBytes for AffixFuzzer17 {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.0.heap_size_bytes()
+    }
+
+    #[inline]
+    fn is_pod() -> bool {
+        <Option<Vec<crate::testing::datatypes::AffixFuzzer3>>>::is_pod()
     }
 }

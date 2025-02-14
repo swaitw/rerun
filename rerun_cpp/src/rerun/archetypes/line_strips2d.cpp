@@ -5,54 +5,122 @@
 
 #include "../collection_adapter_builtins.hpp"
 
-namespace rerun::archetypes {}
+namespace rerun::archetypes {
+    LineStrips2D LineStrips2D::clear_fields() {
+        auto archetype = LineStrips2D();
+        archetype.strips = ComponentBatch::empty<rerun::components::LineStrip2D>(Descriptor_strips)
+                               .value_or_throw();
+        archetype.radii =
+            ComponentBatch::empty<rerun::components::Radius>(Descriptor_radii).value_or_throw();
+        archetype.colors =
+            ComponentBatch::empty<rerun::components::Color>(Descriptor_colors).value_or_throw();
+        archetype.labels =
+            ComponentBatch::empty<rerun::components::Text>(Descriptor_labels).value_or_throw();
+        archetype.show_labels =
+            ComponentBatch::empty<rerun::components::ShowLabels>(Descriptor_show_labels)
+                .value_or_throw();
+        archetype.draw_order =
+            ComponentBatch::empty<rerun::components::DrawOrder>(Descriptor_draw_order)
+                .value_or_throw();
+        archetype.class_ids =
+            ComponentBatch::empty<rerun::components::ClassId>(Descriptor_class_ids)
+                .value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> LineStrips2D::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(8);
+        if (strips.has_value()) {
+            columns.push_back(strips.value().partitioned(lengths_).value_or_throw());
+        }
+        if (radii.has_value()) {
+            columns.push_back(radii.value().partitioned(lengths_).value_or_throw());
+        }
+        if (colors.has_value()) {
+            columns.push_back(colors.value().partitioned(lengths_).value_or_throw());
+        }
+        if (labels.has_value()) {
+            columns.push_back(labels.value().partitioned(lengths_).value_or_throw());
+        }
+        if (show_labels.has_value()) {
+            columns.push_back(show_labels.value().partitioned(lengths_).value_or_throw());
+        }
+        if (draw_order.has_value()) {
+            columns.push_back(draw_order.value().partitioned(lengths_).value_or_throw());
+        }
+        if (class_ids.has_value()) {
+            columns.push_back(class_ids.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(
+            ComponentColumn::from_indicators<LineStrips2D>(static_cast<uint32_t>(lengths_.size()))
+                .value_or_throw()
+        );
+        return columns;
+    }
+
+    Collection<ComponentColumn> LineStrips2D::columns() {
+        if (strips.has_value()) {
+            return columns(std::vector<uint32_t>(strips.value().length(), 1));
+        }
+        if (radii.has_value()) {
+            return columns(std::vector<uint32_t>(radii.value().length(), 1));
+        }
+        if (colors.has_value()) {
+            return columns(std::vector<uint32_t>(colors.value().length(), 1));
+        }
+        if (labels.has_value()) {
+            return columns(std::vector<uint32_t>(labels.value().length(), 1));
+        }
+        if (show_labels.has_value()) {
+            return columns(std::vector<uint32_t>(show_labels.value().length(), 1));
+        }
+        if (draw_order.has_value()) {
+            return columns(std::vector<uint32_t>(draw_order.value().length(), 1));
+        }
+        if (class_ids.has_value()) {
+            return columns(std::vector<uint32_t>(class_ids.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<archetypes::LineStrips2D>::serialize(
+    Result<Collection<ComponentBatch>> AsComponents<archetypes::LineStrips2D>::as_batches(
         const archetypes::LineStrips2D& archetype
     ) {
         using namespace archetypes;
-        std::vector<DataCell> cells;
-        cells.reserve(7);
+        std::vector<ComponentBatch> cells;
+        cells.reserve(8);
 
-        {
-            auto result = DataCell::from_loggable(archetype.strips);
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.strips.has_value()) {
+            cells.push_back(archetype.strips.value());
         }
         if (archetype.radii.has_value()) {
-            auto result = DataCell::from_loggable(archetype.radii.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.radii.value());
         }
         if (archetype.colors.has_value()) {
-            auto result = DataCell::from_loggable(archetype.colors.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.colors.value());
         }
         if (archetype.labels.has_value()) {
-            auto result = DataCell::from_loggable(archetype.labels.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.labels.value());
+        }
+        if (archetype.show_labels.has_value()) {
+            cells.push_back(archetype.show_labels.value());
         }
         if (archetype.draw_order.has_value()) {
-            auto result = DataCell::from_loggable(archetype.draw_order.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.draw_order.value());
         }
         if (archetype.class_ids.has_value()) {
-            auto result = DataCell::from_loggable(archetype.class_ids.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.class_ids.value());
         }
         {
-            auto indicator = LineStrips2D::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<LineStrips2D>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

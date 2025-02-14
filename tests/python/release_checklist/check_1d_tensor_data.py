@@ -16,10 +16,13 @@ This checks the different ways 1D arrays can be visualized.
 
 You should see:
 * a tensor view with 1D data
-  * Note: when selecting the tensor space view, there should be two "Dimension Mapping" widgets, which can be used to
+  * Note: when selecting the tensor view, there should be two "Dimension Mapping" widgets, which can be used to
     display the tensor vertically or horizontally. The "Selectors" list should be empty.
 * an image view with a 1D image
 * a bar chart
+
+Known bugs:
+* TODO(#6695): When hovering over a the tensor view, a thin, black, rounded cutout appears.
 
 Bonus actions:
 * use the ui to create a tensor/bar-chart with each of the entities no matter how it was logged
@@ -30,7 +33,7 @@ Bonus actions:
 
 
 def log_readme() -> None:
-    rr.log("readme", rr.TextDocument(README, media_type=rr.MediaType.MARKDOWN), timeless=True)
+    rr.log("readme", rr.TextDocument(README, media_type=rr.MediaType.MARKDOWN), static=True)
 
 
 def log_1d_data() -> None:
@@ -46,6 +49,8 @@ def run(args: Namespace) -> None:
 
     log_readme()
     log_1d_data()
+
+    rr.send_blueprint(rr.blueprint.Blueprint(auto_layout=True, auto_views=True), make_active=True, make_default=True)
 
 
 if __name__ == "__main__":

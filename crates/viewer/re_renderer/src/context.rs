@@ -8,12 +8,12 @@ use type_map::concurrent::{self, TypeMap};
 
 use crate::{
     allocator::{CpuWriteGpuReadBelt, GpuReadbackBelt},
-    config::{DeviceCaps, DeviceTier, RenderContextConfig},
+    device_caps::{DeviceCaps, WgpuBackendType},
     error_handling::{ErrorTracker, WgpuErrorScope},
     global_bindings::GlobalBindings,
     renderer::Renderer,
-    resource_managers::{MeshManager, TextureManager2D},
-    wgpu_resources::{GpuRenderPipelinePoolMoveAccessor, WgpuResourcePools},
+    resource_managers::TextureManager2D,
+    wgpu_resources::WgpuResourcePools,
     FileServer, RecommendedFileResolver,
 };
 
@@ -23,46 +23,82 @@ const STARTUP_FRAME_IDX: u64 = u64::MAX;
 #[derive(thiserror::Error, Debug)]
 pub enum RenderContextError {
     #[error(
-        "The given device doesn't support the required limits for the given hardware caps {device_caps:?}.\n\
-         Required: {required:?}\n\
-         Actual: {actual:?}"
+        "The GPU/graphics driver is lacking some abilities: {0}. \
+        Check the troubleshooting guide at https://rerun.io/docs/getting-started/troubleshooting and consider updating your graphics driver."
     )]
-    Limits {
-        device_caps: DeviceCaps,
-        required: Box<wgpu::Limits>, // boxed because of its size
-        actual: Box<wgpu::Limits>,   // boxed because of its size
-    },
+    InsufficientDeviceCapabilities(#[from] crate::device_caps::InsufficientDeviceCapabilities),
+}
 
-    #[error(
-        "The given device doesn't support the required features for the given hardware caps {device_caps:?}.\n\
-         Required: {required:?}\n\
-         Actual: {actual:?}"
-    )]
-    Features {
-        device_caps: DeviceCaps,
-        required: wgpu::Features,
-        actual: wgpu::Features,
-    },
+/// Controls MSAA (Multi-Sampling Anti-Aliasing)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MsaaMode {
+    /// Disabled MSAA.
+    ///
+    /// Preferred option for testing since MSAA implementations vary across devices,
+    /// especially in alpha-to-coverage cases.
+    ///
+    /// Note that this doesn't necessarily mean that we never use any multisampled targets,
+    /// merely that the main render target is not multisampled.
+    /// Some renderers/postprocessing effects may still incorporate textures with a sample count higher than 1.
+    Off,
 
-    #[error(
-        "The given device doesn't support the required downlevel capabilities for the given hardware caps {device_caps:?}.\n\
-         Required: {required:?}\n\
-         Actual: {actual:?}"
-    )]
-    DownlevelCapabilities {
-        device_caps: DeviceCaps,
-        required: wgpu::DownlevelCapabilities,
-        actual: wgpu::DownlevelCapabilities,
-    },
+    /// 4x MSAA.
+    ///
+    /// As of writing 4 samples is the only option (other than _Off_) that works with `WebGPU`,
+    /// and it is guaranteed to be always available.
+    // TODO(andreas): On native we could offer higher counts.
+    #[default]
+    Msaa4x,
+}
+
+impl MsaaMode {
+    /// Returns the number of samples for this MSAA mode.
+    pub const fn sample_count(&self) -> u32 {
+        match self {
+            Self::Off => 1,
+            Self::Msaa4x => 4,
+        }
+    }
+}
+
+/// Configures global properties of the renderer.
+///
+/// For simplicity, we don't allow changing any of these properties without tearing down the [`RenderContext`],
+/// even though it may be possible.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RenderConfig {
+    pub msaa_mode: MsaaMode,
+    // TODO(andreas): Add a way to force the render tier?
+}
+
+impl RenderConfig {
+    /// Returns the best config for the given [`DeviceCaps`].
+    pub fn best_for_device_caps(_device_caps: &DeviceCaps) -> Self {
+        Self {
+            msaa_mode: MsaaMode::Msaa4x,
+        }
+    }
+
+    /// Render config preferred for running most tests.
+    ///
+    /// This is optimized for low discrepancy between devices in order to
+    /// to keep image comparison thresholds low.
+    pub fn testing() -> Self {
+        Self {
+            msaa_mode: MsaaMode::Off,
+        }
+    }
 }
 
 /// Any resource involving wgpu rendering which can be re-used across different scenes.
 /// I.e. render pipelines, resource pools, etc.
 pub struct RenderContext {
-    pub device: Arc<wgpu::Device>,
-    pub queue: Arc<wgpu::Queue>,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
 
-    pub config: RenderContextConfig,
+    device_caps: DeviceCaps,
+    config: RenderConfig,
+    output_format_color: wgpu::TextureFormat,
 
     /// Global bindings, always bound to 0 bind group slot zero.
     /// [`Renderer`] are not allowed to use bind group 0 themselves!
@@ -71,15 +107,14 @@ pub struct RenderContext {
     renderers: RwLock<Renderers>,
     pub(crate) resolver: RecommendedFileResolver,
 
-    pub mesh_manager: RwLock<MeshManager>,
     pub texture_manager_2d: TextureManager2D,
     pub(crate) cpu_write_gpu_read_belt: Mutex<CpuWriteGpuReadBelt>,
-    pub(crate) gpu_readback_belt: Mutex<GpuReadbackBelt>,
+    pub gpu_readback_belt: Mutex<GpuReadbackBelt>,
 
     /// List of unfinished queue submission via this context.
     ///
     /// This is currently only about submissions we do via the global encoder in [`ActiveFrameContext`]
-    /// TODO(andreas): We rely on egui for the "primary" submissions in re_viewer. It would be nice to take full control over all submissions.
+    /// TODO(andreas): We rely on egui for the "primary" submissions in `re_viewer`. It would be nice to take full control over all submissions.
     inflight_queue_submissions: Vec<wgpu::SubmissionIndex>,
 
     pub active_frame: ActiveFrameContext,
@@ -153,11 +188,15 @@ impl RenderContext {
 
     pub fn new(
         adapter: &wgpu::Adapter,
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
-        config: RenderContextConfig,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        output_format_color: wgpu::TextureFormat,
+        config_provider: impl FnOnce(&DeviceCaps) -> RenderConfig,
     ) -> Result<Self, RenderContextError> {
         re_tracing::profile_function!();
+
+        let device_caps = DeviceCaps::from_adapter(adapter)?;
+        let config = config_provider(&device_caps);
 
         let frame_index_for_uncaptured_errors = Arc::new(AtomicU64::new(STARTUP_FRAME_IDX));
 
@@ -190,43 +229,14 @@ impl RenderContext {
         let mut gpu_resources = WgpuResourcePools::default();
         let global_bindings = GlobalBindings::new(&gpu_resources, &device);
 
-        // Validate capabilities of the device.
-        if !config.device_caps.limits().check_limits(&device.limits()) {
-            return Err(RenderContextError::Limits {
-                required: Box::new(config.device_caps.limits()),
-                device_caps: config.device_caps,
-                actual: Box::new(device.limits()),
-            });
-        }
-        if !device.features().contains(config.device_caps.features()) {
-            return Err(RenderContextError::Features {
-                required: config.device_caps.features(),
-                device_caps: config.device_caps,
-                actual: device.features(),
-            });
-        }
-        if !adapter
-            .get_downlevel_capabilities()
-            .flags
-            .contains(config.device_caps.required_downlevel_capabilities().flags)
-        {
-            return Err(RenderContextError::DownlevelCapabilities {
-                required: config.device_caps.required_downlevel_capabilities(),
-                device_caps: config.device_caps,
-                actual: adapter.get_downlevel_capabilities(),
-            });
-        }
-
         let resolver = crate::new_recommended_file_resolver();
-        let mesh_manager = RwLock::new(MeshManager::new());
-        let texture_manager_2d =
-            TextureManager2D::new(device.clone(), queue.clone(), &gpu_resources.textures);
+        let texture_manager_2d = TextureManager2D::new(&device, &queue, &gpu_resources.textures);
 
         let active_frame = ActiveFrameContext {
             before_view_builder_encoder: Mutex::new(FrameGlobalCommandEncoder::new(&device)),
-            pinned_render_pipelines: None,
             frame_index: STARTUP_FRAME_IDX,
             top_level_error_scope,
+            num_view_builders_created: AtomicU64::new(0),
         };
 
         // Register shader workarounds for the current device.
@@ -254,14 +264,15 @@ impl RenderContext {
         Ok(Self {
             device,
             queue,
+            device_caps,
             config,
+            output_format_color,
             global_bindings,
             renderers: RwLock::new(Renderers {
                 renderers: TypeMap::new(),
             }),
             resolver,
             top_level_error_tracker,
-            mesh_manager,
             texture_manager_2d,
             cpu_write_gpu_read_belt,
             gpu_readback_belt,
@@ -291,7 +302,9 @@ impl RenderContext {
         //          knowing that we're not _actually_ blocking.
         //
         //          For more details check https://github.com/gfx-rs/wgpu/issues/3601
-        if cfg!(target_arch = "wasm32") && self.config.device_caps.tier == DeviceTier::Gles {
+        if cfg!(target_arch = "wasm32")
+            && self.device_caps.backend_type == WgpuBackendType::WgpuCore
+        {
             self.device.poll(wgpu::Maintain::Wait);
             return;
         }
@@ -341,18 +354,11 @@ This means, either a call to RenderContext::before_submit was omitted, or the pr
         // Map all read staging buffers.
         self.gpu_readback_belt.get_mut().after_queue_submit();
 
-        // Give back moved render pipelines to the pool if any were moved out.
-        if let Some(moved_render_pipelines) = self.active_frame.pinned_render_pipelines.take() {
-            self.gpu_resources
-                .render_pipelines
-                .return_resources(moved_render_pipelines);
-        }
-
         // Close previous' frame error scope.
         if let Some(top_level_error_scope) = self.active_frame.top_level_error_scope.take() {
             let frame_index_for_uncaptured_errors = self.frame_index_for_uncaptured_errors.clone();
             self.top_level_error_tracker.handle_error_future(
-                self.config.device_caps.backend_type,
+                self.device_caps.backend_type,
                 top_level_error_scope.end(),
                 self.active_frame.frame_index,
                 move |err_tracker, frame_index| {
@@ -373,9 +379,9 @@ This means, either a call to RenderContext::before_submit was omitted, or the pr
         // New active frame!
         self.active_frame = ActiveFrameContext {
             before_view_builder_encoder: Mutex::new(FrameGlobalCommandEncoder::new(&self.device)),
-            pinned_render_pipelines: None,
             frame_index: self.active_frame.frame_index.wrapping_add(1),
             top_level_error_scope: Some(WgpuErrorScope::start(&self.device)),
+            num_view_builders_created: AtomicU64::new(0),
         };
         let frame_index = self.active_frame.frame_index;
 
@@ -387,7 +393,6 @@ This means, either a call to RenderContext::before_submit was omitted, or the pr
             re_log::debug!(?modified_paths, "got some filesystem events");
         }
 
-        self.mesh_manager.get_mut().begin_frame(frame_index);
         self.texture_manager_2d.begin_frame(frame_index);
         self.gpu_readback_belt.get_mut().begin_frame(frame_index);
 
@@ -475,6 +480,26 @@ This means, either a call to RenderContext::before_submit was omitted, or the pr
     pub(crate) fn read_lock_renderers(&self) -> RwLockReadGuard<'_, Renderers> {
         self.renderers.read()
     }
+
+    /// Returns the global frame index of the active frame.
+    pub fn active_frame_idx(&self) -> u64 {
+        self.active_frame.frame_index
+    }
+
+    /// Returns the device's capabilities.
+    pub fn device_caps(&self) -> &DeviceCaps {
+        &self.device_caps
+    }
+
+    /// Returns the active render config.
+    pub fn render_config(&self) -> &RenderConfig {
+        &self.config
+    }
+
+    /// Returns the final output format for color (i.e. the surface's format).
+    pub fn output_format_color(&self) -> wgpu::TextureFormat {
+        self.output_format_color
+    }
 }
 
 pub struct FrameGlobalCommandEncoder(Option<wgpu::CommandEncoder>);
@@ -514,20 +539,13 @@ pub struct ActiveFrameContext {
     /// (i.e. typically in [`crate::renderer::DrawData`] creation!)
     pub before_view_builder_encoder: Mutex<FrameGlobalCommandEncoder>,
 
-    /// Render pipelines that were moved out of the resource pool.
-    ///
-    /// Will be moved back to the resource pool at the start of the frame.
-    /// This is needed for accessing the render pipelines without keeping a reference
-    /// to the resource pool lock during the lifetime of a render pass.
-    pub pinned_render_pipelines: Option<GpuRenderPipelinePoolMoveAccessor>,
-
     /// Index of this frame. Is incremented for every render frame.
     ///
     /// Keep in mind that all operations on WebGPU are asynchronous:
     /// This counter is part of the `content timeline` and may be arbitrarily
     /// behind both of the `device timeline` and `queue timeline`.
     /// See <https://www.w3.org/TR/webgpu/#programming-model-timelines>
-    frame_index: u64,
+    pub frame_index: u64,
 
     /// Top level device error scope, created at startup and closed & reopened on every frame.
     ///
@@ -538,29 +556,47 @@ pub struct ActiveFrameContext {
     ///
     /// The only time this is allowed to be `None` is during shutdown and when closing an old and opening a new scope.
     top_level_error_scope: Option<WgpuErrorScope>,
+
+    /// Number of view builders created in this frame so far.
+    pub num_view_builders_created: AtomicU64,
+}
+
+impl ActiveFrameContext {
+    /// Returns the number of view builders created in this frame so far.
+    pub fn num_view_builders_created(&self) -> u64 {
+        // Uses acquire semenatics to be on the safe side (side effects from the ViewBuilder creation is visible to the caller).
+        self.num_view_builders_created.load(Ordering::Acquire)
+    }
 }
 
 fn log_adapter_info(info: &wgpu::AdapterInfo) {
     re_tracing::profile_function!();
 
+    // See https://github.com/rerun-io/rerun/issues/3089
     let is_software_rasterizer_with_known_crashes = {
-        // See https://github.com/rerun-io/rerun/issues/3089
-        const KNOWN_SOFTWARE_RASTERIZERS: &[&str] = &[
-            "lavapipe", // Vulkan software rasterizer
-            "llvmpipe", // OpenGL software rasterizer
-        ];
+        // `llvmpipe` is Mesa's software rasterizer.
+        // It may describe EITHER a Vulkan or OpenGL software rasterizer.
+        // `lavapipe` is the name given to the Vulkan software rasterizer,
+        // but this name doesn't seem to show up in the info string.
+        let is_mesa_software_rasterizer = info.driver == "llvmpipe";
 
-        // I'm not sure where the incriminating string will appear, so check all fields at once:
-        let info_string = format!("{info:?}").to_lowercase();
-
-        KNOWN_SOFTWARE_RASTERIZERS
-            .iter()
-            .any(|&software_rasterizer| info_string.contains(software_rasterizer))
+        // TODO(andreas):
+        // Some versions of lavapipe are problematic (we observed crashes in the past),
+        // but we haven't isolated for what versions this happens.
+        // (we are happily using lavapipe without any issues on CI)
+        // However, there's reason to be more skeptical of OpenGL software rasterizers,
+        // so we mark those as problematic regardless.
+        // A user might as well just use Vulkan software rasterizer if they're in a situation where they
+        // can't use a GPU for which we do have test coverage.
+        info.backend == wgpu::Backend::Gl && is_mesa_software_rasterizer
     };
 
     let human_readable_summary = adapter_info_summary(info);
 
-    if is_software_rasterizer_with_known_crashes {
+    if cfg!(test) {
+        // If we're testing then software rasterizers are just fine, preferred even!
+        re_log::debug!("wgpu adapter {human_readable_summary}");
+    } else if is_software_rasterizer_with_known_crashes {
         re_log::warn!("Bad software rasterizer detected - expect poor performance and crashes. See: https://www.rerun.io/docs/getting-started/troubleshooting#graphics-issues");
         re_log::info!("wgpu adapter {human_readable_summary}");
     } else if info.device_type == wgpu::DeviceType::Cpu {

@@ -1,41 +1,76 @@
+use re_types_core::{ArrowBuffer, ArrowString};
+
 use crate::tensor_data::{TensorCastError, TensorDataType, TensorElement};
 
 #[cfg(feature = "image")]
-use crate::tensor_data::{TensorImageLoadError, TensorImageSaveError};
+use crate::tensor_data::TensorImageLoadError;
 
 #[allow(unused_imports)] // Used for docstring links
-use crate::archetypes::ImageEncoded;
+use crate::archetypes::EncodedImage;
 
-use super::{TensorBuffer, TensorData, TensorDimension};
-
-// Much of the following duplicates code from: `crates/re_components/src/tensor.rs`, which
-// will eventually go away as the Tensor migration is completed.
+use super::{TensorBuffer, TensorData};
 
 // ----------------------------------------------------------------------------
 
 impl TensorData {
     /// Create a new tensor.
     #[inline]
-    pub fn new(shape: Vec<TensorDimension>, buffer: TensorBuffer) -> Self {
-        Self { shape, buffer }
+    pub fn new(shape: impl Into<ArrowBuffer<u64>>, buffer: TensorBuffer) -> Self {
+        Self {
+            shape: shape.into(),
+            names: None,
+            buffer,
+        }
     }
 
-    /// The shape of the tensor, including optional dimension names.
+    /// Set the names of the dimensions to the provided names.
+    ///
+    /// Any existing names will be overwritten.
+    ///
+    /// If the wrong number of names are given, a warning will be logged,
+    /// and the names might not show up correctly.
+    pub fn with_dim_names(
+        mut self,
+        names: impl IntoIterator<Item = impl Into<ArrowString>>,
+    ) -> Self {
+        let names: Vec<ArrowString> = names.into_iter().map(|x| x.into()).collect();
+
+        if names.len() != self.shape.len() {
+            re_log::warn_once!(
+                "Wrong number of names provided for tensor dimension. {} provided but {} expected. The names will be ignored.",
+                names.len(),
+                self.shape.len(),
+            );
+        }
+
+        self.names = Some(names);
+
+        self
+    }
+
+    /// The shape of the tensor.
     #[inline]
-    pub fn shape(&self) -> &[TensorDimension] {
+    pub fn shape(&self) -> &[u64] {
         self.shape.as_slice()
+    }
+
+    /// Get the name of a specific dimension.
+    ///
+    /// Returns `None` if the dimension does not have a name.
+    pub fn dim_name(&self, dim: usize) -> Option<&ArrowString> {
+        self.names.as_ref().and_then(|names| names.get(dim))
     }
 
     /// Returns the shape of the tensor with all leading & trailing dimensions of size 1 ignored.
     ///
     /// If all dimension sizes are one, this returns only the first dimension.
     #[inline]
-    pub fn shape_short(&self) -> &[TensorDimension] {
+    pub fn shape_short(&self) -> &[u64] {
         if self.shape.is_empty() {
             &self.shape
         } else {
-            let first_not_one = self.shape.iter().position(|dim| dim.size != 1);
-            let last_not_one = self.shape.iter().rev().position(|dim| dim.size != 1);
+            let first_not_one = self.shape.iter().position(|&dim| dim != 1);
+            let last_not_one = self.shape.iter().rev().position(|&dim| dim != 1);
             &self.shape[first_not_one.unwrap_or(0)..self.shape.len() - last_not_one.unwrap_or(0)]
         }
     }
@@ -48,94 +83,6 @@ impl TensorData {
         self.shape.len()
     }
 
-    /// If the tensor can be interpreted as an image, return the height, width, and channels/depth of it.
-    pub fn image_height_width_channels(&self) -> Option<[u64; 3]> {
-        let mut shape_short = self.shape.as_slice();
-
-        // Ignore trailing dimensions of size 1:
-        while 2 < shape_short.len() && shape_short.last().map_or(false, |d| d.size == 1) {
-            shape_short = &shape_short[..shape_short.len() - 1];
-        }
-
-        // If the trailing dimension looks like a channel we ignore leading dimensions of size 1 down to
-        // a minimum of 3 dimensions. Otherwise we ignore leading dimensions of size 1 down to 2 dimensions.
-        let shrink_to = if shape_short
-            .last()
-            .map_or(false, |d| matches!(d.size, 1 | 3 | 4))
-        {
-            3
-        } else {
-            2
-        };
-
-        while shrink_to < shape_short.len() && shape_short.first().map_or(false, |d| d.size == 1) {
-            shape_short = &shape_short[1..];
-        }
-
-        // TODO(emilk): check dimension names against our standard dimension names ("height", "width", "depth")
-
-        match &self.buffer {
-            // In the case of NV12, return the shape of the RGB image, not the tensor size.
-            TensorBuffer::Nv12(_) => {
-                // NV12 encodes a color image in 1.5 "channels" -> 1 luma (per pixel) + (1U+1V) / 4 pixels.
-                match shape_short {
-                    [h, w] => Some([h.size * 2 / 3, w.size, 3]),
-                    _ => None,
-                }
-            }
-
-            // In the case of YUY2, return the shape of the RGB image, not the tensor size.
-            TensorBuffer::Yuy2(_) => {
-                // YUY2 encodes a color image in 2 "channels" -> 1 luma (per pixel) + (1U + 1V) (per 2 pixels).
-                match shape_short {
-                    [h, w] => Some([h.size, w.size / 2, 3]),
-                    _ => None,
-                }
-            }
-
-            TensorBuffer::U8(_)
-            | TensorBuffer::U16(_)
-            | TensorBuffer::U32(_)
-            | TensorBuffer::U64(_)
-            | TensorBuffer::I8(_)
-            | TensorBuffer::I16(_)
-            | TensorBuffer::I32(_)
-            | TensorBuffer::I64(_)
-            | TensorBuffer::F16(_)
-            | TensorBuffer::F32(_)
-            | TensorBuffer::F64(_) => {
-                match shape_short.len() {
-                    1 => {
-                        // Special case: Nx1(x1x1x …) tensors are treated as Nx1 gray images.
-                        // Special case: Nx1(x1x1x …) tensors are treated as Nx1 gray images.
-                        if self.shape.len() >= 2 {
-                            Some([shape_short[0].size, 1, 1])
-                        } else {
-                            None
-                        }
-                    }
-                    2 => Some([shape_short[0].size, shape_short[1].size, 1]),
-                    3 => {
-                        let channels = shape_short[2].size;
-                        if matches!(channels, 1 | 3 | 4) {
-                            // mono, rgb, rgba
-                            Some([shape_short[0].size, shape_short[1].size, channels])
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                }
-            }
-        }
-    }
-
-    /// Returns true if the tensor can be interpreted as an image.
-    #[inline]
-    pub fn is_shaped_like_an_image(&self) -> bool {
-        self.image_height_width_channels().is_some()
-    }
-
     /// Returns true if either all dimensions have size 1 or only a single dimension has a size larger than 1.
     ///
     /// Empty tensors return false.
@@ -144,48 +91,7 @@ impl TensorData {
         if self.shape.is_empty() {
             false
         } else {
-            self.shape.iter().filter(|dim| dim.size > 1).count() <= 1
-        }
-    }
-
-    /// Query with x, y, channel indices.
-    ///
-    /// Allows to query values for any image-like tensor even if it has more or less dimensions than 3.
-    /// (useful for sampling e.g. `N x M x C x 1` tensor which is a valid image)
-    #[inline]
-    pub fn get_with_image_coords(&self, x: u64, y: u64, channel: u64) -> Option<TensorElement> {
-        match self.shape.len() {
-            1 => {
-                if y == 0 && channel == 0 {
-                    self.get(&[x])
-                } else {
-                    None
-                }
-            }
-            2 => {
-                if channel == 0 {
-                    self.get(&[y, x])
-                } else {
-                    None
-                }
-            }
-            3 => self.get(&[y, x, channel]),
-            4 => {
-                // Optimization for common case, next case handles this too.
-                if self.shape[3].size == 1 {
-                    self.get(&[y, x, channel, 0])
-                } else {
-                    None
-                }
-            }
-            dim => self.image_height_width_channels().and_then(|_| {
-                self.get(
-                    &[x, y, channel]
-                        .into_iter()
-                        .chain(std::iter::repeat(0).take(dim - 3))
-                        .collect::<Vec<u64>>(),
-                )
-            }),
+            self.shape.iter().filter(|&&dim| dim > 1).count() <= 1
         }
     }
 
@@ -195,12 +101,12 @@ impl TensorData {
     pub fn get(&self, index: &[u64]) -> Option<TensorElement> {
         let mut stride: usize = 1;
         let mut offset: usize = 0;
-        for (TensorDimension { size, .. }, index) in self.shape.iter().zip(index).rev() {
+        for (&size, &index) in self.shape.iter().zip(index).rev() {
             if size <= index {
                 return None;
             }
-            offset += *index as usize * stride;
-            stride *= *size as usize;
+            offset += index as usize * stride;
+            stride *= size as usize;
         }
 
         match &self.buffer {
@@ -215,122 +121,7 @@ impl TensorData {
             TensorBuffer::F16(buf) => Some(TensorElement::F16(buf[offset])),
             TensorBuffer::F32(buf) => Some(TensorElement::F32(buf[offset])),
             TensorBuffer::F64(buf) => Some(TensorElement::F64(buf[offset])),
-            TensorBuffer::Nv12(_) => {
-                {
-                    // Returns the U32 packed RGBA value of the pixel at index [y, x] if it is valid.
-                    let [y, x] = index else {
-                        return None;
-                    };
-                    if let Some([r, g, b]) = self.get_nv12_pixel(*x, *y) {
-                        let mut rgba = 0;
-                        rgba |= (r as u32) << 24;
-                        rgba |= (g as u32) << 16;
-                        rgba |= (b as u32) << 8;
-                        rgba |= 0xff;
-                        Some(TensorElement::U32(rgba))
-                    } else {
-                        None
-                    }
-                }
-            }
-            TensorBuffer::Yuy2(_) => {
-                {
-                    // Returns the U32 packed RGBA value of the pixel at index [y, x] if it is valid.
-                    let [y, x] = index else {
-                        return None;
-                    };
-
-                    if let Some([r, g, b]) = self.get_yuy2_pixel(*x, *y) {
-                        let mut rgba = 0;
-                        rgba |= (r as u32) << 24;
-                        rgba |= (g as u32) << 16;
-                        rgba |= (b as u32) << 8;
-                        rgba |= 0xff;
-                        Some(TensorElement::U32(rgba))
-                    } else {
-                        None
-                    }
-                }
-            }
         }
-    }
-
-    /// Returns decoded RGB8 value at the given image coordinates if this tensor is a NV12 image.
-    ///
-    /// If the tensor is not [`TensorBuffer::Nv12`], `None` is returned.
-    ///
-    /// It is undefined what happens if the coordinate is out-of-bounds.
-    pub fn get_nv12_pixel(&self, x: u64, y: u64) -> Option<[u8; 3]> {
-        let TensorBuffer::Nv12(buf) = &self.buffer else {
-            return None;
-        };
-        match self.image_height_width_channels() {
-            Some([h, w, _]) => {
-                let uv_offset = w * h;
-                let luma = buf[(y * w + x) as usize];
-                let u = buf[(uv_offset + (y / 2) * w + x) as usize];
-                let v = buf[(uv_offset + (y / 2) * w + x) as usize + 1];
-
-                Some(Self::set_color_standard(luma, u, v))
-            }
-            _ => None,
-        }
-    }
-
-    /// Returns decoded RGB8 value at the given image coordinates if this tensor is a YUY2 image.
-    ///
-    /// If the tensor is not [`TensorBuffer::Yuy2`], `None` is returned.
-    ///
-    /// It is undefined what happens if the coordinate is out-of-bounds.
-    pub fn get_yuy2_pixel(&self, x: u64, y: u64) -> Option<[u8; 3]> {
-        let TensorBuffer::Yuy2(buf) = &self.buffer else {
-            return None;
-        };
-
-        match self.image_height_width_channels() {
-            Some([_, w, _]) => {
-                // given an x and y coordinate, get the offset into the YUY2 buffer
-                let index = ((y * w + x) * 2) as usize;
-                let (luma, u, v) = if x % 2 == 0 {
-                    (buf[index], buf[index + 1], buf[index + 3])
-                } else {
-                    (buf[index], buf[index - 1], buf[index + 1])
-                };
-
-                Some(Self::set_color_standard(luma, u, v))
-            }
-            _ => None,
-        }
-    }
-
-    /// Sets the color standard for the given YUV color.
-    ///
-    /// This conversion mirrors the function of the same name in `crates/viewer/re_renderer/shader/decodings.wgsl`
-    ///
-    /// Specifying the color standard should be exposed in the future [#3541](https://github.com/rerun-io/rerun/pull/3541)
-    fn set_color_standard(y: u8, u: u8, v: u8) -> [u8; 3] {
-        let (y, u, v) = (y as f32, u as f32, v as f32);
-
-        // rescale YUV values
-        let y = (y - 16.0) / 219.0;
-        let u = (u - 128.0) / 224.0;
-        let v = (v - 128.0) / 224.0;
-
-        // BT.601 (aka. SDTV, aka. Rec.601). wiki: https://en.wikipedia.org/wiki/YCbCr#ITU-R_BT.601_conversion
-        let r = y + 1.402 * v;
-        let g = y - 0.344 * u - 0.714 * v;
-        let b = y + 1.772 * u;
-
-        // BT.709 (aka. HDTV, aka. Rec.709). wiki: https://en.wikipedia.org/wiki/YCbCr#ITU-R_BT.709_conversion
-        // let r = y + 1.575 * v;
-        // let g = y - 0.187 * u - 0.468 * v;
-        // let b = y + 1.856 * u;
-
-        [
-            (255.0 * r).clamp(0.0, 255.0) as u8,
-            (255.0 * g).clamp(0.0, 255.0) as u8,
-            (255.0 * b).clamp(0.0, 255.0) as u8,
-        ]
     }
 
     /// The datatype of the tensor.
@@ -350,7 +141,8 @@ impl Default for TensorData {
     #[inline]
     fn default() -> Self {
         Self {
-            shape: Vec::new(),
+            shape: Default::default(),
+            names: None,
             buffer: TensorBuffer::U8(Vec::new().into()),
         }
     }
@@ -364,7 +156,7 @@ macro_rules! ndarray_from_tensor {
             type Error = TensorCastError;
 
             fn try_from(value: &'a TensorData) -> Result<Self, Self::Error> {
-                let shape: Vec<_> = value.shape.iter().map(|d| d.size as usize).collect();
+                let shape: Vec<usize> = value.shape.iter().map(|&d| d as usize).collect();
 
                 if let TensorBuffer::$variant(data) = &value.buffer {
                     ndarray::ArrayViewD::from_shape(shape, data.as_slice())
@@ -385,26 +177,17 @@ macro_rules! tensor_from_ndarray {
             type Error = TensorCastError;
 
             fn try_from(view: ::ndarray::ArrayView<'a, $type, D>) -> Result<Self, Self::Error> {
-                let shape = view
-                    .shape()
-                    .iter()
-                    .map(|dim| TensorDimension {
-                        size: *dim as u64,
-                        name: None,
-                    })
-                    .collect();
+                let shape = ArrowBuffer::from_iter(view.shape().iter().map(|&dim| dim as u64));
 
                 match view.to_slice() {
-                    Some(slice) => Ok(TensorData {
+                    Some(slice) => Ok(TensorData::new(
                         shape,
-                        buffer: TensorBuffer::$variant(Vec::from(slice).into()),
-                    }),
-                    None => Ok(TensorData {
+                        TensorBuffer::$variant(Vec::from(slice).into()),
+                    )),
+                    None => Ok(TensorData::new(
                         shape,
-                        buffer: TensorBuffer::$variant(
-                            view.iter().cloned().collect::<Vec<_>>().into(),
-                        ),
-                    }),
+                        TensorBuffer::$variant(view.iter().cloned().collect::<Vec<_>>().into()),
+                    )),
                 }
             }
         }
@@ -413,40 +196,39 @@ macro_rules! tensor_from_ndarray {
             type Error = TensorCastError;
 
             fn try_from(value: ndarray::Array<$type, D>) -> Result<Self, Self::Error> {
-                let value = value.as_standard_layout();
-                let shape = value
-                    .shape()
-                    .iter()
-                    .map(|dim| TensorDimension {
-                        size: *dim as u64,
-                        name: None,
-                    })
-                    .collect();
-                value
-                    .is_standard_layout()
-                    .then(|| TensorData {
-                        shape,
-                        buffer: TensorBuffer::$variant(value.to_owned().into_raw_vec().into()),
-                    })
-                    .ok_or(TensorCastError::NotContiguousStdOrder)
+                let shape = ArrowBuffer::from_iter(value.shape().iter().map(|&dim| dim as u64));
+
+                let vec = if value.is_standard_layout() {
+                    let (mut vec, offset) = value.into_raw_vec_and_offset();
+                    // into_raw_vec_and_offset() guarantees that the logical element order (.iter()) matches the internal
+                    // storage order in the returned vector if the array is in standard layout.
+                    if let Some(offset) = offset {
+                        vec.drain(..offset);
+                        vec
+                    } else {
+                        debug_assert!(vec.is_empty());
+                        vec
+                    }
+                } else {
+                    value.into_iter().collect::<Vec<_>>()
+                };
+
+                Ok(Self::new(shape, TensorBuffer::$variant(vec.into())))
             }
         }
 
         impl From<Vec<$type>> for TensorData {
             fn from(vec: Vec<$type>) -> Self {
-                TensorData {
-                    shape: vec![TensorDimension::unnamed(vec.len() as u64)],
-                    buffer: TensorBuffer::$variant(vec.into()),
-                }
+                Self::new(vec![vec.len() as u64], TensorBuffer::$variant(vec.into()))
             }
         }
 
         impl From<&[$type]> for TensorData {
             fn from(slice: &[$type]) -> Self {
-                TensorData {
-                    shape: vec![TensorDimension::unnamed(slice.len() as u64)],
-                    buffer: TensorBuffer::$variant(slice.into()),
-                }
+                Self::new(
+                    vec![slice.len() as u64],
+                    TensorBuffer::$variant(slice.into()),
+                )
             }
         }
     };
@@ -468,7 +250,7 @@ tensor_type!(i16, I16);
 tensor_type!(i32, I32);
 tensor_type!(i64, I64);
 
-tensor_type!(arrow2::types::f16, F16);
+tensor_type!(half::f16, F16);
 
 tensor_type!(f32, F32);
 tensor_type!(f64, F64);
@@ -481,99 +263,12 @@ impl<'a> TryFrom<&'a TensorData> for ::ndarray::ArrayViewD<'a, u8> {
 
     fn try_from(value: &'a TensorData) -> Result<Self, Self::Error> {
         match &value.buffer {
-            TensorBuffer::U8(data) | TensorBuffer::Nv12(data) => {
-                let shape: Vec<_> = value.shape.iter().map(|d| d.size as usize).collect();
+            TensorBuffer::U8(data) => {
+                let shape: Vec<usize> = value.shape.iter().map(|&d| d as usize).collect();
                 ndarray::ArrayViewD::from_shape(shape, bytemuck::cast_slice(data.as_slice()))
                     .map_err(|err| TensorCastError::BadTensorShape { source: err })
             }
             _ => Err(TensorCastError::TypeMismatch),
-        }
-    }
-}
-
-// Manual expansion of tensor_type! macro for `half::f16` types. We need to do this
-// because arrow uses its own half type. The two use the same underlying representation
-// but are still distinct types. `half::f16`, however, is more full-featured and
-// generally a better choice to use when converting to ndarray.
-// ==========================================
-// TODO(jleibs): would be nice to support this with the macro definition as well
-// but the bytemuck casts add a bit of complexity here.
-impl<'a> TryFrom<&'a TensorData> for ::ndarray::ArrayViewD<'a, half::f16> {
-    type Error = TensorCastError;
-
-    fn try_from(value: &'a TensorData) -> Result<Self, Self::Error> {
-        let shape: Vec<_> = value.shape.iter().map(|d| d.size as usize).collect();
-        if let TensorBuffer::F16(data) = &value.buffer {
-            ndarray::ArrayViewD::from_shape(shape, bytemuck::cast_slice(data.as_slice()))
-                .map_err(|err| TensorCastError::BadTensorShape { source: err })
-        } else {
-            Err(TensorCastError::TypeMismatch)
-        }
-    }
-}
-
-impl<'a, D: ::ndarray::Dimension> TryFrom<::ndarray::ArrayView<'a, half::f16, D>> for TensorData {
-    type Error = TensorCastError;
-
-    fn try_from(view: ::ndarray::ArrayView<'a, half::f16, D>) -> Result<Self, Self::Error> {
-        let shape = view
-            .shape()
-            .iter()
-            .map(|dim| TensorDimension {
-                size: *dim as u64,
-                name: None,
-            })
-            .collect();
-        match view.to_slice() {
-            Some(slice) => Ok(Self {
-                shape,
-                buffer: TensorBuffer::F16(Vec::from(bytemuck::cast_slice(slice)).into()),
-            }),
-            None => Ok(Self {
-                shape,
-                buffer: TensorBuffer::F16(
-                    view.iter()
-                        .map(|f| arrow2::types::f16::from_bits(f.to_bits()))
-                        .collect::<Vec<_>>()
-                        .into(),
-                ),
-            }),
-        }
-    }
-}
-
-impl<D: ::ndarray::Dimension> TryFrom<::ndarray::Array<half::f16, D>> for TensorData {
-    type Error = TensorCastError;
-
-    fn try_from(value: ndarray::Array<half::f16, D>) -> Result<Self, Self::Error> {
-        let shape = value
-            .shape()
-            .iter()
-            .map(|dim| TensorDimension {
-                size: *dim as u64,
-                name: None,
-            })
-            .collect();
-        if value.is_standard_layout() {
-            Ok(Self {
-                shape,
-                buffer: TensorBuffer::F16(
-                    bytemuck::cast_slice(value.into_raw_vec().as_slice())
-                        .to_vec()
-                        .into(),
-                ),
-            })
-        } else {
-            Ok(Self {
-                shape,
-                buffer: TensorBuffer::F16(
-                    value
-                        .iter()
-                        .map(|f| arrow2::types::f16::from_bits(f.to_bits()))
-                        .collect::<Vec<_>>()
-                        .into(),
-                ),
-            })
         }
     }
 }
@@ -586,7 +281,7 @@ impl TensorData {
     ///
     /// This will spend CPU cycles reading the file and decoding the image.
     /// To save CPU time and storage, we recommend you instead use
-    /// [`ImageEncoded::from_file`].
+    /// [`EncodedImage::from_file`].
     ///
     /// Requires the `image` feature.
     #[cfg(not(target_arch = "wasm32"))]
@@ -613,9 +308,9 @@ impl TensorData {
 
     /// Construct a tensor from the contents of an image file.
     ///
-    /// This will spend CPU cycles reading the file and decoding the image.
+    /// This will spend CPU cycles decoding the image.
     /// To save CPU time and storage, we recommend you instead use
-    /// [`ImageEncoded::from_file_contents`].
+    /// [`EncodedImage::from_file_contents`].
     ///
     /// Requires the `image` feature.
     #[inline]
@@ -685,135 +380,15 @@ impl TensorData {
                 ));
             }
         };
-        let shape = if depth == 1 {
-            vec![
-                TensorDimension::height(h as _),
-                TensorDimension::width(w as _),
-            ]
+        let (shape, names) = if depth == 1 {
+            (vec![h as _, w as _], vec!["height", "width"])
         } else {
-            vec![
-                TensorDimension::height(h as _),
-                TensorDimension::width(w as _),
-                TensorDimension::depth(depth),
-            ]
-        };
-        Ok(Self { shape, buffer })
-    }
-
-    /// Predicts if [`Self::to_dynamic_image`] is likely to succeed, without doing anything expensive
-    #[inline]
-    pub fn could_be_dynamic_image(&self) -> bool {
-        self.is_shaped_like_an_image()
-            && matches!(
-                self.dtype(),
-                TensorDataType::U8
-                    | TensorDataType::U16
-                    | TensorDataType::F16
-                    | TensorDataType::F32
-                    | TensorDataType::F64
+            (
+                vec![h as _, w as _, depth],
+                vec!["height", "width", "depth"],
             )
-    }
-
-    /// Try to convert an image-like tensor into an [`image::DynamicImage`].
-    pub fn to_dynamic_image(&self) -> Result<image::DynamicImage, TensorImageSaveError> {
-        use ecolor::{gamma_u8_from_linear_f32, linear_u8_from_linear_f32};
-        use image::{DynamicImage, GrayImage, RgbImage, RgbaImage};
-
-        type Rgb16Image = image::ImageBuffer<image::Rgb<u16>, Vec<u16>>;
-        type Rgba16Image = image::ImageBuffer<image::Rgba<u16>, Vec<u16>>;
-        type Gray16Image = image::ImageBuffer<image::Luma<u16>, Vec<u16>>;
-
-        let [h, w, channels] = self
-            .image_height_width_channels()
-            .ok_or_else(|| TensorImageSaveError::ShapeNotAnImage(self.shape.clone()))?;
-        let w = w as u32;
-        let h = h as u32;
-
-        let dyn_img_result = match (channels, &self.buffer) {
-            (1, TensorBuffer::U8(buf)) => {
-                GrayImage::from_raw(w, h, buf.to_vec()).map(DynamicImage::ImageLuma8)
-            }
-            (1, TensorBuffer::U16(buf)) => {
-                Gray16Image::from_raw(w, h, buf.to_vec()).map(DynamicImage::ImageLuma16)
-            }
-            // TODO(emilk) f16
-            (1, TensorBuffer::F32(buf)) => {
-                let pixels = buf
-                    .iter()
-                    .map(|pixel| gamma_u8_from_linear_f32(*pixel))
-                    .collect();
-                GrayImage::from_raw(w, h, pixels).map(DynamicImage::ImageLuma8)
-            }
-            (1, TensorBuffer::F64(buf)) => {
-                let pixels = buf
-                    .iter()
-                    .map(|&pixel| gamma_u8_from_linear_f32(pixel as f32))
-                    .collect();
-                GrayImage::from_raw(w, h, pixels).map(DynamicImage::ImageLuma8)
-            }
-
-            (3, TensorBuffer::U8(buf)) => {
-                RgbImage::from_raw(w, h, buf.to_vec()).map(DynamicImage::ImageRgb8)
-            }
-            (3, TensorBuffer::U16(buf)) => {
-                Rgb16Image::from_raw(w, h, buf.to_vec()).map(DynamicImage::ImageRgb16)
-            }
-            (3, TensorBuffer::F32(buf)) => {
-                let pixels = buf.iter().copied().map(gamma_u8_from_linear_f32).collect();
-                RgbImage::from_raw(w, h, pixels).map(DynamicImage::ImageRgb8)
-            }
-            (3, TensorBuffer::F64(buf)) => {
-                let pixels = buf
-                    .iter()
-                    .map(|&comp| gamma_u8_from_linear_f32(comp as f32))
-                    .collect();
-                RgbImage::from_raw(w, h, pixels).map(DynamicImage::ImageRgb8)
-            }
-
-            (4, TensorBuffer::U8(buf)) => {
-                RgbaImage::from_raw(w, h, buf.to_vec()).map(DynamicImage::ImageRgba8)
-            }
-            (4, TensorBuffer::U16(buf)) => {
-                Rgba16Image::from_raw(w, h, buf.to_vec()).map(DynamicImage::ImageRgba16)
-            }
-            (4, TensorBuffer::F32(buf)) => {
-                let rgba: &[[f32; 4]] = bytemuck::cast_slice(buf);
-                let pixels: Vec<u8> = rgba
-                    .iter()
-                    .flat_map(|&[r, g, b, a]| {
-                        let r = gamma_u8_from_linear_f32(r);
-                        let g = gamma_u8_from_linear_f32(g);
-                        let b = gamma_u8_from_linear_f32(b);
-                        let a = linear_u8_from_linear_f32(a);
-                        [r, g, b, a]
-                    })
-                    .collect();
-                RgbaImage::from_raw(w, h, pixels).map(DynamicImage::ImageRgba8)
-            }
-            (4, TensorBuffer::F64(buf)) => {
-                let rgba: &[[f64; 4]] = bytemuck::cast_slice(buf);
-                let pixels: Vec<u8> = rgba
-                    .iter()
-                    .flat_map(|&[r, g, b, a]| {
-                        let r = gamma_u8_from_linear_f32(r as _);
-                        let g = gamma_u8_from_linear_f32(g as _);
-                        let b = gamma_u8_from_linear_f32(b as _);
-                        let a = linear_u8_from_linear_f32(a as _);
-                        [r, g, b, a]
-                    })
-                    .collect();
-                RgbaImage::from_raw(w, h, pixels).map(DynamicImage::ImageRgba8)
-            }
-
-            (_, _) => {
-                return Err(TensorImageSaveError::UnsupportedChannelsDtype(
-                    channels,
-                    self.buffer.dtype(),
-                ))
-            }
         };
-
-        dyn_img_result.ok_or(TensorImageSaveError::BadData)
+        Ok(Self::new(shape, buffer).with_dim_names(names))
     }
 }
 
@@ -835,77 +410,5 @@ where
 
     fn try_from(value: image::ImageBuffer<P, S>) -> Result<Self, Self::Error> {
         Self::from_image(value)
-    }
-}
-
-#[test]
-fn test_image_height_width_channels() {
-    let test_cases = [
-        // Normal grayscale:
-        (vec![1, 1, 480, 640, 1, 1], Some([480, 640, 1])),
-        (vec![1, 1, 480, 640, 1], Some([480, 640, 1])),
-        (vec![1, 1, 480, 640], Some([480, 640, 1])),
-        (vec![1, 480, 640, 1, 1], Some([480, 640, 1])),
-        (vec![1, 480, 640], Some([480, 640, 1])),
-        (vec![480, 640, 1, 1], Some([480, 640, 1])),
-        (vec![480, 640, 1], Some([480, 640, 1])),
-        (vec![480, 640], Some([480, 640, 1])),
-        //
-        // Normal RGB:
-        (vec![1, 1, 480, 640, 3, 1], Some([480, 640, 3])),
-        (vec![1, 1, 480, 640, 3], Some([480, 640, 3])),
-        (vec![1, 480, 640, 3, 1], Some([480, 640, 3])),
-        (vec![480, 640, 3, 1], Some([480, 640, 3])),
-        (vec![480, 640, 3], Some([480, 640, 3])),
-        //
-        // h=1, w=640, grayscale:
-        (vec![1, 640], Some([1, 640, 1])),
-        //
-        // h=1, w=640, RGB:
-        (vec![1, 640, 3], Some([1, 640, 3])),
-        //
-        // h=480, w=1, grayscale:
-        (vec![480, 1], Some([480, 1, 1])),
-        //
-        // h=480, w=1, RGB:
-        (vec![480, 1, 3], Some([480, 1, 3])),
-        //
-        // h=1, w=1, grayscale:
-        (vec![1, 1], Some([1, 1, 1])),
-        (vec![1, 1, 1], Some([1, 1, 1])),
-        (vec![1, 1, 1, 1], Some([1, 1, 1])),
-        //
-        // h=1, w=1, RGB:
-        (vec![1, 1, 3], Some([1, 1, 3])),
-        (vec![1, 1, 1, 3], Some([1, 1, 3])),
-        //
-        // h=1, w=3, Mono:
-        (vec![1, 3, 1], Some([1, 3, 1])),
-        //
-        // Ambiguous cases.
-        //
-        // These are here to show how the current implementation behaves, not to suggest that it is a
-        // commitment to preserving this behavior going forward.
-        // If you need to change this test, it's ok but we should still communicate the subtle change
-        // in behavior.
-        (vec![1, 1, 3, 1], Some([1, 1, 3])), // Could be [1, 3, 1]
-        (vec![1, 3, 1, 1], Some([1, 3, 1])), // Could be [3, 1, 1]
-    ];
-
-    for (shape, expected_hwc) in test_cases {
-        let tensor = TensorData::new(
-            shape
-                .iter()
-                .map(|&size| TensorDimension::unnamed(size as u64))
-                .collect(),
-            TensorBuffer::U8(vec![0; shape.iter().product()].into()),
-        );
-
-        let hwc = tensor.image_height_width_channels();
-
-        assert_eq!(
-            hwc, expected_hwc,
-            "Shape {shape:?} produced HWC {hwc:?}, but expected {expected_hwc:?}"
-        );
     }
 }

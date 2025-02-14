@@ -1,11 +1,13 @@
-use std::sync::Arc;
+use std::borrow::Cow;
 
-use crate::{
-    result::_Backtrace, DeserializationResult, ResultExt as _, SerializationResult, SizeBytes,
-};
+use nohash_hasher::IntSet;
+
+use re_byte_size::SizeBytes;
+
+use crate::{ComponentDescriptor, DeserializationResult, SerializationResult};
 
 #[allow(unused_imports)] // used in docstrings
-use crate::{Archetype, ComponentBatch, DatatypeBatch, LoggableBatch};
+use crate::{Archetype, ComponentBatch, LoggableBatch};
 
 // ---
 
@@ -14,69 +16,23 @@ use crate::{Archetype, ComponentBatch, DatatypeBatch, LoggableBatch};
 /// Internally, Arrow, and by extension Rerun, only deal with arrays of data.
 /// We refer to individual entries in these arrays as instances.
 ///
-/// [`Datatype`] and [`Component`] are specialization of the [`Loggable`] trait that are
-/// automatically implemented based on the type used for [`Loggable::Name`].
+/// A [`Loggable`] has no semantics (such as a name, for example): it's just data.
+/// If you want to encode semantics, then you're looking for a [`Component`], which extends [`Loggable`].
 ///
-/// Implementing the [`Loggable`] trait (and by extension [`Datatype`]/[`Component`])
-/// automatically derives the [`LoggableBatch`] implementation (and by extension
-/// [`DatatypeBatch`]/[`ComponentBatch`]), which makes it possible to work with lists' worth of data
-/// in a generic fashion.
+/// Implementing the [`Loggable`] trait automatically derives the [`LoggableBatch`] implementation,
+/// which makes it possible to work with lists' worth of data in a generic fashion.
 pub trait Loggable: 'static + Send + Sync + Clone + Sized + SizeBytes {
-    type Name: std::fmt::Display;
+    /// The underlying [`arrow::datatypes::DataType`], excluding datatype extensions.
+    fn arrow_datatype() -> arrow::datatypes::DataType;
 
-    /// The fully-qualified name of this loggable, e.g. `rerun.datatypes.Vec2D`.
-    fn name() -> Self::Name;
-
-    /// The underlying [`arrow2::datatypes::DataType`], excluding datatype extensions.
-    fn arrow_datatype() -> arrow2::datatypes::DataType;
-
-    /// Given an iterator of options of owned or reference values to the current
-    /// [`Loggable`], serializes them into an Arrow array.
-    /// The Arrow array's datatype will match [`Loggable::arrow_field`].
-    ///
-    /// When using Rerun's builtin components & datatypes, this can only fail if the data
-    /// exceeds the maximum number of entries in an Arrow array (2^31 for standard arrays,
-    /// 2^63 for large arrays).
-    fn to_arrow_opt<'a>(
-        data: impl IntoIterator<Item = Option<impl Into<std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn ::arrow2::array::Array>>
-    where
-        Self: 'a;
-
-    // --- Optional metadata methods ---
-
-    /// The underlying [`arrow2::datatypes::DataType`], including datatype extensions.
-    ///
-    /// The default implementation will simply wrap [`Self::arrow_datatype`] in an extension called
-    /// [`Self::name`], which is what you want in most cases.
+    // Returns an empty Arrow array that matches this `Loggable`'s underlying datatype.
     #[inline]
-    fn extended_arrow_datatype() -> arrow2::datatypes::DataType {
-        arrow2::datatypes::DataType::Extension(
-            Self::name().to_string(),
-            Arc::new(Self::arrow_datatype()),
-            None,
-        )
+    fn arrow_empty() -> arrow::array::ArrayRef {
+        arrow::array::new_empty_array(&Self::arrow_datatype())
     }
-
-    /// The underlying [`arrow2::datatypes::Field`], including datatype extensions.
-    ///
-    /// The default implementation will simply wrap [`Self::extended_arrow_datatype`] in a
-    /// [`arrow2::datatypes::Field`], which is what you want in most cases (e.g. because you want
-    /// to declare the field as nullable).
-    #[inline]
-    fn arrow_field() -> arrow2::datatypes::Field {
-        arrow2::datatypes::Field::new(
-            Self::name().to_string(),
-            Self::extended_arrow_datatype(),
-            false,
-        )
-    }
-
-    // --- Optional serialization methods ---
 
     /// Given an iterator of owned or reference values to the current [`Loggable`], serializes
     /// them into an Arrow array.
-    /// The Arrow array's datatype will match [`Loggable::arrow_field`].
     ///
     /// When using Rerun's builtin components & datatypes, this can only fail if the data
     /// exceeds the maximum number of entries in an Arrow array (2^31 for standard arrays,
@@ -84,88 +40,131 @@ pub trait Loggable: 'static + Send + Sync + Clone + Sized + SizeBytes {
     #[inline]
     fn to_arrow<'a>(
         data: impl IntoIterator<Item = impl Into<std::borrow::Cow<'a, Self>>>,
-    ) -> SerializationResult<Box<dyn ::arrow2::array::Array>>
+    ) -> SerializationResult<arrow::array::ArrayRef>
     where
         Self: 'a,
     {
-        re_tracing::profile_function!();
-        Self::to_arrow_opt(data.into_iter().map(Some))
+        Self::to_arrow_opt(data.into_iter().map(|v| Some(v)))
     }
 
-    // --- Optional deserialization methods ---
+    /// Given an iterator of options of owned or reference values to the current
+    /// [`Loggable`], serializes them into an Arrow array.
+    ///
+    /// When using Rerun's builtin components & datatypes, this can only fail if the data
+    /// exceeds the maximum number of entries in an Arrow array (2^31 for standard arrays,
+    /// 2^63 for large arrays).
+    fn to_arrow_opt<'a>(
+        data: impl IntoIterator<Item = Option<impl Into<std::borrow::Cow<'a, Self>>>>,
+    ) -> SerializationResult<arrow::array::ArrayRef>
+    where
+        Self: 'a;
 
     /// Given an Arrow array, deserializes it into a collection of [`Loggable`]s.
-    ///
-    /// This will _never_ fail if the Arrow array's datatype matches the one returned by
-    /// [`Loggable::arrow_field`].
     #[inline]
-    fn from_arrow(data: &dyn ::arrow2::array::Array) -> DeserializationResult<Vec<Self>> {
-        re_tracing::profile_function!();
+    fn from_arrow(data: &dyn arrow::array::Array) -> DeserializationResult<Vec<Self>> {
         Self::from_arrow_opt(data)?
             .into_iter()
-            .map(|opt| {
-                opt.ok_or_else(|| crate::DeserializationError::MissingData {
-                    backtrace: _Backtrace::new_unresolved(),
-                })
-            })
+            .map(|opt| opt.ok_or_else(crate::DeserializationError::missing_data))
             .collect::<DeserializationResult<Vec<_>>>()
-            .with_context(Self::name().to_string())
     }
 
     /// Given an Arrow array, deserializes it into a collection of optional [`Loggable`]s.
-    ///
-    /// This will _never_ fail if the Arrow array's datatype matches the one returned by
-    /// [`Loggable::arrow_field`].
+    #[inline]
     fn from_arrow_opt(
-        data: &dyn ::arrow2::array::Array,
-    ) -> DeserializationResult<Vec<Option<Self>>> {
-        _ = data; // NOTE: do this here to avoid breaking users' autocomplete snippets
-        Err(crate::DeserializationError::NotImplemented {
-            fqname: Self::name().to_string(),
-            backtrace: _Backtrace::new_unresolved(),
-        })
+        data: &dyn arrow::array::Array,
+    ) -> crate::DeserializationResult<Vec<Option<Self>>> {
+        Self::from_arrow(data).map(|v| v.into_iter().map(Some).collect())
     }
 }
 
-/// A [`Datatype`] describes plain old data that can be used by any number of [`Component`]s.
-///
-/// Any [`Loggable`] with a [`Loggable::Name`] set to [`DatatypeName`] automatically implements
-/// [`Datatype`].
-pub trait Datatype: Loggable<Name = DatatypeName> {}
-
-impl<L: Loggable<Name = DatatypeName>> Datatype for L {}
-
 /// A [`Component`] describes semantic data that can be used by any number of [`Archetype`]s.
 ///
-/// Any [`Loggable`] with a [`Loggable::Name`] set to [`ComponentName`] automatically implements
-/// [`Component`].
-///
-/// All built-in components should implement the [`Default`] trait, so that the Viewer has a placeholder
-/// value that it can display for ui editors in absence of a value.
-/// In absence of an obvious default value, they should be implemented such that they are versatile
-/// and informative for the user when using the viewer.
-///
-/// This is not enforced via a trait bound, since it's only necessary for components known to the Rerun Viewer.
-/// It is not a hard requirement for custom components that are only used on the SDK side.
-pub trait Component: Loggable<Name = ComponentName> {}
+/// Implementing the [`Component`] trait automatically derives the [`ComponentBatch`] implementation,
+/// which makes it possible to work with lists' worth of data in a generic fashion.
+pub trait Component: Loggable {
+    /// Returns the complete [`ComponentDescriptor`] for this [`Component`].
+    ///
+    /// Every component is uniquely identified by its [`ComponentDescriptor`].
+    //
+    // NOTE: Builtin Rerun components don't (yet) have anything but a `ComponentName` attached to
+    // them (other tags are injected at the Archetype level), therefore having a full
+    // `ComponentDescriptor` might seem overkill.
+    // It's not:
+    // * Users might still want to register Components with specific tags.
+    // * In the future, `ComponentDescriptor`s will very likely cover more than Archetype-related tags
+    //   (e.g. generics, metric units, etc).
+    fn descriptor() -> ComponentDescriptor;
 
-impl<L: Loggable<Name = ComponentName>> Component for L {}
+    /// The fully-qualified name of this component, e.g. `rerun.components.Position2D`.
+    ///
+    /// This is a trivial but useful helper for `Self::descriptor().component_name`.
+    ///
+    /// The default implementation already does the right thing: do not override unless you know
+    /// what you're doing.
+    /// `Self::name()` must exactly match the value returned by `Self::descriptor().component_name`,
+    /// or undefined behavior ensues.
+    //
+    // TODO(cmc): The only reason we keep this around is for convenience, and the only reason we need this
+    // convenience is because we're still in this weird half-way in-between state where some things
+    // are still indexed by name. Remove this entirely once we've ported everything to descriptors.
+    #[inline]
+    fn name() -> ComponentName {
+        Self::descriptor().component_name
+    }
+}
 
 // ---
+
+pub type UnorderedComponentNameSet = IntSet<ComponentName>;
 
 pub type ComponentNameSet = std::collections::BTreeSet<ComponentName>;
 
 re_string_interner::declare_new_type!(
     /// The fully-qualified name of a [`Component`], e.g. `rerun.components.Position2D`.
+    #[cfg_attr(feature = "serde", derive(::serde::Deserialize, ::serde::Serialize))]
     pub struct ComponentName;
 );
 
+// TODO(cmc): The only reason this exists is for convenience, and the only reason we need this
+// convenience is because we're still in this weird half-way in-between state where some things
+// are still indexed by name. Remove this entirely once we've ported everything to descriptors.
+impl From<ComponentName> for Cow<'static, ComponentDescriptor> {
+    #[inline]
+    fn from(name: ComponentName) -> Self {
+        name.sanity_check();
+        Cow::Owned(ComponentDescriptor::new(name))
+    }
+}
+
+// TODO(cmc): The only reason this exists is for convenience, and the only reason we need this
+// convenience is because we're still in this weird half-way in-between state where some things
+// are still indexed by name. Remove this entirely once we've ported everything to descriptors.
+impl From<&ComponentName> for Cow<'static, ComponentDescriptor> {
+    #[inline]
+    fn from(name: &ComponentName) -> Self {
+        name.sanity_check();
+        Cow::Owned(ComponentDescriptor::new(*name))
+    }
+}
+
 impl ComponentName {
+    /// Runs some asserts in debug mode to make sure the name is not weird.
+    #[inline]
+    #[track_caller]
+    pub fn sanity_check(&self) {
+        let full_name = self.0.as_str();
+        debug_assert!(
+            !full_name.starts_with("rerun.components.rerun.components.") && !full_name.contains(':'),
+            "DEBUG ASSERT: Found component with full name {full_name:?}. Maybe some bad round-tripping?"
+        );
+    }
+
     /// Returns the fully-qualified name, e.g. `rerun.components.Position2D`.
     ///
     /// This is the default `Display` implementation for [`ComponentName`].
     #[inline]
     pub fn full_name(&self) -> &'static str {
+        self.sanity_check();
         self.0.as_str()
     }
 
@@ -179,10 +178,13 @@ impl ComponentName {
     /// ```
     #[inline]
     pub fn short_name(&self) -> &'static str {
+        self.sanity_check();
         let full_name = self.0.as_str();
         if let Some(short_name) = full_name.strip_prefix("rerun.blueprint.components.") {
             short_name
         } else if let Some(short_name) = full_name.strip_prefix("rerun.components.") {
+            short_name
+        } else if let Some(short_name) = full_name.strip_prefix("rerun.controls.") {
             short_name
         } else if let Some(short_name) = full_name.strip_prefix("rerun.") {
             short_name
@@ -230,11 +232,20 @@ impl ComponentName {
             None // A user component
         }
     }
+
+    /// Determine if component matches a string
+    ///
+    /// Valid matches are case invariant matches of either the full name or the short name.
+    pub fn matches(&self, other: &str) -> bool {
+        self.0.as_str() == other
+            || self.full_name().to_lowercase() == other.to_lowercase()
+            || self.short_name().to_lowercase() == other.to_lowercase()
+    }
 }
 
 // ---
 
-impl crate::SizeBytes for ComponentName {
+impl re_byte_size::SizeBytes for ComponentName {
     #[inline]
     fn heap_size_bytes(&self) -> u64 {
         0
@@ -243,6 +254,7 @@ impl crate::SizeBytes for ComponentName {
 
 re_string_interner::declare_new_type!(
     /// The fully-qualified name of a [`Datatype`], e.g. `rerun.datatypes.Vec2D`.
+    #[cfg_attr(feature = "serde", derive(::serde::Deserialize, ::serde::Serialize))]
     pub struct DatatypeName;
 );
 
@@ -276,7 +288,7 @@ impl DatatypeName {
     }
 }
 
-impl crate::SizeBytes for DatatypeName {
+impl re_byte_size::SizeBytes for DatatypeName {
     #[inline]
     fn heap_size_bytes(&self) -> u64 {
         0

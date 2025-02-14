@@ -4,6 +4,7 @@
 #pragma once
 
 #include "../collection.hpp"
+#include "../component_descriptor.hpp"
 #include "../datatypes/class_description_map_elem.hpp"
 #include "../result.hpp"
 
@@ -30,9 +31,7 @@ namespace rerun::components {
         /// List of class descriptions, mapping class indices to class names, colors etc.
         rerun::Collection<rerun::datatypes::ClassDescriptionMapElem> class_map;
 
-      public:
-        // Extensions to generated type defined in 'annotation_context_ext.cpp'
-
+      public: // START of extensions from annotation_context_ext.cpp:
         /// Construct from an initializer list of elements from which `rerun::datatypes::ClassDescriptionMapElem`s can be constructed.
         ///
         /// This will then create a new collection of `rerun::datatypes::ClassDescriptionMapElem`.
@@ -57,6 +56,8 @@ namespace rerun::components {
             );
         }
 
+        // END of extensions from annotation_context_ext.cpp, start of generated code:
+
       public:
         AnnotationContext() = default;
 
@@ -79,7 +80,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::AnnotationContext> {
-        static constexpr const char Name[] = "rerun.components.AnnotationContext";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.AnnotationContext";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

@@ -6,92 +6,99 @@ mod annotations;
 mod app_options;
 mod blueprint_helpers;
 mod blueprint_id;
-mod caches;
+mod cache;
 mod collapsed_id;
 mod command_sender;
 mod component_fallbacks;
 mod component_ui_registry;
 mod contents;
+mod drag_and_drop;
+mod file_dialog;
 mod image_info;
 mod item;
 mod maybe_mut_ref;
 mod query_context;
 mod query_range;
-mod selection_history;
 mod selection_state;
-mod space_view;
 mod store_context;
 pub mod store_hub;
 mod tensor;
-//TODO(ab): this should be behind #[cfg(test)], but then ` cargo clippy --all-targets` fails
-pub mod test_context;
 mod time_control;
+mod time_drag_value;
 mod typed_entity_collections;
+mod undo;
 mod utils;
+mod view;
 mod viewer_context;
+
+#[cfg(feature = "testing")]
+pub mod test_context;
 
 // TODO(andreas): Move to its own crate?
 pub mod gpu_bridge;
+mod visitor_flow_control;
 
-pub use annotations::{
-    AnnotationMap, Annotations, ResolvedAnnotationInfo, ResolvedAnnotationInfos,
+pub use self::{
+    annotations::{AnnotationMap, Annotations, ResolvedAnnotationInfo, ResolvedAnnotationInfos},
+    app_options::AppOptions,
+    blueprint_helpers::{blueprint_timeline, blueprint_timepoint_for_writes},
+    blueprint_id::{BlueprintId, BlueprintIdRegistry, ContainerId, ViewId},
+    cache::{Cache, Caches, ImageDecodeCache, ImageStatsCache, TensorStatsCache, VideoCache},
+    collapsed_id::{CollapseItem, CollapseScope, CollapsedId},
+    command_sender::{
+        command_channel, CommandReceiver, CommandSender, SystemCommand, SystemCommandSender,
+    },
+    component_fallbacks::{
+        ComponentFallbackError, ComponentFallbackProvider, ComponentFallbackProviderResult,
+        TypedComponentFallbackProvider,
+    },
+    component_ui_registry::{ComponentUiRegistry, ComponentUiTypes},
+    contents::{blueprint_id_to_tile_id, Contents, ContentsName},
+    drag_and_drop::{DragAndDropFeedback, DragAndDropManager, DragAndDropPayload},
+    file_dialog::santitize_file_name,
+    image_info::{ColormapWithRange, ImageInfo},
+    item::Item,
+    maybe_mut_ref::MaybeMutRef,
+    query_context::{
+        DataQueryResult, DataResultHandle, DataResultNode, DataResultTree, QueryContext,
+    },
+    query_range::QueryRange,
+    selection_state::{
+        ApplicationSelectionState, HoverHighlight, InteractionHighlight, ItemCollection,
+        ItemContext, SelectionHighlight,
+    },
+    store_context::StoreContext,
+    store_hub::StoreHub,
+    tensor::{ImageStats, TensorStats},
+    time_control::{Looping, PlayState, TimeControl, TimeView, TimelineCallbacks},
+    time_drag_value::TimeDragValue,
+    typed_entity_collections::{
+        IndicatedEntities, MaybeVisualizableEntities, PerVisualizer, VisualizableEntities,
+    },
+    undo::BlueprintUndoState,
+    utils::{auto_color_egui, auto_color_for_entity_path, level_to_rich_text},
+    view::{
+        DataBasedVisualizabilityFilter, DataResult, IdentifiedViewSystem,
+        OptionalViewEntityHighlight, OverridePath, PerSystemDataResults, PerSystemEntities,
+        PropertyOverrides, RecommendedView, SmallVisualizerSet, SystemExecutionOutput, ViewClass,
+        ViewClassExt, ViewClassLayoutPriority, ViewClassRegistry, ViewClassRegistryError,
+        ViewContext, ViewContextCollection, ViewContextSystem, ViewEntityHighlight, ViewHighlights,
+        ViewOutlineMasks, ViewQuery, ViewSpawnHeuristics, ViewState, ViewStateExt, ViewStates,
+        ViewSystemExecutionError, ViewSystemIdentifier, ViewSystemRegistrator,
+        VisualizableFilterContext, VisualizerCollection, VisualizerQueryInfo, VisualizerSystem,
+    },
+    viewer_context::{RecordingConfig, ViewerContext},
+    visitor_flow_control::VisitorControlFlow,
 };
-pub use app_options::AppOptions;
-pub use blueprint_helpers::{blueprint_timeline, blueprint_timepoint_for_writes};
-pub use blueprint_id::{BlueprintId, BlueprintIdRegistry, ContainerId, SpaceViewId};
-pub use caches::{Cache, Caches};
-pub use collapsed_id::{CollapseItem, CollapseScope, CollapsedId};
-pub use command_sender::{
-    command_channel, CommandReceiver, CommandSender, SystemCommand, SystemCommandSender,
-};
-pub use component_fallbacks::{
-    ComponentFallbackError, ComponentFallbackProvider, ComponentFallbackProviderResult,
-    TypedComponentFallbackProvider,
-};
-pub use component_ui_registry::{ComponentUiRegistry, ComponentUiTypes, UiLayout};
-pub use contents::{blueprint_id_to_tile_id, Contents, ContentsName};
-pub use image_info::ImageInfo;
-pub use item::Item;
-pub use maybe_mut_ref::MaybeMutRef;
-pub use query_context::{
-    DataQueryResult, DataResultHandle, DataResultNode, DataResultTree, QueryContext,
-};
-pub use query_range::QueryRange;
-pub use selection_history::SelectionHistory;
-pub use selection_state::{
-    ApplicationSelectionState, HoverHighlight, InteractionHighlight, ItemCollection,
-    ItemSpaceContext, SelectionHighlight,
-};
-pub use space_view::{
-    DataResult, IdentifiedViewSystem, OverridePath, PerSystemDataResults, PerSystemEntities,
-    PropertyOverrides, RecommendedSpaceView, SmallVisualizerSet, SpaceViewClass, SpaceViewClassExt,
-    SpaceViewClassLayoutPriority, SpaceViewClassRegistry, SpaceViewClassRegistryError,
-    SpaceViewEntityHighlight, SpaceViewHighlights, SpaceViewOutlineMasks, SpaceViewSpawnHeuristics,
-    SpaceViewState, SpaceViewStateExt, SpaceViewSystemExecutionError, SpaceViewSystemRegistrator,
-    SystemExecutionOutput, ViewContext, ViewContextCollection, ViewContextSystem, ViewQuery,
-    ViewStates, ViewSystemIdentifier, VisualizableFilterContext,
-    VisualizerAdditionalApplicabilityFilter, VisualizerCollection, VisualizerQueryInfo,
-    VisualizerSystem,
-};
-pub use store_context::StoreContext;
-pub use store_hub::StoreHub;
-pub use tensor::{ImageDecodeCache, ImageStatsCache, TensorStats, TensorStatsCache};
-pub use time_control::{Looping, PlayState, TimeControl, TimeView};
-pub use typed_entity_collections::{
-    ApplicableEntities, IndicatedEntities, PerVisualizer, VisualizableEntities,
-};
-pub use utils::{auto_color_egui, auto_color_for_entity_path, level_to_rich_text};
-pub use viewer_context::{RecordingConfig, ViewerContext};
 
-#[cfg(not(target_arch = "wasm32"))]
-mod clipboard;
-
-#[cfg(not(target_arch = "wasm32"))]
-pub use clipboard::Clipboard;
+pub use re_ui::UiLayout; // Historical reasons
 
 pub mod external {
     pub use nohash_hasher;
     pub use {re_chunk_store, re_entity_db, re_log_types, re_query, re_ui};
+
+    #[cfg(feature = "testing")]
+    pub use egui_kittest;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,10 +122,57 @@ pub fn icon_for_container_kind(kind: &egui_tiles::ContainerKind) -> &'static re_
     }
 }
 
-/// The style to use for displaying this space view name in the UI.
+/// The style to use for displaying this view name in the UI.
 pub fn contents_name_style(name: &ContentsName) -> re_ui::LabelStyle {
     match name {
         ContentsName::Named(_) => re_ui::LabelStyle::Normal,
         ContentsName::Placeholder(_) => re_ui::LabelStyle::Unnamed,
     }
+}
+
+/// Info given to egui when taking a screenshot.
+///
+/// Specified what we are screenshotting.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScreenshotInfo {
+    /// What portion of the UI to take a screenshot of (in ui points).
+    pub ui_rect: Option<egui::Rect>,
+    pub pixels_per_point: f32,
+
+    /// Name of the screenshot (e.g. view name), excluding file extension.
+    pub name: String,
+
+    /// Where to put the screenshot.
+    pub target: ScreenshotTarget,
+}
+
+/// Where to put the screenshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreenshotTarget {
+    /// The screenshot will be copied to the clipboard.
+    CopyToClipboard,
+
+    /// The screenshot will be saved to disk.
+    SaveToDisk,
+}
+
+// ----------------------------------------------------------------------------------------
+
+/// Used to publish info aboutr each view.
+///
+/// We use this for view screenshotting.
+///
+/// Accessed with [`egui::Memory::caches`].
+pub type ViewRectPublisher = egui::cache::FramePublisher<ViewId, PublishedViewInfo>;
+
+/// Information about a view that is published each frame by [`ViewRectPublisher`].
+#[derive(Clone, Debug)]
+pub struct PublishedViewInfo {
+    /// Human-readable name of the view.
+    pub name: String,
+
+    /// Where on screen (in ui coords).
+    ///
+    /// NOTE: this can include a highlighted border of the view.
+    pub rect: egui::Rect,
 }

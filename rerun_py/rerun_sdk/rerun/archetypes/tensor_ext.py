@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Sequence
 
+from rerun.datatypes.range1d import Range1DLike
+
 from ..error_utils import catch_and_log_exceptions
 
 if TYPE_CHECKING:
@@ -16,7 +18,8 @@ class TensorExt:
         self: Any,
         data: TensorDataLike | TensorLike | None = None,
         *,
-        dim_names: Sequence[str | None] | None = None,
+        dim_names: Sequence[str] | None = None,
+        value_range: Range1DLike | None = None,
     ):
         """
         Construct a `Tensor` archetype.
@@ -33,10 +36,14 @@ class TensorExt:
         ----------
         self:
             The TensorData object to construct.
-        data: TensorDataLike | None
+        data:
             A TensorData object, or type that can be converted to a numpy array.
-        dim_names: Sequence[str] | None
+        dim_names:
             The names of the tensor dimensions when generating the shape from an array.
+        value_range:
+            The range of values to use for colormapping.
+
+            If not specified, the range will be estimated from the data.
 
         """
         from ..datatypes import TensorData
@@ -47,7 +54,7 @@ class TensorExt:
             elif dim_names is not None:
                 data = TensorData(buffer=data.buffer, dim_names=dim_names)
 
-            self.__attrs_init__(data=data)
+            self.__attrs_init__(data=data, value_range=value_range)
             return
 
         self.__attrs_clear__()

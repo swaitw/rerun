@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from attrs import define, field
 
 from .. import components, datatypes
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
 from ..error_utils import catch_and_log_exceptions
 
@@ -85,9 +87,9 @@ class TextLog(Archetype):
     def __attrs_clear__(self) -> None:
         """Convenience method for calling `__attrs_init__` with all `None`s."""
         self.__attrs_init__(
-            text=None,  # type: ignore[arg-type]
-            level=None,  # type: ignore[arg-type]
-            color=None,  # type: ignore[arg-type]
+            text=None,
+            level=None,
+            color=None,
         )
 
     @classmethod
@@ -97,18 +99,116 @@ class TextLog(Archetype):
         inst.__attrs_clear__()
         return inst
 
-    text: components.TextBatch = field(
-        metadata={"component": "required"},
-        converter=components.TextBatch._required,  # type: ignore[misc]
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        clear_unset: bool = False,
+        text: datatypes.Utf8Like | None = None,
+        level: datatypes.Utf8Like | None = None,
+        color: datatypes.Rgba32Like | None = None,
+    ) -> TextLog:
+        """
+        Update only some specific fields of a `TextLog`.
+
+        Parameters
+        ----------
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        text:
+            The body of the message.
+        level:
+            The verbosity level of the message.
+
+            This can be used to filter the log messages in the Rerun Viewer.
+        color:
+            Optional color to use for the log line in the Rerun Viewer.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "text": text,
+                "level": level,
+                "color": color,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def cleared(cls) -> TextLog:
+        """Clear all the fields of a `TextLog`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        text: datatypes.Utf8ArrayLike | None = None,
+        level: datatypes.Utf8ArrayLike | None = None,
+        color: datatypes.Rgba32ArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        text:
+            The body of the message.
+        level:
+            The verbosity level of the message.
+
+            This can be used to filter the log messages in the Rerun Viewer.
+        color:
+            Optional color to use for the log line in the Rerun Viewer.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                text=text,
+                level=level,
+                color=color,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
+    text: components.TextBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.TextBatch._converter,  # type: ignore[misc]
     )
     # The body of the message.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     level: components.TextLogLevelBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.TextLogLevelBatch._optional,  # type: ignore[misc]
+        converter=components.TextLogLevelBatch._converter,  # type: ignore[misc]
     )
     # The verbosity level of the message.
     #
@@ -117,9 +217,9 @@ class TextLog(Archetype):
     # (Docstring intentionally commented out to hide this field from the docs)
 
     color: components.ColorBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.ColorBatch._optional,  # type: ignore[misc]
+        converter=components.ColorBatch._converter,  # type: ignore[misc]
     )
     # Optional color to use for the log line in the Rerun Viewer.
     #

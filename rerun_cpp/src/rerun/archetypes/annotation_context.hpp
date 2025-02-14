@@ -4,12 +4,14 @@
 #pragma once
 
 #include "../collection.hpp"
+#include "../component_batch.hpp"
+#include "../component_column.hpp"
 #include "../components/annotation_context.hpp"
-#include "../data_cell.hpp"
 #include "../indicator_component.hpp"
 #include "../result.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -27,7 +29,7 @@ namespace rerun::archetypes {
     /// ## Example
     ///
     /// ### Segmentation
-    /// ![image](https://static.rerun.io/annotation_context_segmentation/0e21c0a04e456fec41d16b0deaa12c00cddf2d9b/full.png)
+    /// ![image](https://static.rerun.io/annotation_context_segmentation/6c9e88fc9d44a08031cadd444c2e58a985cc1208/full.png)
     ///
     /// ```cpp
     /// #include <rerun.hpp>
@@ -59,12 +61,12 @@ namespace rerun::archetypes {
     ///         std::fill_n(data.begin() + y * WIDTH + 130, 150, static_cast<uint8_t>(2));
     ///     }
     ///
-    ///     rec.log("segmentation/image", rerun::SegmentationImage(std::move(data), {WIDTH, HEIGHT}));
+    ///     rec.log("segmentation/image", rerun::SegmentationImage(data.data(), {WIDTH, HEIGHT}));
     /// }
     /// ```
     struct AnnotationContext {
         /// List of class descriptions, mapping class indices to class names, colors etc.
-        rerun::components::AnnotationContext context;
+        std::optional<ComponentBatch> context;
 
       public:
         static constexpr const char IndicatorComponentName[] =
@@ -72,13 +74,66 @@ namespace rerun::archetypes {
 
         /// Indicator component, used to identify the archetype when converting to a list of components.
         using IndicatorComponent = rerun::components::IndicatorComponent<IndicatorComponentName>;
+        /// The name of the archetype as used in `ComponentDescriptor`s.
+        static constexpr const char ArchetypeName[] = "rerun.archetypes.AnnotationContext";
+
+        /// `ComponentDescriptor` for the `context` field.
+        static constexpr auto Descriptor_context = ComponentDescriptor(
+            ArchetypeName, "context",
+            Loggable<rerun::components::AnnotationContext>::Descriptor.component_name
+        );
 
       public:
         AnnotationContext() = default;
         AnnotationContext(AnnotationContext&& other) = default;
+        AnnotationContext(const AnnotationContext& other) = default;
+        AnnotationContext& operator=(const AnnotationContext& other) = default;
+        AnnotationContext& operator=(AnnotationContext&& other) = default;
 
         explicit AnnotationContext(rerun::components::AnnotationContext _context)
-            : context(std::move(_context)) {}
+            : context(ComponentBatch::from_loggable(std::move(_context), Descriptor_context)
+                          .value_or_throw()) {}
+
+        /// Update only some specific fields of a `AnnotationContext`.
+        static AnnotationContext update_fields() {
+            return AnnotationContext();
+        }
+
+        /// Clear all the fields of a `AnnotationContext`.
+        static AnnotationContext clear_fields();
+
+        /// List of class descriptions, mapping class indices to class names, colors etc.
+        AnnotationContext with_context(const rerun::components::AnnotationContext& _context) && {
+            context = ComponentBatch::from_loggable(_context, Descriptor_context).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `context` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_context` should
+        /// be used when logging a single row's worth of data.
+        AnnotationContext with_many_context(
+            const Collection<rerun::components::AnnotationContext>& _context
+        ) && {
+            context = ComponentBatch::from_loggable(_context, Descriptor_context).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// Partitions the component data into multiple sub-batches.
+        ///
+        /// Specifically, this transforms the existing `ComponentBatch` data into `ComponentColumn`s
+        /// instead, via `ComponentBatch::partitioned`.
+        ///
+        /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+        ///
+        /// The specified `lengths` must sum to the total length of the component batch.
+        Collection<ComponentColumn> columns(const Collection<uint32_t>& lengths_);
+
+        /// Partitions the component data into unit-length sub-batches.
+        ///
+        /// This is semantically similar to calling `columns` with `std::vector<uint32_t>(n, 1)`,
+        /// where `n` is automatically guessed.
+        Collection<ComponentColumn> columns();
     };
 
 } // namespace rerun::archetypes
@@ -92,7 +147,7 @@ namespace rerun {
     template <>
     struct AsComponents<archetypes::AnnotationContext> {
         /// Serialize all set component batches.
-        static Result<std::vector<DataCell>> serialize(
+        static Result<Collection<ComponentBatch>> as_batches(
             const archetypes::AnnotationContext& archetype
         );
     };

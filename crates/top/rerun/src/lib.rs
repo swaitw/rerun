@@ -22,7 +22,7 @@
 //! trying to achieve and whether the viewer is running in the same process as your code, in
 //! another process, or even as a separate web application.
 //!
-//! Checkout [SDK Operating Modes](https://www.rerun.io/docs/reference/sdk-operating-modes) for an
+//! Checkout [SDK Operating Modes](https://www.rerun.io/docs/reference/sdk/operating-modes) for an
 //! overview of what's possible and how.
 //!
 //! If you get stuck on anything, open an issue at <https://github.com/rerun-io/rerun/issues>.
@@ -55,7 +55,7 @@
 //! # fn positions() -> Vec<rerun::Position3D> { Default::default() }
 //! # fn colors() -> Vec<rerun::Color> { Default::default() }
 //! // Stream log data to an awaiting `rerun` process.
-//! let rec = rerun::RecordingStreamBuilder::new("rerun_example_app").connect()?;
+//! let rec = rerun::RecordingStreamBuilder::new("rerun_example_app").connect_grpc()?;
 //!
 //! let points: Vec<rerun::Position3D> = positions();
 //! let colors: Vec<rerun::Color> = colors();
@@ -63,7 +63,7 @@
 //!
 //! rec.set_time_sequence("frame", 42);
 //! rec.log("path/to/points", &rerun::Points3D::new(points).with_colors(colors))?;
-//! rec.log("path/to/image", &rerun::Image::try_from(image)?)?;
+//! rec.log("path/to/image", &rerun::Image::from_color_model_and_tensor(rerun::ColorModel::RGB, image)?)?;
 //!
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
@@ -81,12 +81,13 @@
 //! You can buffer the log messages in memory and then show them in an embedded viewer:
 //!
 //! ```no_run
+//! # let main_thread_token = re_capabilities::MainThreadToken::i_promise_i_am_on_the_main_thread();
 //! # fn log_to(rec: &rerun::RecordingStream) {}
 //! let (rec, storage) = rerun::RecordingStreamBuilder::new("rerun_example_app").memory()?;
 //! log_to(&rec);
 //!
 //! // Will block program execution!
-//! rerun::native_viewer::show(storage.take());
+//! rerun::native_viewer::show(main_thread_token, storage.take());
 //!
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
@@ -101,12 +102,10 @@
 //! See [`Logger`].
 //!
 
-// TODO(#3408): remove unwrap()
-#![allow(clippy::unwrap_used)]
 #![warn(missing_docs)] // Let's keep the this crate well-documented!
 
 #[cfg(feature = "run")]
-mod run;
+mod commands;
 
 #[cfg(feature = "sdk")]
 mod sdk;
@@ -131,16 +130,27 @@ pub use re_log::default_log_filter;
 pub use log_integration::Logger;
 
 #[cfg(feature = "run")]
-pub use run::{run, CallSource};
+pub use commands::{run, CallSource};
+
+pub use re_log_encoding::VersionPolicy;
 
 #[cfg(feature = "sdk")]
 pub use sdk::*;
 
+/// All the types required by the dataframe API.
+#[cfg(feature = "dataframe")]
+pub mod dataframe {
+    pub use re_dataframe::*;
+}
+
 /// Everything needed to build custom `ChunkStoreSubscriber`s.
 pub use re_entity_db::external::re_chunk_store::{
-    ChunkStore, ChunkStoreDiff, ChunkStoreDiffKind, ChunkStoreEvent, ChunkStoreGeneration,
-    ChunkStoreSubscriber,
+    ChunkStore, ChunkStoreConfig, ChunkStoreDiff, ChunkStoreDiffKind, ChunkStoreEvent,
+    ChunkStoreGeneration, ChunkStoreHandle, ChunkStoreSubscriber,
 };
+pub use re_log_types::StoreKind;
+
+pub use re_capabilities::MainThreadToken;
 
 /// To register a new external data loader, simply add an executable in your $PATH whose name
 /// starts with this prefix.
@@ -156,11 +166,13 @@ pub const EXTERNAL_DATA_LOADER_INCOMPATIBLE_EXIT_CODE: i32 = 66;
 /// Re-exports of other crates.
 pub mod external {
     pub use anyhow;
+    pub use arrow;
 
-    pub use re_build_info;
-    pub use re_entity_db;
-    pub use re_entity_db::external::*;
-    pub use re_format;
+    pub use ::re_build_info;
+    pub use ::re_entity_db;
+    pub use ::re_entity_db::external::*;
+    pub use ::re_format;
+    pub use ::re_format_arrow;
 
     #[cfg(feature = "run")]
     pub use re_data_source;

@@ -11,7 +11,7 @@ use std::sync::{
 static LIVE_BYTES_GLOBAL: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
-    static LIVE_BYTES_IN_THREAD: AtomicUsize = AtomicUsize::new(0);
+    static LIVE_BYTES_IN_THREAD: AtomicUsize = const { AtomicUsize::new(0) };
 }
 
 pub struct TrackingAllocator {
@@ -73,7 +73,7 @@ use re_chunk::{
 };
 use re_chunk_store::{ChunkStore, ChunkStoreConfig};
 use re_log_types::{TimePoint, TimeType, Timeline};
-use re_types::{components::Scalar, Loggable};
+use re_types::{components::Scalar, Component as _, Loggable};
 
 /// The memory overhead of storing many scalars in the store.
 #[test]
@@ -104,7 +104,7 @@ fn scalar_memory_overhead() {
 
             let row = PendingRow::new(
                 timepoint,
-                std::iter::once((Scalar::name(), scalars)).collect(),
+                std::iter::once((Scalar::descriptor(), scalars)).collect(),
             );
 
             batcher.push_row(entity_path.clone(), row);
@@ -135,8 +135,8 @@ fn scalar_memory_overhead() {
         [
             format!("{NUM_SCALARS} scalars"),
             format!(
-                "{} in total",
-                re_format::format_bytes(total_mem_use_global as _)
+                "{} MiB in total",
+                (total_mem_use_global as f64 / 1024.0 / 1024.0).round() // Round to nearest megabyte - we get fluctuations on the kB depending on platform
             ),
             format!(
                 "{} per row",

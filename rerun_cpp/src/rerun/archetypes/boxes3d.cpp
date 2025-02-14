@@ -5,59 +5,161 @@
 
 #include "../collection_adapter_builtins.hpp"
 
-namespace rerun::archetypes {}
+namespace rerun::archetypes {
+    Boxes3D Boxes3D::clear_fields() {
+        auto archetype = Boxes3D();
+        archetype.half_sizes =
+            ComponentBatch::empty<rerun::components::HalfSize3D>(Descriptor_half_sizes)
+                .value_or_throw();
+        archetype.centers =
+            ComponentBatch::empty<rerun::components::PoseTranslation3D>(Descriptor_centers)
+                .value_or_throw();
+        archetype.rotation_axis_angles =
+            ComponentBatch::empty<rerun::components::PoseRotationAxisAngle>(
+                Descriptor_rotation_axis_angles
+            )
+                .value_or_throw();
+        archetype.quaternions =
+            ComponentBatch::empty<rerun::components::PoseRotationQuat>(Descriptor_quaternions)
+                .value_or_throw();
+        archetype.colors =
+            ComponentBatch::empty<rerun::components::Color>(Descriptor_colors).value_or_throw();
+        archetype.radii =
+            ComponentBatch::empty<rerun::components::Radius>(Descriptor_radii).value_or_throw();
+        archetype.fill_mode =
+            ComponentBatch::empty<rerun::components::FillMode>(Descriptor_fill_mode)
+                .value_or_throw();
+        archetype.labels =
+            ComponentBatch::empty<rerun::components::Text>(Descriptor_labels).value_or_throw();
+        archetype.show_labels =
+            ComponentBatch::empty<rerun::components::ShowLabels>(Descriptor_show_labels)
+                .value_or_throw();
+        archetype.class_ids =
+            ComponentBatch::empty<rerun::components::ClassId>(Descriptor_class_ids)
+                .value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> Boxes3D::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(11);
+        if (half_sizes.has_value()) {
+            columns.push_back(half_sizes.value().partitioned(lengths_).value_or_throw());
+        }
+        if (centers.has_value()) {
+            columns.push_back(centers.value().partitioned(lengths_).value_or_throw());
+        }
+        if (rotation_axis_angles.has_value()) {
+            columns.push_back(rotation_axis_angles.value().partitioned(lengths_).value_or_throw());
+        }
+        if (quaternions.has_value()) {
+            columns.push_back(quaternions.value().partitioned(lengths_).value_or_throw());
+        }
+        if (colors.has_value()) {
+            columns.push_back(colors.value().partitioned(lengths_).value_or_throw());
+        }
+        if (radii.has_value()) {
+            columns.push_back(radii.value().partitioned(lengths_).value_or_throw());
+        }
+        if (fill_mode.has_value()) {
+            columns.push_back(fill_mode.value().partitioned(lengths_).value_or_throw());
+        }
+        if (labels.has_value()) {
+            columns.push_back(labels.value().partitioned(lengths_).value_or_throw());
+        }
+        if (show_labels.has_value()) {
+            columns.push_back(show_labels.value().partitioned(lengths_).value_or_throw());
+        }
+        if (class_ids.has_value()) {
+            columns.push_back(class_ids.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(
+            ComponentColumn::from_indicators<Boxes3D>(static_cast<uint32_t>(lengths_.size()))
+                .value_or_throw()
+        );
+        return columns;
+    }
+
+    Collection<ComponentColumn> Boxes3D::columns() {
+        if (half_sizes.has_value()) {
+            return columns(std::vector<uint32_t>(half_sizes.value().length(), 1));
+        }
+        if (centers.has_value()) {
+            return columns(std::vector<uint32_t>(centers.value().length(), 1));
+        }
+        if (rotation_axis_angles.has_value()) {
+            return columns(std::vector<uint32_t>(rotation_axis_angles.value().length(), 1));
+        }
+        if (quaternions.has_value()) {
+            return columns(std::vector<uint32_t>(quaternions.value().length(), 1));
+        }
+        if (colors.has_value()) {
+            return columns(std::vector<uint32_t>(colors.value().length(), 1));
+        }
+        if (radii.has_value()) {
+            return columns(std::vector<uint32_t>(radii.value().length(), 1));
+        }
+        if (fill_mode.has_value()) {
+            return columns(std::vector<uint32_t>(fill_mode.value().length(), 1));
+        }
+        if (labels.has_value()) {
+            return columns(std::vector<uint32_t>(labels.value().length(), 1));
+        }
+        if (show_labels.has_value()) {
+            return columns(std::vector<uint32_t>(show_labels.value().length(), 1));
+        }
+        if (class_ids.has_value()) {
+            return columns(std::vector<uint32_t>(class_ids.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<archetypes::Boxes3D>::serialize(
+    Result<Collection<ComponentBatch>> AsComponents<archetypes::Boxes3D>::as_batches(
         const archetypes::Boxes3D& archetype
     ) {
         using namespace archetypes;
-        std::vector<DataCell> cells;
-        cells.reserve(8);
+        std::vector<ComponentBatch> cells;
+        cells.reserve(11);
 
-        {
-            auto result = DataCell::from_loggable(archetype.half_sizes);
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.half_sizes.has_value()) {
+            cells.push_back(archetype.half_sizes.value());
         }
         if (archetype.centers.has_value()) {
-            auto result = DataCell::from_loggable(archetype.centers.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.centers.value());
         }
-        if (archetype.rotations.has_value()) {
-            auto result = DataCell::from_loggable(archetype.rotations.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+        if (archetype.rotation_axis_angles.has_value()) {
+            cells.push_back(archetype.rotation_axis_angles.value());
+        }
+        if (archetype.quaternions.has_value()) {
+            cells.push_back(archetype.quaternions.value());
         }
         if (archetype.colors.has_value()) {
-            auto result = DataCell::from_loggable(archetype.colors.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.colors.value());
         }
         if (archetype.radii.has_value()) {
-            auto result = DataCell::from_loggable(archetype.radii.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.radii.value());
+        }
+        if (archetype.fill_mode.has_value()) {
+            cells.push_back(archetype.fill_mode.value());
         }
         if (archetype.labels.has_value()) {
-            auto result = DataCell::from_loggable(archetype.labels.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.labels.value());
+        }
+        if (archetype.show_labels.has_value()) {
+            cells.push_back(archetype.show_labels.value());
         }
         if (archetype.class_ids.has_value()) {
-            auto result = DataCell::from_loggable(archetype.class_ids.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.class_ids.value());
         }
         {
-            auto indicator = Boxes3D::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<Boxes3D>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

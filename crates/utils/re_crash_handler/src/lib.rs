@@ -1,5 +1,7 @@
 //! Detect and handle signals, panics, and other crashes, making sure to log them and optionally send them off to analytics.
 
+pub mod sigint;
+
 use re_build_info::BuildInfo;
 
 #[cfg(not(target_os = "windows"))]
@@ -26,67 +28,72 @@ pub fn install_crash_handlers(build_info: BuildInfo) {
 fn install_panic_hook(_build_info: BuildInfo) {
     let previous_panic_hook = std::panic::take_hook();
 
-    std::panic::set_hook(Box::new(move |panic_info: &std::panic::PanicInfo<'_>| {
-        let callstack = callstack_from(&["panicking::panic_fmt\n"]);
+    std::panic::set_hook(Box::new(
+        move |panic_info: &std::panic::PanicHookInfo<'_>| {
+            let callstack = callstack_from(&["panicking::panic_fmt\n"]);
 
-        let file_line = panic_info.location().map(|location| {
-            let file = anonymize_source_file_path(&std::path::PathBuf::from(location.file()));
-            format!("{file}:{}", location.line())
-        });
+            let file_line = panic_info.location().map(|location| {
+                let file = anonymize_source_file_path(&std::path::PathBuf::from(location.file()));
+                format!("{file}:{}", location.line())
+            });
 
-        let msg = panic_info_message(panic_info);
+            let msg = panic_info_message(panic_info);
 
-        if let Some(msg) = &msg {
-            // Print our own panic message.
-            // Our formatting is nicer than `std` since we shorten the file paths (for privacy reasons).
-            // This also makes it easier for users to copy-paste the callstack into an issue
-            // without having any sensitive data in it.
+            if let Some(msg) = &msg {
+                // Print our own panic message.
+                // Our formatting is nicer than `std` since we shorten the file paths (for privacy reasons).
+                // This also makes it easier for users to copy-paste the callstack into an issue
+                // without having any sensitive data in it.
 
-            let thread = std::thread::current();
-            let thread_name = thread
-                .name()
-                .map_or_else(|| format!("{:?}", thread.id()), |name| name.to_owned());
+                let thread = std::thread::current();
+                let thread_name = thread
+                    .name()
+                    .map_or_else(|| format!("{:?}", thread.id()), |name| name.to_owned());
 
-            eprintln!("\nthread '{thread_name}' panicked at '{msg}'");
-            if let Some(file_line) = &file_line {
-                eprintln!("{file_line}");
+                eprintln!("\nthread '{thread_name}' panicked at '{msg}'");
+                if let Some(file_line) = &file_line {
+                    eprintln!("{file_line}");
+                }
+                eprintln!("stack backtrace:\n{callstack}");
+            } else {
+                // This prints the panic message and callstack:
+                (*previous_panic_hook)(panic_info);
             }
-            eprintln!("stack backtrace:\n{callstack}");
-        } else {
-            // This prints the panic message and callstack:
-            (*previous_panic_hook)(panic_info);
-        }
 
-        eprintln!(
-            "\n\
+            econtext::print_econtext(); // Print additional error context, if any
+
+            eprintln!(
+                "\n\
             Troubleshooting Rerun: https://www.rerun.io/docs/getting-started/troubleshooting \n\
             Report bugs: https://github.com/rerun-io/rerun/issues"
-        );
+            );
 
-        #[cfg(feature = "analytics")]
-        {
-            if let Ok(analytics) = re_analytics::Analytics::new(std::time::Duration::from_millis(1))
+            #[cfg(feature = "analytics")]
             {
-                analytics.record(re_analytics::event::CrashPanic {
-                    build_info: _build_info,
-                    callstack,
-                    // Don't include panic message, because it can contain sensitive information,
-                    // e.g. `panic!("Couldn't read {sensitive_file_path}")`.
-                    message: None,
-                    file_line,
-                });
+                if let Ok(analytics) =
+                    re_analytics::Analytics::new(std::time::Duration::from_millis(1))
+                {
+                    analytics.record(re_analytics::event::CrashPanic {
+                        build_info: _build_info,
+                        callstack,
+                        // Don't include panic message, because it can contain sensitive information,
+                        // e.g. `panic!("Couldn't read {sensitive_file_path}")`.
+                        message: None,
+                        file_line,
+                    });
 
-                std::thread::sleep(std::time::Duration::from_secs(1)); // Give analytics time to send the event
+                    std::thread::sleep(std::time::Duration::from_secs(1)); // Give analytics time to send the event
+                }
             }
-        }
 
-        // We compile with `panic = "abort"`, but we don't want to report the same problem twice, so just exit:
-        #[allow(clippy::exit)]
-        std::process::exit(102);
-    }));
+            // We compile with `panic = "abort"`, but we don't want to report the same problem twice, so just exit:
+            #[allow(clippy::exit)]
+            std::process::exit(102);
+        },
+    ));
 }
 
-fn panic_info_message(panic_info: &std::panic::PanicInfo<'_>) -> Option<String> {
+fn panic_info_message(panic_info: &std::panic::PanicHookInfo<'_>) -> Option<String> {
     // `panic_info.message` is unstable, so this is the recommended way of getting
     // the panic message out. We need both the `&str` and `String` variants.
 
@@ -163,6 +170,8 @@ fn install_signal_handler(build_info: BuildInfo) {
         let callstack = callstack();
         write_to_stderr(&callstack);
         write_to_stderr("\n");
+
+        econtext::print_econtext(); // Print additional error context, if any
 
         // Let's print the important stuff _again_ so it is visible at the bottom of the users terminal:
         write_to_stderr("\n");
@@ -265,7 +274,7 @@ fn backtrace_to_string(backtrace: &backtrace::Backtrace) -> String {
 
     struct AnonymizedBacktrace<'a>(&'a backtrace::Backtrace);
 
-    impl<'a> std::fmt::Display for AnonymizedBacktrace<'a> {
+    impl std::fmt::Display for AnonymizedBacktrace<'_> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             format_backtrace(self.0, f)
         }

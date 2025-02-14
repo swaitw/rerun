@@ -1,3 +1,4 @@
+use re_chunk::EntityPath;
 use re_chunk_store::external::re_chunk::Chunk;
 use re_data_source::DataSource;
 use re_log_types::StoreId;
@@ -7,6 +8,7 @@ use re_ui::{UICommand, UICommandSender};
 
 /// Commands used by internal system components
 // TODO(jleibs): Is there a better crate for this?
+#[derive(strum_macros::IntoStaticStr)]
 pub enum SystemCommand {
     /// Make this the active application.
     ActivateApp(re_log_types::ApplicationId),
@@ -25,11 +27,23 @@ pub enum SystemCommand {
     /// Reset the `Viewer` to the default state
     ResetViewer,
 
-    /// Reset the `Blueprint` to the default state
+    /// Clear the active blueprint.
+    ///
+    /// This may have two outcomes:
+    /// - If a default blueprint is set, it will be used.
+    /// - Otherwise, the heuristics will be enabled.
+    ///
+    /// To force using the heuristics, use [`Self::ClearActiveBlueprintAndEnableHeuristics`].
+    ///
+    /// UI note: because of the above ambiguity, controls for this command should only be enabled if
+    /// a default blueprint is set.
     ClearActiveBlueprint,
 
-    /// Clear the blueprint and generate a new one
-    ClearAndGenerateBlueprint,
+    /// Clear the active blueprint and enable heuristics.
+    ///
+    /// The final outcome of this is to set the active blueprint to the heuristics. This command
+    /// does not affect the default blueprint if any was set.
+    ClearActiveBlueprintAndEnableHeuristics,
 
     /// If this is a recording, switch to it.
     ActivateRecording(StoreId),
@@ -45,17 +59,39 @@ pub enum SystemCommand {
     /// The [`StoreId`] should generally be the currently selected blueprint
     /// but is tracked manually to ensure self-consistency if the blueprint
     /// is both modified and changed in the same frame.
+    ///
+    /// Instead of using this directly, consider using
+    /// [`crate::ViewerContext::save_blueprint_archetype`] or similar.
     UpdateBlueprint(StoreId, Vec<Chunk>),
+
+    UndoBlueprint {
+        blueprint_id: StoreId,
+    },
+    RedoBlueprint {
+        blueprint_id: StoreId,
+    },
+
+    /// Drop a specific entity from a store.
+    ///
+    /// Also drops all recursive children.
+    ///
+    /// The [`StoreId`] should generally be the currently selected blueprint
+    /// but is tracked manually to ensure self-consistency if the blueprint
+    /// is both modified and changed in the same frame.
+    DropEntity(StoreId, EntityPath),
 
     /// Show a timeline of the blueprint data.
     #[cfg(debug_assertions)]
     EnableInspectBlueprintTimeline(bool),
 
-    /// Enable or disable the experimental dataframe space views.
-    EnableExperimentalDataframeSpaceView(bool),
-
     /// Set the item selection.
     SetSelection(crate::Item),
+
+    /// Set the active timeline for the given recording.
+    SetActiveTimeline {
+        rec_id: StoreId,
+        timeline: re_chunk::Timeline,
+    },
 
     /// Sets the focus to the given item.
     ///
@@ -70,6 +106,17 @@ pub enum SystemCommand {
     ///
     /// Just like selection highlighting, the exact behavior of focusing is up to the receiving views.
     SetFocus(crate::Item),
+
+    /// Add a task, run on a background thread, that saves something to disk.
+    #[cfg(not(target_arch = "wasm32"))]
+    FileSaver(Box<dyn FnOnce() -> anyhow::Result<std::path::PathBuf> + Send + 'static>),
+}
+
+impl std::fmt::Debug for SystemCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // not all variant contents can be made `Debug`, so we only output the variant name
+        f.write_str(self.into())
+    }
 }
 
 /// Interface for sending [`SystemCommand`] messages.

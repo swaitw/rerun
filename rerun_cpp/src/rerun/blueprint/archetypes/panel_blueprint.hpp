@@ -5,8 +5,8 @@
 
 #include "../../blueprint/components/panel_state.hpp"
 #include "../../collection.hpp"
-#include "../../compiler_utils.hpp"
-#include "../../data_cell.hpp"
+#include "../../component_batch.hpp"
+#include "../../component_column.hpp"
 #include "../../indicator_component.hpp"
 #include "../../result.hpp"
 
@@ -18,7 +18,8 @@
 namespace rerun::blueprint::archetypes {
     /// **Archetype**: Shared state for the 3 collapsible panels.
     struct PanelBlueprint {
-        std::optional<rerun::blueprint::components::PanelState> state;
+        /// Current state of the panels.
+        std::optional<ComponentBatch> state;
 
       public:
         static constexpr const char IndicatorComponentName[] =
@@ -26,16 +27,51 @@ namespace rerun::blueprint::archetypes {
 
         /// Indicator component, used to identify the archetype when converting to a list of components.
         using IndicatorComponent = rerun::components::IndicatorComponent<IndicatorComponentName>;
+        /// The name of the archetype as used in `ComponentDescriptor`s.
+        static constexpr const char ArchetypeName[] = "rerun.blueprint.archetypes.PanelBlueprint";
+
+        /// `ComponentDescriptor` for the `state` field.
+        static constexpr auto Descriptor_state = ComponentDescriptor(
+            ArchetypeName, "state",
+            Loggable<rerun::blueprint::components::PanelState>::Descriptor.component_name
+        );
 
       public:
         PanelBlueprint() = default;
         PanelBlueprint(PanelBlueprint&& other) = default;
+        PanelBlueprint(const PanelBlueprint& other) = default;
+        PanelBlueprint& operator=(const PanelBlueprint& other) = default;
+        PanelBlueprint& operator=(PanelBlueprint&& other) = default;
 
-        PanelBlueprint with_state(rerun::blueprint::components::PanelState _state) && {
-            state = std::move(_state);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        /// Update only some specific fields of a `PanelBlueprint`.
+        static PanelBlueprint update_fields() {
+            return PanelBlueprint();
         }
+
+        /// Clear all the fields of a `PanelBlueprint`.
+        static PanelBlueprint clear_fields();
+
+        /// Current state of the panels.
+        PanelBlueprint with_state(const rerun::blueprint::components::PanelState& _state) && {
+            state = ComponentBatch::from_loggable(_state, Descriptor_state).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// Partitions the component data into multiple sub-batches.
+        ///
+        /// Specifically, this transforms the existing `ComponentBatch` data into `ComponentColumn`s
+        /// instead, via `ComponentBatch::partitioned`.
+        ///
+        /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+        ///
+        /// The specified `lengths` must sum to the total length of the component batch.
+        Collection<ComponentColumn> columns(const Collection<uint32_t>& lengths_);
+
+        /// Partitions the component data into unit-length sub-batches.
+        ///
+        /// This is semantically similar to calling `columns` with `std::vector<uint32_t>(n, 1)`,
+        /// where `n` is automatically guessed.
+        Collection<ComponentColumn> columns();
     };
 
 } // namespace rerun::blueprint::archetypes
@@ -49,7 +85,7 @@ namespace rerun {
     template <>
     struct AsComponents<blueprint::archetypes::PanelBlueprint> {
         /// Serialize all set component batches.
-        static Result<std::vector<DataCell>> serialize(
+        static Result<Collection<ComponentBatch>> as_batches(
             const blueprint::archetypes::PanelBlueprint& archetype
         );
     };

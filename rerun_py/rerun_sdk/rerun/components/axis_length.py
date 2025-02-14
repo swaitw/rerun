@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["AxisLength", "AxisLengthBatch", "AxisLengthType"]
+__all__ = ["AxisLength", "AxisLengthBatch"]
 
 
 class AxisLength(datatypes.Float32, ComponentMixin):
@@ -24,12 +25,8 @@ class AxisLength(datatypes.Float32, ComponentMixin):
     pass
 
 
-class AxisLengthType(datatypes.Float32Type):
-    _TYPE_NAME: str = "rerun.components.AxisLength"
-
-
 class AxisLengthBatch(datatypes.Float32Batch, ComponentBatchMixin):
-    _ARROW_TYPE = AxisLengthType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.AxisLength")
 
 
 # This is patched in late to avoid circular dependencies.

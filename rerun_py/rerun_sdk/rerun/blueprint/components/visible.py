@@ -8,10 +8,11 @@ from __future__ import annotations
 from ... import datatypes
 from ..._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["Visible", "VisibleBatch", "VisibleType"]
+__all__ = ["Visible", "VisibleBatch"]
 
 
 class Visible(datatypes.Bool, ComponentMixin):
@@ -24,12 +25,8 @@ class Visible(datatypes.Bool, ComponentMixin):
     pass
 
 
-class VisibleType(datatypes.BoolType):
-    _TYPE_NAME: str = "rerun.blueprint.components.Visible"
-
-
 class VisibleBatch(datatypes.BoolBatch, ComponentBatchMixin):
-    _ARROW_TYPE = VisibleType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.blueprint.components.Visible")
 
 
 # This is patched in late to avoid circular dependencies.

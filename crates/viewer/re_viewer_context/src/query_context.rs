@@ -5,14 +5,14 @@ use smallvec::SmallVec;
 
 use re_log_types::{EntityPath, EntityPathHash};
 
-use crate::{DataResult, SpaceViewId, SpaceViewState, ViewContext, ViewerContext};
+use crate::{blueprint_timeline, DataResult, ViewContext, ViewId, ViewState, ViewerContext};
 
 slotmap::new_key_type! {
     /// Identifier for a [`DataResultNode`]
     pub struct DataResultHandle;
 }
 
-/// Context for a latest at query in a specific view.
+/// Context for a latest-at query in a specific view.
 // TODO(andreas) this is centered around latest-at queries. Does it have to be? Makes sense for UI, but that means it won't scale much into Visualizer queriers.
 // This is currently used only for fallback providers, but the expectation is that we're using this more widely as the primary context object
 // in all places where we query a specific entity in a specific view.
@@ -34,22 +34,22 @@ pub struct QueryContext<'a> {
     pub query: &'a re_chunk_store::LatestAtQuery,
 
     /// The view state of the view in which the query is executed.
-    pub view_state: &'a dyn SpaceViewState,
+    pub view_state: &'a dyn ViewState,
 
     /// The view context, if available.
     // TODO(jleibs): Make this non-optional.
     pub view_ctx: Option<&'a ViewContext<'a>>,
 }
 
-impl<'a> QueryContext<'a> {
+impl QueryContext<'_> {
     #[inline]
     pub fn recording(&self) -> &re_entity_db::EntityDb {
         self.viewer_ctx.recording()
     }
 }
 
-/// The result of executing a single data query
-#[derive(Default)]
+/// The result of executing a single data query for a specific view.
+#[derive(Debug)]
 pub struct DataQueryResult {
     /// The [`DataResultTree`] for the query
     pub tree: DataResultTree,
@@ -62,6 +62,25 @@ pub struct DataQueryResult {
     /// This does *not* take into account the actual selection of visualizers
     /// which may be an explicit none for any given entity.
     pub num_visualized_entities: usize,
+
+    /// Latest-at results for all component defaults in this view.
+    pub component_defaults: re_query::LatestAtResults,
+}
+
+impl Default for DataQueryResult {
+    fn default() -> Self {
+        Self {
+            tree: Default::default(),
+            num_matching_entities: 0,
+            num_visualized_entities: 0,
+            component_defaults: re_query::LatestAtResults {
+                entity_path: "<defaults>".into(),
+                query: re_chunk_store::LatestAtQuery::latest(blueprint_timeline()),
+                compound_index: (re_chunk::TimeInt::STATIC, re_chunk::RowId::ZERO),
+                components: Default::default(),
+            },
+        }
+    }
 }
 
 impl DataQueryResult {
@@ -74,7 +93,7 @@ impl DataQueryResult {
     pub fn contains_entity(&self, path: &EntityPath) -> bool {
         self.tree
             .lookup_result_by_path(path)
-            .map_or(false, |result| !result.tree_prefix_only)
+            .is_some_and(|result| !result.tree_prefix_only)
     }
 }
 
@@ -85,12 +104,13 @@ impl Clone for DataQueryResult {
             tree: self.tree.clone(),
             num_matching_entities: self.num_matching_entities,
             num_visualized_entities: self.num_visualized_entities,
+            component_defaults: self.component_defaults.clone(),
         }
     }
 }
 
 /// A hierarchical tree of [`DataResult`]s
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct DataResultTree {
     data_results: SlotMap<DataResultHandle, DataResultNode>,
     // TODO(jleibs): Decide if we really want to compute this per-query.
@@ -142,6 +162,47 @@ impl DataResultTree {
         if let Some(root_handle) = self.root_handle {
             self.visit_recursive(root_handle, visitor);
         }
+    }
+
+    /// Depth-first traversal of the tree, calling `visitor` on each result, starting from a
+    /// specific node.
+    ///
+    /// Stops traversing a branch if `visitor` returns `false`.
+    pub fn visit_from_node<'a>(
+        &'a self,
+        node: &DataResultNode,
+        visitor: &mut impl FnMut(&'a DataResultNode) -> bool,
+    ) {
+        if let Some(handle) = self
+            .data_results_by_path
+            .get(&node.data_result.entity_path.hash())
+        {
+            self.visit_recursive(*handle, visitor);
+        }
+    }
+
+    /// Depth-first search of a node based on the provided predicate.
+    ///
+    /// If a `staring_node` is provided, the search starts at that node. Otherwise, it starts at the
+    /// root node.
+    pub fn find_node_by(
+        &self,
+        starting_node: Option<&DataResultNode>,
+        predicate: impl Fn(&DataResultNode) -> bool,
+    ) -> Option<&DataResultNode> {
+        let mut result = None;
+
+        starting_node.or_else(|| self.root_node()).and_then(|node| {
+            self.visit_from_node(node, &mut |node| {
+                if predicate(node) {
+                    result = Some(node);
+                }
+
+                // keep recursing until we find something
+                result.is_none()
+            });
+            result
+        })
     }
 
     /// Look up a [`DataResult`] in the tree based on its handle.
@@ -201,7 +262,7 @@ impl DataResultTree {
 static EMPTY_QUERY: Lazy<DataQueryResult> = Lazy::<DataQueryResult>::new(Default::default);
 
 impl ViewerContext<'_> {
-    pub fn lookup_query_result(&self, id: SpaceViewId) -> &DataQueryResult {
+    pub fn lookup_query_result(&self, id: ViewId) -> &DataQueryResult {
         self.query_results.get(&id).unwrap_or_else(|| {
             if cfg!(debug_assertions) {
                 re_log::warn!("Tried looking up a query that doesn't exist: {:?}", id);

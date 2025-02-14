@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use re_chunk::Chunk;
 use re_log_types::StoreId;
@@ -80,6 +80,23 @@ impl ChunkStoreDiffKind {
     }
 }
 
+/// Reports which [`Chunk`]s were merged into a new [`Chunk`] during a compaction.
+#[derive(Debug, Clone)]
+pub struct ChunkCompactionReport {
+    /// The chunks that were merged into a new chunk.
+    pub srcs: BTreeMap<ChunkId, Arc<Chunk>>,
+
+    /// The new chunk that was created as the result of the compaction.
+    pub new_chunk: Arc<Chunk>,
+}
+
+impl PartialEq for ChunkCompactionReport {
+    #[inline]
+    fn eq(&self, rhs: &Self) -> bool {
+        self.srcs.keys().eq(rhs.srcs.keys()) && self.new_chunk.id() == rhs.new_chunk.id()
+    }
+}
+
 /// Describes an atomic change in the Rerun [`ChunkStore`]: a chunk has been added or deleted.
 ///
 /// From a query model standpoint, the [`ChunkStore`] _always_ operates one chunk at a time:
@@ -106,18 +123,40 @@ pub struct ChunkStoreDiff {
     pub kind: ChunkStoreDiffKind,
 
     /// The chunk that was added or removed.
+    ///
+    /// If the addition of a chunk to the store triggered a compaction, that chunk _pre-compaction_ is
+    /// what will be exposed here.
+    /// This allows subscribers to only process data that is new, as opposed to having to reprocess
+    /// old rows that appear to have been removed and then reinserted due to compaction.
+    ///
+    /// To keep track of what chunks were merged with what chunks, use the [`ChunkStoreDiff::compacted`]
+    /// field below.
     //
     // NOTE: We purposefully use an `Arc` instead of a `ChunkId` here because we want to make sure that all
     // downstream subscribers get a chance to inspect the data in the chunk before it gets permanently
     // deallocated.
     pub chunk: Arc<Chunk>,
+
+    /// Reports which [`Chunk`]s were merged into a new [`Chunk`] during a compaction.
+    ///
+    /// This is only specified if an addition to the store triggered a compaction.
+    /// When that happens, it is guaranteed that [`ChunkStoreDiff::chunk`] will be present in the
+    /// set of source chunks below, since it was compacted on arrival.
+    ///
+    /// A corollary to that is that the destination [`Chunk`] must have never been seen before,
+    /// i.e. it's [`ChunkId`] must have never been seen before.
+    pub compacted: Option<ChunkCompactionReport>,
 }
 
 impl PartialEq for ChunkStoreDiff {
     #[inline]
     fn eq(&self, rhs: &Self) -> bool {
-        let Self { kind, chunk } = self;
-        *kind == rhs.kind && chunk.id() == rhs.chunk.id()
+        let Self {
+            kind,
+            chunk,
+            compacted,
+        } = self;
+        *kind == rhs.kind && chunk.id() == rhs.chunk.id() && compacted == &rhs.compacted
     }
 }
 
@@ -125,10 +164,11 @@ impl Eq for ChunkStoreDiff {}
 
 impl ChunkStoreDiff {
     #[inline]
-    pub fn addition(chunk: Arc<Chunk>) -> Self {
+    pub fn addition(chunk: Arc<Chunk>, compacted: Option<ChunkCompactionReport>) -> Self {
         Self {
             kind: ChunkStoreDiffKind::Addition,
             chunk,
+            compacted,
         }
     }
 
@@ -137,6 +177,7 @@ impl ChunkStoreDiff {
         Self {
             kind: ChunkStoreDiffKind::Deletion,
             chunk,
+            compacted: None,
         }
     }
 
@@ -168,7 +209,7 @@ mod tests {
         example_components::{MyColor, MyIndex, MyPoint},
         EntityPath, TimeInt, TimePoint, Timeline,
     };
-    use re_types_core::{ComponentName, Loggable as _};
+    use re_types_core::{Component as _, ComponentName};
 
     use crate::{ChunkStore, GarbageCollectionOptions};
 
@@ -222,18 +263,20 @@ mod tests {
                     .entry(event.chunk.entity_path().clone())
                     .or_default() += delta_chunks;
 
-                for (component_name, list_array) in event.chunk.components() {
-                    let delta =
-                        event.delta() * list_array.iter().filter(Option::is_some).count() as i64;
-                    *self.component_names.entry(*component_name).or_default() += delta;
+                for (component_desc, list_array) in event.chunk.components().iter_flattened() {
+                    let delta = event.delta() * list_array.iter().flatten().count() as i64;
+                    *self
+                        .component_names
+                        .entry(component_desc.component_name)
+                        .or_default() += delta;
                 }
 
                 if event.is_static() {
                     self.num_static += delta_rows;
                 } else {
-                    for (&timeline, time_chunk) in event.chunk.timelines() {
+                    for (&timeline, time_column) in event.chunk.timelines() {
                         *self.timelines.entry(timeline).or_default() += delta_rows;
-                        for time in time_chunk.times() {
+                        for time in time_column.times() {
                             *self.times.entry(time).or_default() += delta_chunks;
                         }
                     }

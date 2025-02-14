@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from attrs import define, field
 
 from .. import components, datatypes
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
 from ..error_utils import catch_and_log_exceptions
 
@@ -31,28 +33,57 @@ class Scalar(Archetype):
     this by logging both archetypes to the same path, or alternatively configuring
     the plot-specific archetypes through the blueprint.
 
-    Example
-    -------
-    ### Simple line plot:
+    Examples
+    --------
+    ### Update a scalar over time:
     ```python
+    from __future__ import annotations
+
     import math
 
     import rerun as rr
 
-    rr.init("rerun_example_scalar", spawn=True)
+    rr.init("rerun_example_scalar_row_updates", spawn=True)
 
-    # Log the data on a timeline called "step".
-    for step in range(0, 64):
+    for step in range(64):
         rr.set_time_sequence("step", step)
-        rr.log("scalar", rr.Scalar(math.sin(step / 10.0)))
+        rr.log("scalars", rr.Scalar(math.sin(step / 10.0)))
     ```
     <center>
     <picture>
-      <source media="(max-width: 480px)" srcset="https://static.rerun.io/scalar_simple/8bcc92f56268739f8cd24d60d1fe72a655f62a46/480w.png">
-      <source media="(max-width: 768px)" srcset="https://static.rerun.io/scalar_simple/8bcc92f56268739f8cd24d60d1fe72a655f62a46/768w.png">
-      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/scalar_simple/8bcc92f56268739f8cd24d60d1fe72a655f62a46/1024w.png">
-      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/scalar_simple/8bcc92f56268739f8cd24d60d1fe72a655f62a46/1200w.png">
-      <img src="https://static.rerun.io/scalar_simple/8bcc92f56268739f8cd24d60d1fe72a655f62a46/full.png" width="640">
+      <source media="(max-width: 480px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/480w.png">
+      <source media="(max-width: 768px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/768w.png">
+      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/1024w.png">
+      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/1200w.png">
+      <img src="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/full.png" width="640">
+    </picture>
+    </center>
+
+    ### Update a scalar over time, in a single operation:
+    ```python
+    from __future__ import annotations
+
+    import numpy as np
+    import rerun as rr
+
+    rr.init("rerun_example_scalar_column_updates", spawn=True)
+
+    times = np.arange(0, 64)
+    scalars = np.sin(times / 10.0)
+
+    rr.send_columns(
+        "scalars",
+        indexes=[rr.TimeSequenceColumn("step", times)],
+        columns=rr.Scalar.columns(scalar=scalars),
+    )
+    ```
+    <center>
+    <picture>
+      <source media="(max-width: 480px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/480w.png">
+      <source media="(max-width: 768px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/768w.png">
+      <source media="(max-width: 1024px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/1024w.png">
+      <source media="(max-width: 1200px)" srcset="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/1200w.png">
+      <img src="https://static.rerun.io/transform3d_column_updates/2b7ccfd29349b2b107fcf7eb8a1291a92cf1cafc/full.png" width="640">
     </picture>
     </center>
 
@@ -78,7 +109,7 @@ class Scalar(Archetype):
     def __attrs_clear__(self) -> None:
         """Convenience method for calling `__attrs_init__` with all `None`s."""
         self.__attrs_init__(
-            scalar=None,  # type: ignore[arg-type]
+            scalar=None,
         )
 
     @classmethod
@@ -88,9 +119,87 @@ class Scalar(Archetype):
         inst.__attrs_clear__()
         return inst
 
-    scalar: components.ScalarBatch = field(
-        metadata={"component": "required"},
-        converter=components.ScalarBatch._required,  # type: ignore[misc]
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        clear_unset: bool = False,
+        scalar: datatypes.Float64Like | None = None,
+    ) -> Scalar:
+        """
+        Update only some specific fields of a `Scalar`.
+
+        Parameters
+        ----------
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        scalar:
+            The scalar value to log.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "scalar": scalar,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def cleared(cls) -> Scalar:
+        """Clear all the fields of a `Scalar`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        scalar: datatypes.Float64ArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        scalar:
+            The scalar value to log.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                scalar=scalar,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
+    scalar: components.ScalarBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.ScalarBatch._converter,  # type: ignore[misc]
     )
     # The scalar value to log.
     #

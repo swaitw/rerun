@@ -46,34 +46,32 @@ pub enum SmartChannelSource {
     /// process.
     Sdk,
 
-    /// The channel was created in the context of fetching data from a Rerun WebSocket server.
-    ///
-    /// We are likely running in a web browser.
-    WsClient {
-        /// The server we are connected to (or are trying to connect to)
-        ws_server_url: String,
-    },
-
-    /// The channel was created in the context of receiving data from one or more Rerun SDKs
-    /// over TCP.
-    ///
-    /// We are a TCP server listening on this port.
-    TcpServer { port: u16 },
-
     /// The channel was created in the context of streaming in RRD data from standard input.
     Stdin,
+
+    /// The data is streaming in directly from a Rerun Data Platform server, over gRPC.
+    RerunGrpcStream {
+        /// Should include `rerun://` prefix.
+        url: String,
+    },
+
+    /// A stream of messages over message proxy gRPC interface.
+    MessageProxy {
+        // TODO(#8761): URL prefix
+        /// Should include `temp://` prefix.
+        url: String,
+    },
 }
 
 impl std::fmt::Display for SmartChannelSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::File(path) => path.display().fmt(f),
-            Self::RrdHttpStream { url, follow: _ } => url.fmt(f),
+            Self::RrdHttpStream { url, follow: _ } | Self::RerunGrpcStream { url } => url.fmt(f),
             Self::RrdWebEventListener => "Web event listener".fmt(f),
             Self::JsChannel { channel_name } => write!(f, "Javascript channel: {channel_name}"),
             Self::Sdk => "SDK".fmt(f),
-            Self::WsClient { ws_server_url } => ws_server_url.fmt(f),
-            Self::TcpServer { port } => write!(f, "TCP server, port {port}"),
+            Self::MessageProxy { url } => write!(f, "gRPC server: {url}"),
             Self::Stdin => "Standard input".fmt(f),
         }
     }
@@ -84,9 +82,9 @@ impl SmartChannelSource {
         match self {
             Self::File(_) | Self::Sdk | Self::RrdWebEventListener | Self::Stdin => false,
             Self::RrdHttpStream { .. }
-            | Self::WsClient { .. }
             | Self::JsChannel { .. }
-            | Self::TcpServer { .. } => true,
+            | Self::RerunGrpcStream { .. }
+            | Self::MessageProxy { .. } => true,
         }
     }
 }
@@ -125,23 +123,21 @@ pub enum SmartMessageSource {
     /// The sender is a Rerun SDK running from another thread in the same process.
     Sdk,
 
-    /// The sender is a WebSocket client fetching data from a Rerun WebSocket server.
-    ///
-    /// We are likely running in a web browser.
-    WsClient {
-        /// The server we are connected to (or are trying to connect to)
-        ws_server_url: String,
-    },
-
-    /// The sender is a TCP client.
-    TcpClient {
-        // NOTE: Optional as we might not be able to retrieve the peer's address for some obscure
-        // reason.
-        addr: Option<std::net::SocketAddr>,
-    },
-
     /// The data is streaming in from standard input.
     Stdin,
+
+    /// A file on a Rerun Data Platform server, over `rerun://` gRPC interface.
+    RerunGrpcStream {
+        /// Should include `rerun://` prefix.
+        url: String,
+    },
+
+    /// A stream of messages over message proxy gRPC interface.
+    MessageProxy {
+        // TODO(#8761): URL prefix
+        /// Should include `temp://` prefix.
+        url: String,
+    },
 }
 
 impl std::fmt::Display for SmartMessageSource {
@@ -149,15 +145,12 @@ impl std::fmt::Display for SmartMessageSource {
         f.write_str(&match self {
             Self::Unknown => "unknown".into(),
             Self::File(path) => format!("file://{}", path.to_string_lossy()),
-            Self::RrdHttpStream { url } => url.clone(),
+            Self::RrdHttpStream { url }
+            | Self::RerunGrpcStream { url }
+            | Self::MessageProxy { url } => url.clone(),
             Self::RrdWebEventCallback => "web_callback".into(),
             Self::JsChannelPush => "javascript".into(),
             Self::Sdk => "sdk".into(),
-            Self::WsClient { ws_server_url } => ws_server_url.clone(),
-            Self::TcpClient { addr } => format!(
-                "tcp://{}",
-                addr.map_or_else(|| "(unknown ip)".to_owned(), |addr| addr.to_string())
-            ),
             Self::Stdin => "stdin".into(),
         })
     }

@@ -5,15 +5,19 @@
 
 #include "../collection.hpp"
 #include "../compiler_utils.hpp"
+#include "../component_batch.hpp"
+#include "../component_column.hpp"
 #include "../components/axis_length.hpp"
+#include "../components/rotation_axis_angle.hpp"
+#include "../components/rotation_quat.hpp"
 #include "../components/scale3d.hpp"
-#include "../components/transform3d.hpp"
 #include "../components/transform_mat3x3.hpp"
+#include "../components/transform_relation.hpp"
 #include "../components/translation3d.hpp"
-#include "../data_cell.hpp"
 #include "../indicator_component.hpp"
 #include "../rerun_sdk_export.hpp"
 #include "../result.hpp"
+#include "../rotation3d.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -23,13 +27,16 @@
 namespace rerun::archetypes {
     /// **Archetype**: A transform between two 3D spaces, i.e. a pose.
     ///
-    /// All components are applied in the inverse order they are listed here.
-    /// E.g. if both a 4x4 matrix with a translation and a translation vector are present,
-    /// the translation is applied first, followed by the matrix.
+    /// From the point of view of the entity's coordinate system,
+    /// all components are applied in the inverse order they are listed here.
+    /// E.g. if both a translation and a max3x3 transform are present,
+    /// the 3x3 matrix is applied first, followed by the translation.
     ///
-    /// Each transform component can be listed multiple times, but transform tree propagation is only possible
-    /// if there's only one instance for each transform component.
-    /// TODO(#6831): write more about the exact interaction with the to be written `OutOfTreeTransform` component.
+    /// Whenever you log this archetype, it will write all components, even if you do not explicitly set them.
+    /// This means that if you first log a transform with only a translation, and then log one with only a rotation,
+    /// it will be resolved to a transform with only a rotation.
+    ///
+    /// For transforms that affect only a single entity and do not propagate along the entity tree refer to `archetypes::InstancePoses3D`.
     ///
     /// ## Examples
     ///
@@ -76,7 +83,7 @@ namespace rerun::archetypes {
     ///     const auto rec = rerun::RecordingStream("rerun_example_transform3d_hierarchy");
     ///     rec.spawn().exit_on_failure();
     ///
-    ///     // TODO(#5521): log two space views as in the python example
+    ///     // TODO(#5521): log two views as in the python example
     ///
     ///     rec.set_time_seconds("sim_time", 0.0);
     ///
@@ -139,29 +146,184 @@ namespace rerun::archetypes {
     ///             rerun::Transform3D::from_translation(
     ///                 {std::cos(r_moon) * d_moon, std::sin(r_moon) * d_moon, 0.0f}
     ///             )
-    ///                 .with_from_parent(true)
+    ///                 .with_relation(rerun::components::TransformRelation::ChildFromParent)
     ///         );
     ///     }
     /// }
     /// ```
+    ///
+    /// ### Update a transform over time
+    /// ![image](https://static.rerun.io/transform3d_column_updates/80634e1c7c7a505387e975f25ea8b6bc1d4eb9db/full.png)
+    ///
+    /// ```cpp
+    /// #include <rerun.hpp>
+    ///
+    /// float truncated_radians(int deg) {
+    ///     auto degf = static_cast<float>(deg);
+    ///     const auto pi = 3.14159265358979323846f;
+    ///     return static_cast<float>(static_cast<int>(degf * pi / 180.0f * 1000.0f)) / 1000.0f;
+    /// }
+    ///
+    /// int main() {
+    ///     const auto rec = rerun::RecordingStream("rerun_example_transform3d_row_updates");
+    ///     rec.spawn().exit_on_failure();
+    ///
+    ///     rec.set_time_sequence("tick", 0);
+    ///     rec.log(
+    ///         "box",
+    ///         rerun::Boxes3D::from_half_sizes({{4.f, 2.f, 1.0f}}).with_fill_mode(rerun::FillMode::Solid),
+    ///         rerun::Transform3D().with_axis_length(10.0)
+    ///     );
+    ///
+    ///     for (int t = 0; t <100; t++) {
+    ///         rec.set_time_sequence("tick", t + 1);
+    ///         rec.log(
+    ///             "box",
+    ///             rerun::Transform3D()
+    ///                 .with_translation({0.0f, 0.0f, static_cast<float>(t) / 10.0f})
+    ///                 .with_rotation_axis_angle(rerun::RotationAxisAngle(
+    ///                     {0.0f, 1.0f, 0.0f},
+    ///                     rerun::Angle::radians(truncated_radians(t * 4))
+    ///                 ))
+    ///         );
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// ### Update a transform over time, in a single operation
+    /// ![image](https://static.rerun.io/transform3d_column_updates/80634e1c7c7a505387e975f25ea8b6bc1d4eb9db/full.png)
+    ///
+    /// ```cpp
+    /// #include <cmath>
+    /// #include <numeric>
+    /// #include <vector>
+    ///
+    /// #include <rerun.hpp>
+    ///
+    /// float truncated_radians(int deg) {
+    ///     auto degf = static_cast<float>(deg);
+    ///     const auto pi = 3.14159265358979323846f;
+    ///     return static_cast<float>(static_cast<int>(degf * pi / 180.0f * 1000.0f)) / 1000.0f;
+    /// }
+    ///
+    /// int main() {
+    ///     const auto rec = rerun::RecordingStream("rerun_example_transform3d_column_updates");
+    ///     rec.spawn().exit_on_failure();
+    ///
+    ///     rec.set_time_sequence("tick", 0);
+    ///     rec.log(
+    ///         "box",
+    ///         rerun::Boxes3D::from_half_sizes({{4.f, 2.f, 1.0f}}).with_fill_mode(rerun::FillMode::Solid),
+    ///         rerun::Transform3D().with_axis_length(10.0)
+    ///     );
+    ///
+    ///     std::vector<std::array<float, 3>> translations;
+    ///     std::vector<rerun::RotationAxisAngle> rotations;
+    ///     for (int t = 0; t <100; t++) {
+    ///         translations.push_back({0.0f, 0.0f, static_cast<float>(t) / 10.0f});
+    ///         rotations.push_back(rerun::RotationAxisAngle(
+    ///             {0.0f, 1.0f, 0.0f},
+    ///             rerun::Angle::radians(truncated_radians(t * 4))
+    ///         ));
+    ///     }
+    ///
+    ///     std::vector<int64_t> ticks(100);
+    ///     std::iota(ticks.begin(), ticks.end(), 1);
+    ///
+    ///     rec.send_columns(
+    ///         "box",
+    ///         rerun::TimeColumn::from_sequence("tick", ticks),
+    ///         rerun::Transform3D()
+    ///             .with_many_translation(translations)
+    ///             .with_many_rotation_axis_angle(rotations)
+    ///             .columns()
+    ///     );
+    /// }
+    /// ```
+    ///
+    /// ### Update specific properties of a transform over time
+    /// ![image](https://static.rerun.io/transform3d_partial_updates/11815bebc69ae400847896372b496cdd3e9b19fb/full.png)
+    ///
+    /// ```cpp
+    /// #include <rerun.hpp>
+    ///
+    /// float truncated_radians(int deg) {
+    ///     auto degf = static_cast<float>(deg);
+    ///     const auto pi = 3.14159265358979323846f;
+    ///     return static_cast<float>(static_cast<int>(degf * pi / 180.0f * 1000.0f)) / 1000.0f;
+    /// }
+    ///
+    /// int main() {
+    ///     const auto rec = rerun::RecordingStream("rerun_example_transform3d_partial_updates");
+    ///     rec.spawn().exit_on_failure();
+    ///
+    ///     // Set up a 3D box.
+    ///     rec.log(
+    ///         "box",
+    ///         rerun::Boxes3D::from_half_sizes({{4.f, 2.f, 1.0f}}).with_fill_mode(rerun::FillMode::Solid),
+    ///         rerun::Transform3D().with_axis_length(10.0)
+    ///     );
+    ///
+    ///     // Update only the rotation of the box.
+    ///     for (int deg = 0; deg <= 45; deg++) {
+    ///         auto rad = truncated_radians(deg * 4);
+    ///         rec.log(
+    ///             "box",
+    ///             rerun::Transform3D::update_fields().with_rotation_axis_angle(
+    ///                 rerun::RotationAxisAngle({0.0f, 1.0f, 0.0f}, rerun::Angle::radians(rad))
+    ///             )
+    ///         );
+    ///     }
+    ///
+    ///     // Update only the position of the box.
+    ///     for (int t = 0; t <= 50; t++) {
+    ///         rec.log(
+    ///             "box",
+    ///             rerun::Transform3D::update_fields().with_translation(
+    ///                 {0.0f, 0.0f, static_cast<float>(t) / 10.0f}
+    ///             )
+    ///         );
+    ///     }
+    ///
+    ///     // Update only the rotation of the box.
+    ///     for (int deg = 0; deg <= 45; deg++) {
+    ///         auto rad = truncated_radians((deg + 45) * 4);
+    ///         rec.log(
+    ///             "box",
+    ///             rerun::Transform3D::update_fields().with_rotation_axis_angle(
+    ///                 rerun::RotationAxisAngle({0.0f, 1.0f, 0.0f}, rerun::Angle::radians(rad))
+    ///             )
+    ///         );
+    ///     }
+    ///
+    ///     // Clear all of the box's attributes, and reset its axis length.
+    ///     rec.log("box", rerun::Transform3D::clear_fields().with_axis_length(15.0));
+    /// }
+    /// ```
     struct Transform3D {
-        /// The transform
-        rerun::components::Transform3D transform;
+        /// Translation vector.
+        std::optional<ComponentBatch> translation;
 
-        /// Translation vectors.
-        std::optional<Collection<rerun::components::Translation3D>> translation;
+        /// Rotation via axis + angle.
+        std::optional<ComponentBatch> rotation_axis_angle;
+
+        /// Rotation via quaternion.
+        std::optional<ComponentBatch> quaternion;
 
         /// Scaling factor.
-        std::optional<Collection<rerun::components::Scale3D>> scale;
+        std::optional<ComponentBatch> scale;
 
-        /// 3x3 transformation matrices.
-        std::optional<Collection<rerun::components::TransformMat3x3>> mat3x3;
+        /// 3x3 transformation matrix.
+        std::optional<ComponentBatch> mat3x3;
+
+        /// Specifies the relation this transform establishes between this entity and its parent.
+        std::optional<ComponentBatch> relation;
 
         /// Visual length of the 3 axes.
         ///
         /// The length is interpreted in the local coordinate system of the transform.
         /// If the transform is scaled, the axes will be scaled accordingly.
-        std::optional<rerun::components::AxisLength> axis_length;
+        std::optional<ComponentBatch> axis_length;
 
       public:
         static constexpr const char IndicatorComponentName[] =
@@ -169,20 +331,61 @@ namespace rerun::archetypes {
 
         /// Indicator component, used to identify the archetype when converting to a list of components.
         using IndicatorComponent = rerun::components::IndicatorComponent<IndicatorComponentName>;
+        /// The name of the archetype as used in `ComponentDescriptor`s.
+        static constexpr const char ArchetypeName[] = "rerun.archetypes.Transform3D";
 
-      public:
-        // Extensions to generated type defined in 'transform3d_ext.cpp'
+        /// `ComponentDescriptor` for the `translation` field.
+        static constexpr auto Descriptor_translation = ComponentDescriptor(
+            ArchetypeName, "translation",
+            Loggable<rerun::components::Translation3D>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `rotation_axis_angle` field.
+        static constexpr auto Descriptor_rotation_axis_angle = ComponentDescriptor(
+            ArchetypeName, "rotation_axis_angle",
+            Loggable<rerun::components::RotationAxisAngle>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `quaternion` field.
+        static constexpr auto Descriptor_quaternion = ComponentDescriptor(
+            ArchetypeName, "quaternion",
+            Loggable<rerun::components::RotationQuat>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `scale` field.
+        static constexpr auto Descriptor_scale = ComponentDescriptor(
+            ArchetypeName, "scale", Loggable<rerun::components::Scale3D>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `mat3x3` field.
+        static constexpr auto Descriptor_mat3x3 = ComponentDescriptor(
+            ArchetypeName, "mat3x3",
+            Loggable<rerun::components::TransformMat3x3>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `relation` field.
+        static constexpr auto Descriptor_relation = ComponentDescriptor(
+            ArchetypeName, "relation",
+            Loggable<rerun::components::TransformRelation>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `axis_length` field.
+        static constexpr auto Descriptor_axis_length = ComponentDescriptor(
+            ArchetypeName, "axis_length",
+            Loggable<rerun::components::AxisLength>::Descriptor.component_name
+        );
 
+      public: // START of extensions from transform3d_ext.cpp:
         /// Identity transformation.
         ///
         /// Applying this transform does not alter an entity's transformation.
         RERUN_SDK_EXPORT static const Transform3D IDENTITY;
 
+        /// Invalid transformation.
+        ///
+        /// Applying this transform will cause this entity and the entire subtree not to be visualized.
+        RERUN_SDK_EXPORT static const Transform3D INVALID;
+
         /// Creates a new 3D transform from translation and matrix provided as 3 columns.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation_ \çopydoc Transform3D::translation
         /// \param columns Column vectors of 3x3 matrix.
-        /// \param from_parent \copydoc datatypes::TranslationRotationScale3D::from_parent
+        /// \param from_parent If true, the transform relation to `TransformRelation::ChildFromParent`.
         ///
         /// _Implementation note:_ This overload is necessary, otherwise the array may be
         /// interpreted as bool and call the wrong overload.
@@ -190,26 +393,27 @@ namespace rerun::archetypes {
             const components::Translation3D& translation_, const datatypes::Vec3D (&columns)[3],
             bool from_parent = false
         )
-            : transform(datatypes::TranslationRotationScale3D(from_parent)),
-              translation(Collection<components::Translation3D>::take_ownership(translation_)),
-              mat3x3(Collection<components::TransformMat3x3>::take_ownership(
-                  components::TransformMat3x3(columns)
-              )) {}
+            : Transform3D(translation_, components::TransformMat3x3(columns), from_parent) {}
 
         /// Creates a new 3D transform from translation/matrix.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation_ \çopydoc Transform3D::translation
         /// \param mat3x3_ \copydoc Transform3D::mat3x3
-        /// \param from_parent \copydoc datatypes::TranslationRotationScale3D::from_parent
+        /// \param from_parent If true, the transform relation to `TransformRelation::ChildFromParent`.
         Transform3D(
             const components::Translation3D& translation_,
             const components::TransformMat3x3& mat3x3_, bool from_parent = false
-        )
-            : transform(datatypes::TranslationRotationScale3D(from_parent)),
-              translation(Collection<components::Translation3D>::take_ownership(translation_)),
-              mat3x3(Collection<components::TransformMat3x3>::take_ownership(mat3x3_)) {}
+        ) {
+            *this = Transform3D::clear_fields().with_translation(translation_).with_mat3x3(mat3x3_);
+            if (from_parent) {
+                *this =
+                    std::move(*this).with_relation(components::TransformRelation::ChildFromParent);
+            }
+        }
 
         /// From a translation applied after a 3x3 matrix.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation \çopydoc Transform3D::translation
         /// \param mat3x3 \copydoc Transform3D::mat3x3
@@ -220,6 +424,7 @@ namespace rerun::archetypes {
         }
 
         /// From a translation applied after a 3x3 matrix provided as 3 columns.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation \çopydoc Transform3D::translation
         /// \param columns Column vectors of 3x3 matrix.
@@ -233,14 +438,20 @@ namespace rerun::archetypes {
         }
 
         /// From translation only.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation_ \çopydoc Transform3D::translation
-        /// \param from_parent \copydoc datatypes::TranslationRotationScale3D::from_parent
-        Transform3D(const components::Translation3D& translation_, bool from_parent = false)
-            : transform(datatypes::TranslationRotationScale3D(from_parent)),
-              translation(Collection<components::Translation3D>::take_ownership(translation_)) {}
+        /// \param from_parent If true, the transform relation to `TransformRelation::ChildFromParent`.
+        Transform3D(const components::Translation3D& translation_, bool from_parent = false) {
+            *this = Transform3D::clear_fields().with_translation(translation_);
+            if (from_parent) {
+                *this =
+                    std::move(*this).with_relation(components::TransformRelation::ChildFromParent);
+            }
+        }
 
         /// From a translation.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation \çopydoc Transform3D::translation
         static Transform3D from_translation(const components::Translation3D& translation) {
@@ -248,14 +459,20 @@ namespace rerun::archetypes {
         }
 
         /// From 3x3 matrix only.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param mat3x3_ \copydoc Transform3D::mat3x3
-        /// \param from_parent \copydoc datatypes::TranslationRotationScale3D::from_parent
-        Transform3D(const components::TransformMat3x3& mat3x3_, bool from_parent = false)
-            : transform(datatypes::TranslationRotationScale3D(from_parent)),
-              mat3x3(Collection<components::TransformMat3x3>::take_ownership(mat3x3_)) {}
+        /// \param from_parent If true, the transform relation to `TransformRelation::ChildFromParent`.
+        Transform3D(const components::TransformMat3x3& mat3x3_, bool from_parent = false) {
+            *this = Transform3D::clear_fields().with_mat3x3(mat3x3_);
+            if (from_parent) {
+                *this =
+                    std::move(*this).with_relation(components::TransformRelation::ChildFromParent);
+            }
+        }
 
         /// From 3x3 matrix only.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param mat3x3 \copydoc Transform3D::mat3x3
         static Transform3D from_mat3x3(const components::TransformMat3x3& mat3x3) {
@@ -263,112 +480,133 @@ namespace rerun::archetypes {
         }
 
         /// From 3x3 matrix provided as 3 columns only.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param columns Column vectors of 3x3 matrix.
-        /// \param from_parent \copydoc datatypes::TranslationRotationScale3D::from_parent
+        /// \param from_parent If true, the transform relation to `TransformRelation::ChildFromParent`.
         Transform3D(const datatypes::Vec3D (&columns)[3], bool from_parent = false)
-            : transform(datatypes::TranslationRotationScale3D(from_parent)),
-              mat3x3(Collection<components::TransformMat3x3>::take_ownership(
-                  components::TransformMat3x3(columns)
-              )) {}
+            : Transform3D(components::TransformMat3x3(columns), from_parent) {}
 
         /// From 3x3 matrix provided as 3 columns only.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param columns Column vectors of 3x3 matrix.
         static Transform3D from_mat3x3(const datatypes::Vec3D (&columns)[3]) {
-            return Transform3D::from_mat3x3(components::TransformMat3x3(columns));
+            return Transform3D(components::TransformMat3x3(columns), false);
         }
 
         /// Creates a new 3D transform from translation/rotation/scale.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation_ \copydoc Transform3D::translation
-        /// \param rotation \copydoc datatypes::TranslationRotationScale3D::rotation
+        /// \param rotation Rotation represented either as a quaternion or axis + angle rotation.
         /// \param scale_ \copydoc Transform3D::scale
-        /// \param from_parent \copydoc datatypes::TranslationRotationScale3D::from_parent
+        /// \param from_parent If true, the transform relation to `TransformRelation::ChildFromParent`.
         Transform3D(
-            const components::Translation3D& translation_, const datatypes::Rotation3D& rotation,
+            const components::Translation3D& translation_, const Rotation3D& rotation,
             const components::Scale3D& scale_, bool from_parent = false
-        )
-            : transform(datatypes::TranslationRotationScale3D(rotation, from_parent)),
-              translation(Collection<components::Translation3D>::take_ownership(translation_)),
-              scale(Collection<components::Scale3D>::take_ownership(scale_)) {}
+        ) {
+            *this = Transform3D::clear_fields()
+                        .with_translation(translation_)
+                        .with_scale(scale_)
+                        .with_rotation(rotation);
+            if (from_parent) {
+                *this =
+                    std::move(*this).with_relation(components::TransformRelation::ChildFromParent);
+            }
+        }
 
         /// Creates a new 3D transform from translation/rotation/uniform-scale.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation_ \copydoc Transform3D::translation
-        /// \param rotation \copydoc datatypes::TranslationRotationScale3D::rotation
+        /// \param rotation Rotation represented either as a quaternion or axis + angle rotation.
         /// \param uniform_scale Uniform scale factor that is applied to all axis equally.
-        /// \param from_parent \copydoc datatypes::TranslationRotationScale3D::from_parent
+        /// \param from_parent If true, the transform relation to `TransformRelation::ChildFromParent`.
         ///
         /// _Implementation note:_ This explicit overload prevents interpretation of the float as
         /// bool, leading to a call to the wrong overload.
         Transform3D(
-            const components::Translation3D& translation_, const datatypes::Rotation3D& rotation,
+            const components::Translation3D& translation_, const Rotation3D& rotation,
             float uniform_scale, bool from_parent = false
         )
             : Transform3D(translation_, rotation, components::Scale3D(uniform_scale), from_parent) {
         }
 
         /// From a translation, applied after a rotation & scale, known as an affine transformation.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation \copydoc Transform3D::translation
-        /// \param rotation \copydoc datatypes::TranslationRotationScale3D::rotation
+        /// \param rotation Rotation represented either as a quaternion or axis + angle rotation.
         /// \param scale \copydoc Transform3D::scale
         static Transform3D from_translation_rotation_scale(
-            const components::Translation3D& translation, const datatypes::Rotation3D& rotation,
+            const components::Translation3D& translation, const Rotation3D& rotation,
             const components::Scale3D& scale
         ) {
             return Transform3D(translation, rotation, scale, false);
         }
 
         /// From a translation, applied after a rotation & scale, known as an affine transformation.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation \copydoc Transform3D::translation
-        /// \param rotation \copydoc datatypes::TranslationRotationScale3D::rotation
+        /// \param rotation Rotation represented either as a quaternion or axis + angle rotation.
         /// \param uniform_scale Uniform scale factor that is applied to all axis equally.
         static Transform3D from_translation_rotation_scale(
-            const components::Translation3D& translation, const datatypes::Rotation3D& rotation,
+            const components::Translation3D& translation, const Rotation3D& rotation,
             float uniform_scale
         ) {
             return Transform3D(translation, rotation, components::Scale3D(uniform_scale), false);
         }
 
         /// Creates a new rigid transform (translation & rotation only).
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation_ \copydoc Transform3D::translation
-        /// \param rotation \copydoc datatypes::TranslationRotationScale3D::rotation
-        /// \param from_parent \copydoc datatypes::TranslationRotationScale3D::from_parent
+        /// \param rotation Rotation represented either as a quaternion or axis + angle rotation.
+        /// \param from_parent If true, the transform relation to `TransformRelation::ChildFromParent`.
         Transform3D(
-            const components::Translation3D& translation_, const datatypes::Rotation3D& rotation,
+            const components::Translation3D& translation_, const Rotation3D& rotation,
             bool from_parent = false
-        )
-            : transform(datatypes::TranslationRotationScale3D(rotation, from_parent)),
-              translation(Collection<components::Translation3D>::take_ownership(translation_)) {}
+        ) {
+            *this =
+                Transform3D::clear_fields().with_translation(translation_).with_rotation(rotation);
+            if (from_parent) {
+                *this =
+                    std::move(*this).with_relation(components::TransformRelation::ChildFromParent);
+            }
+        }
 
         /// From a rotation & scale.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation \copydoc Transform3D::translation
-        /// \param rotation \copydoc datatypes::TranslationRotationScale3D::rotation
+        /// \param rotation Rotation represented either as a quaternion or axis + angle rotation.
         static Transform3D from_translation_rotation(
-            const components::Translation3D& translation, const datatypes::Rotation3D& rotation
+            const components::Translation3D& translation, const Rotation3D& rotation
         ) {
             return Transform3D(translation, rotation, false);
         }
 
         /// From translation & scale only.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation_ \copydoc Transform3D::translation
         /// \param scale_ Transform3D::scale
-        /// \param from_parent \copydoc datatypes::TranslationRotationScale3D::from_parent
+        /// \param from_parent If true, the transform relation to `TransformRelation::ChildFromParent`.
         Transform3D(
             const components::Translation3D& translation_, const components::Scale3D& scale_,
             bool from_parent = false
-        )
-            : transform(datatypes::TranslationRotationScale3D(from_parent)),
-              translation(Collection<components::Translation3D>::take_ownership(translation_)),
-              scale(Collection<components::Scale3D>::take_ownership(scale_)) {}
+        ) {
+            *this = Transform3D::clear_fields().with_translation(translation_).with_scale(scale_);
+            if (from_parent) {
+                *this =
+                    std::move(*this).with_relation(components::TransformRelation::ChildFromParent);
+            }
+        }
 
         /// From a translation applied after a scale.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation \copydoc Transform3D::translation
         /// \param scale Transform3D::scale
@@ -379,10 +617,11 @@ namespace rerun::archetypes {
         }
 
         /// From translation & uniform scale only.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param translation_ \copydoc Transform3D::translation
         /// \param uniform_scale Uniform scale factor that is applied to all axis equally.
-        /// \param from_parent \copydoc datatypes::TranslationRotationScale3D::from_parent
+        /// \param from_parent If true, the transform relation to `TransformRelation::ChildFromParent`.
         ///
         /// _Implementation note:_ This explicit overload prevents interpretation of the float as
         /// bool, leading to a call to the wrong overload.
@@ -393,73 +632,89 @@ namespace rerun::archetypes {
             : Transform3D(translation_, components::Scale3D(uniform_scale), from_parent) {}
 
         /// From rotation & scale.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
-        /// \param rotation \copydoc datatypes::TranslationRotationScale3D::rotation
+        /// \param rotation Rotation represented either as a quaternion or axis + angle rotation.
         /// \param scale_ Transform3D::scale
-        /// \param from_parent \copydoc datatypes::TranslationRotationScale3D::from_parent
+        /// \param from_parent If true, the transform relation to `TransformRelation::ChildFromParent`.
         Transform3D(
-            const datatypes::Rotation3D& rotation, const components::Scale3D& scale_,
-            bool from_parent = false
-        )
-            : transform(datatypes::TranslationRotationScale3D(rotation, from_parent)),
-              scale(Collection<components::Scale3D>::take_ownership(scale_)) {}
+            const Rotation3D& rotation, const components::Scale3D& scale_, bool from_parent = false
+        ) {
+            *this = Transform3D::clear_fields().with_scale(scale_).with_rotation(rotation);
+            if (from_parent) {
+                *this =
+                    std::move(*this).with_relation(components::TransformRelation::ChildFromParent);
+            }
+        }
 
         /// From rotation & uniform scale.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
-        /// \param rotation \copydoc datatypes::TranslationRotationScale3D::rotation
+        /// \param rotation Rotation represented either as a quaternion or axis + angle rotation.
         /// \param uniform_scale Uniform scale factor that is applied to all axis equally.
-        /// \param from_parent \copydoc datatypes::TranslationRotationScale3D::from_parent
+        /// \param from_parent If true, the transform relation to `TransformRelation::ChildFromParent`.
         ///
         /// _Implementation note:_ This explicit overload prevents interpretation of the float as
         /// bool, leading to a call to the wrong overload.
-        Transform3D(
-            const datatypes::Rotation3D& rotation, float uniform_scale, bool from_parent = false
-        )
+        Transform3D(const Rotation3D& rotation, float uniform_scale, bool from_parent = false)
             : Transform3D(rotation, components::Scale3D(uniform_scale), from_parent) {}
 
         /// From a rotation & scale.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
-        /// \param rotation \copydoc datatypes::TranslationRotationScale3D::rotation
+        /// \param rotation Rotation represented either as a quaternion or axis + angle rotation.
         /// \param scale Transform3D::scale
         static Transform3D from_rotation_scale(
-            const datatypes::Rotation3D& rotation, const components::Scale3D& scale
+            const Rotation3D& rotation, const components::Scale3D& scale
         ) {
             return Transform3D(rotation, scale, false);
         }
 
         /// From a rotation & uniform scale.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
-        /// \param rotation \copydoc datatypes::TranslationRotationScale3D::rotation
+        /// \param rotation Rotation represented either as a quaternion or axis + angle rotation.
         /// \param uniform_scale Uniform scale factor that is applied to all axis equally.
-        static Transform3D from_rotation_scale(
-            const datatypes::Rotation3D& rotation, float uniform_scale
-        ) {
+        static Transform3D from_rotation_scale(const Rotation3D& rotation, float uniform_scale) {
             return Transform3D(rotation, components::Scale3D(uniform_scale), false);
         }
 
         /// From rotation only.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
-        /// \param rotation \copydoc datatypes::TranslationRotationScale3D::rotation
-        /// \param from_parent \copydoc datatypes::TranslationRotationScale3D::from_parent
-        Transform3D(const datatypes::Rotation3D& rotation, bool from_parent = false)
-            : transform(datatypes::TranslationRotationScale3D(rotation, from_parent)) {}
+        /// \param rotation Rotation represented either as a quaternion or axis + angle rotation.
+        /// \param from_parent If true, the transform relation to `TransformRelation::ChildFromParent`.
+        Transform3D(const Rotation3D& rotation, bool from_parent = false) {
+            *this = Transform3D::clear_fields().with_rotation(rotation);
+            if (from_parent) {
+                *this =
+                    std::move(*this).with_relation(components::TransformRelation::ChildFromParent);
+            }
+        }
 
         /// From rotation only.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
-        /// \param rotation \copydoc datatypes::TranslationRotationScale3D::rotation
-        static Transform3D from_rotation(const datatypes::Rotation3D& rotation) {
+        /// \param rotation Rotation represented either as a quaternion or axis + angle rotation.
+        static Transform3D from_rotation(const Rotation3D& rotation) {
             return Transform3D(rotation, false);
         }
 
         /// From scale only.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
-        /// \param scale_ \copydoc datatypes::TranslationRotationScale3D::from_parent
+        /// \param scale_ If true, the transform relation to `TransformRelation::ChildFromParent`.
         /// \param from_parent \copydoc Transform3D::scale
-        Transform3D(const components::Scale3D& scale_, bool from_parent = false)
-            : transform(datatypes::TranslationRotationScale3D(from_parent)),
-              scale(Collection<components::Scale3D>::take_ownership(scale_)) {}
+        Transform3D(const components::Scale3D& scale_, bool from_parent = false) {
+            *this = Transform3D::clear_fields().with_scale(scale_);
+            if (from_parent) {
+                *this =
+                    std::move(*this).with_relation(components::TransformRelation::ChildFromParent);
+            }
+        }
 
         /// From scale only.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param scale Transform3D::scale
         static Transform3D from_scale(const components::Scale3D& scale) {
@@ -467,61 +722,189 @@ namespace rerun::archetypes {
         }
 
         /// From scale only.
+        /// Clears out all other components like `Transform3D::clear_fields`.
         ///
         /// \param uniform_scale Uniform scale factor that is applied to all axis equally.
         static Transform3D from_scale(float uniform_scale) {
             return Transform3D(components::Scale3D(uniform_scale), false);
         }
 
-        /// TODO(#6831): Should be autogenerated once from_parent component is introduced
-        Transform3D with_from_parent(bool from_parent) && {
-            auto translation_rotation_scale = transform.repr.get_translation_rotation_scale();
-            if (translation_rotation_scale != nullptr) {
-                auto cpy = *translation_rotation_scale;
-                cpy.from_parent = from_parent;
-                transform = cpy;
+        /// Set the rotation component of the transform using the `rerun::Rotation3D` utility.
+        Transform3D with_rotation(const Rotation3D& rotation) && {
+            if (rotation.axis_angle.has_value()) {
+                *this = std::move(*this).with_rotation_axis_angle(rotation.axis_angle.value());
             }
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+            if (rotation.quaternion.has_value()) {
+                *this = std::move(*this).with_quaternion(rotation.quaternion.value());
+            }
+            return std::move(*this);
         }
+
+        // END of extensions from transform3d_ext.cpp, start of generated code:
 
       public:
         Transform3D() = default;
         Transform3D(Transform3D&& other) = default;
+        Transform3D(const Transform3D& other) = default;
+        Transform3D& operator=(const Transform3D& other) = default;
+        Transform3D& operator=(Transform3D&& other) = default;
 
-        explicit Transform3D(rerun::components::Transform3D _transform)
-            : transform(std::move(_transform)) {}
+        /// Update only some specific fields of a `Transform3D`.
+        static Transform3D update_fields() {
+            return Transform3D();
+        }
 
-        /// Translation vectors.
-        Transform3D with_translation(Collection<rerun::components::Translation3D> _translation) && {
-            translation = std::move(_translation);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        /// Clear all the fields of a `Transform3D`.
+        static Transform3D clear_fields();
+
+        /// Translation vector.
+        Transform3D with_translation(const rerun::components::Translation3D& _translation) && {
+            translation = ComponentBatch::from_loggable(_translation, Descriptor_translation)
+                              .value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `translation` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_translation` should
+        /// be used when logging a single row's worth of data.
+        Transform3D with_many_translation(
+            const Collection<rerun::components::Translation3D>& _translation
+        ) && {
+            translation = ComponentBatch::from_loggable(_translation, Descriptor_translation)
+                              .value_or_throw();
+            return std::move(*this);
+        }
+
+        /// Rotation via axis + angle.
+        Transform3D with_rotation_axis_angle(
+            const rerun::components::RotationAxisAngle& _rotation_axis_angle
+        ) && {
+            rotation_axis_angle =
+                ComponentBatch::from_loggable(_rotation_axis_angle, Descriptor_rotation_axis_angle)
+                    .value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `rotation_axis_angle` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_rotation_axis_angle` should
+        /// be used when logging a single row's worth of data.
+        Transform3D with_many_rotation_axis_angle(
+            const Collection<rerun::components::RotationAxisAngle>& _rotation_axis_angle
+        ) && {
+            rotation_axis_angle =
+                ComponentBatch::from_loggable(_rotation_axis_angle, Descriptor_rotation_axis_angle)
+                    .value_or_throw();
+            return std::move(*this);
+        }
+
+        /// Rotation via quaternion.
+        Transform3D with_quaternion(const rerun::components::RotationQuat& _quaternion) && {
+            quaternion =
+                ComponentBatch::from_loggable(_quaternion, Descriptor_quaternion).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `quaternion` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_quaternion` should
+        /// be used when logging a single row's worth of data.
+        Transform3D with_many_quaternion(
+            const Collection<rerun::components::RotationQuat>& _quaternion
+        ) && {
+            quaternion =
+                ComponentBatch::from_loggable(_quaternion, Descriptor_quaternion).value_or_throw();
+            return std::move(*this);
         }
 
         /// Scaling factor.
-        Transform3D with_scale(Collection<rerun::components::Scale3D> _scale) && {
-            scale = std::move(_scale);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        Transform3D with_scale(const rerun::components::Scale3D& _scale) && {
+            scale = ComponentBatch::from_loggable(_scale, Descriptor_scale).value_or_throw();
+            return std::move(*this);
         }
 
-        /// 3x3 transformation matrices.
-        Transform3D with_mat3x3(Collection<rerun::components::TransformMat3x3> _mat3x3) && {
-            mat3x3 = std::move(_mat3x3);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        /// This method makes it possible to pack multiple `scale` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_scale` should
+        /// be used when logging a single row's worth of data.
+        Transform3D with_many_scale(const Collection<rerun::components::Scale3D>& _scale) && {
+            scale = ComponentBatch::from_loggable(_scale, Descriptor_scale).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// 3x3 transformation matrix.
+        Transform3D with_mat3x3(const rerun::components::TransformMat3x3& _mat3x3) && {
+            mat3x3 = ComponentBatch::from_loggable(_mat3x3, Descriptor_mat3x3).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `mat3x3` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_mat3x3` should
+        /// be used when logging a single row's worth of data.
+        Transform3D with_many_mat3x3(const Collection<rerun::components::TransformMat3x3>& _mat3x3
+        ) && {
+            mat3x3 = ComponentBatch::from_loggable(_mat3x3, Descriptor_mat3x3).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// Specifies the relation this transform establishes between this entity and its parent.
+        Transform3D with_relation(const rerun::components::TransformRelation& _relation) && {
+            relation =
+                ComponentBatch::from_loggable(_relation, Descriptor_relation).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `relation` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_relation` should
+        /// be used when logging a single row's worth of data.
+        Transform3D with_many_relation(
+            const Collection<rerun::components::TransformRelation>& _relation
+        ) && {
+            relation =
+                ComponentBatch::from_loggable(_relation, Descriptor_relation).value_or_throw();
+            return std::move(*this);
         }
 
         /// Visual length of the 3 axes.
         ///
         /// The length is interpreted in the local coordinate system of the transform.
         /// If the transform is scaled, the axes will be scaled accordingly.
-        Transform3D with_axis_length(rerun::components::AxisLength _axis_length) && {
-            axis_length = std::move(_axis_length);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        Transform3D with_axis_length(const rerun::components::AxisLength& _axis_length) && {
+            axis_length = ComponentBatch::from_loggable(_axis_length, Descriptor_axis_length)
+                              .value_or_throw();
+            return std::move(*this);
         }
+
+        /// This method makes it possible to pack multiple `axis_length` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_axis_length` should
+        /// be used when logging a single row's worth of data.
+        Transform3D with_many_axis_length(
+            const Collection<rerun::components::AxisLength>& _axis_length
+        ) && {
+            axis_length = ComponentBatch::from_loggable(_axis_length, Descriptor_axis_length)
+                              .value_or_throw();
+            return std::move(*this);
+        }
+
+        /// Partitions the component data into multiple sub-batches.
+        ///
+        /// Specifically, this transforms the existing `ComponentBatch` data into `ComponentColumn`s
+        /// instead, via `ComponentBatch::partitioned`.
+        ///
+        /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+        ///
+        /// The specified `lengths` must sum to the total length of the component batch.
+        Collection<ComponentColumn> columns(const Collection<uint32_t>& lengths_);
+
+        /// Partitions the component data into unit-length sub-batches.
+        ///
+        /// This is semantically similar to calling `columns` with `std::vector<uint32_t>(n, 1)`,
+        /// where `n` is automatically guessed.
+        Collection<ComponentColumn> columns();
     };
 
 } // namespace rerun::archetypes
@@ -535,6 +918,8 @@ namespace rerun {
     template <>
     struct AsComponents<archetypes::Transform3D> {
         /// Serialize all set component batches.
-        static Result<std::vector<DataCell>> serialize(const archetypes::Transform3D& archetype);
+        static Result<Collection<ComponentBatch>> as_batches(
+            const archetypes::Transform3D& archetype
+        );
     };
 } // namespace rerun

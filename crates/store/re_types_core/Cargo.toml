@@ -29,31 +29,30 @@ ignored = [
 default = []
 
 ## Enable (de)serialization using serde.
-serde = ["dep:serde", "re_string_interner/serde"]
+serde = ["dep:serde", "re_string_interner/serde", "re_tuid/serde"]
 
 
 [dependencies]
 # Rerun
+re_arrow_util.workspace = true
+re_byte_size.workspace = true
 re_case.workspace = true
 re_error.workspace = true
+re_log.workspace = true
 re_string_interner.workspace = true
 re_tracing.workspace = true
-re_tuid.workspace = true
+re_tuid = { workspace = true, features = ["bytemuck"] }
 
 # External
 anyhow.workspace = true
-arrow2 = { workspace = true, features = [
-  "io_ipc",
-  "io_print",
-  "compute_concatenate",
-] }
+arrow.workspace = true
 backtrace.workspace = true
-bytemuck.workspace = true
+bytemuck = { workspace = true, features = ["derive"] }
 document-features.workspace = true
+half.workspace = true
 itertools.workspace = true
 nohash-hasher.workspace = true
 once_cell.workspace = true
-smallvec.workspace = true
 thiserror.workspace = true
 
 # Optional dependencies
@@ -61,6 +60,7 @@ serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
+similar-asserts.workspace = true
 
 [lib]
 bench = false

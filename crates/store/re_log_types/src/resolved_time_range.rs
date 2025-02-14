@@ -89,6 +89,12 @@ impl ResolvedTimeRange {
         self.min <= time && time <= self.max
     }
 
+    /// Does this range fully contain the other?
+    #[inline]
+    pub fn contains_range(&self, other: Self) -> bool {
+        self.min <= other.min && other.max <= self.max
+    }
+
     #[inline]
     pub fn intersects(&self, other: Self) -> bool {
         self.min <= other.max && self.max >= other.min
@@ -119,7 +125,7 @@ impl ResolvedTimeRange {
     }
 }
 
-impl re_types_core::SizeBytes for ResolvedTimeRange {
+impl re_byte_size::SizeBytes for ResolvedTimeRange {
     #[inline]
     fn heap_size_bytes(&self) -> u64 {
         0

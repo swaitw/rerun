@@ -3,11 +3,7 @@ use re_log_types::ApplicationId;
 /// Convert to lowercase and replace any character that is not a fairly common
 /// filename character with '-'
 pub fn sanitize_app_id(app_id: &ApplicationId) -> String {
-    let output = app_id.0.to_lowercase();
-    output.replace(
-        |c: char| !matches!(c, '0'..='9' | 'a'..='z' | '.' | '_' | '+' | '(' | ')' | '[' | ']'),
-        "-",
-    )
+    re_viewer_context::santitize_file_name(&app_id.0.to_lowercase())
 }
 
 /// Determine the default path for a blueprint based on its `ApplicationId`
@@ -60,10 +56,10 @@ pub fn default_blueprint_path(app_id: &ApplicationId) -> anyhow::Result<std::pat
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn encode_to_file<'a>(
+pub fn encode_to_file(
     version: re_build_info::CrateVersion,
     path: &std::path::Path,
-    messages: impl Iterator<Item = &'a re_log_types::LogMsg>,
+    messages: impl Iterator<Item = re_chunk::ChunkResult<re_log_types::LogMsg>>,
 ) -> anyhow::Result<()> {
     re_tracing::profile_function!();
     use anyhow::Context as _;
@@ -71,7 +67,8 @@ pub fn encode_to_file<'a>(
     let mut file = std::fs::File::create(path)
         .with_context(|| format!("Failed to create file at {path:?}"))?;
 
-    let encoding_options = re_log_encoding::EncodingOptions::COMPRESSED;
+    let encoding_options = re_log_encoding::EncodingOptions::MSGPACK_COMPRESSED;
     re_log_encoding::encoder::encode(version, encoding_options, messages, &mut file)
+        .map(|_| ())
         .context("Message encode")
 }

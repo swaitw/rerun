@@ -10,7 +10,7 @@
 #![doc = document_features::document_features!()]
 //!
 
-// TODO(#3408): remove unwrap()
+// TODO(#6330): remove unwrap()
 #![allow(clippy::unwrap_used)]
 #![warn(missing_docs)] // Let's keep the this crate well-documented!
 
@@ -33,7 +33,27 @@ pub use self::recording_stream::{
     RecordingStreamResult,
 };
 
-pub use re_sdk_comms::{default_flush_timeout, default_server_addr};
+/// The default port of a Rerun gRPC server.
+pub const DEFAULT_SERVER_PORT: u16 = 9876;
+
+/// The default URL of a Rerun gRPC server.
+///
+/// This isn't used to _host_ the server, only to _connect_ to it.
+pub const DEFAULT_CONNECT_URL: &str =
+    const_format::concatcp!("http://127.0.0.1:{DEFAULT_SERVER_PORT}");
+
+/// The default address of a Rerun TCP server which an SDK connects to.
+#[deprecated(since = "0.22.0", note = "migrate to connect_grpc")]
+pub fn default_server_addr() -> std::net::SocketAddr {
+    std::net::SocketAddr::from(([127, 0, 0, 1], DEFAULT_SERVER_PORT))
+}
+
+/// The default amount of time to wait for the TCP connection to resume during a flush
+#[allow(clippy::unnecessary_wraps)]
+pub fn default_flush_timeout() -> Option<std::time::Duration> {
+    // NOTE: This is part of the SDK and meant to be used where we accept `Option<std::time::Duration>` values.
+    Some(std::time::Duration::from_secs(2))
+}
 
 pub use re_log_types::{
     entity_path, ApplicationId, EntityPath, EntityPathPart, Instance, StoreId, StoreKind,
@@ -61,14 +81,14 @@ impl crate::sink::LogSink for re_log_encoding::FileSink {
 /// Different destinations for log messages.
 ///
 /// This is how you select whether the log stream ends up
-/// sent over TCP, written to file, etc.
+/// sent over gRPC, written to file, etc.
 pub mod sink {
     pub use crate::binary_stream_sink::{
         BinaryStreamSink, BinaryStreamSinkError, BinaryStreamStorage,
     };
-    pub use crate::log_sink::{
-        BufferedSink, CallbackSink, LogSink, MemorySink, MemorySinkStorage, TcpSink,
-    };
+    pub use crate::log_sink::{BufferedSink, CallbackSink, LogSink, MemorySink, MemorySinkStorage};
+
+    pub use crate::log_sink::GrpcSink;
 
     #[cfg(not(target_arch = "wasm32"))]
     pub use re_log_encoding::{FileSink, FileSinkError};
@@ -77,8 +97,8 @@ pub mod sink {
 /// Things directly related to logging.
 pub mod log {
     pub use re_chunk::{
-        Chunk, ChunkBatcher, ChunkBatcherConfig, ChunkBatcherError, ChunkBatcherResult, ChunkError,
-        ChunkId, ChunkResult, PendingRow, RowId, TransportChunk,
+        Chunk, ChunkBatcher, ChunkBatcherConfig, ChunkBatcherError, ChunkBatcherResult,
+        ChunkComponents, ChunkError, ChunkId, ChunkResult, PendingRow, RowId, TimeColumn,
     };
     pub use re_log_types::LogMsg;
 }
@@ -90,10 +110,13 @@ pub mod time {
 pub use time::{Time, TimePoint, Timeline};
 
 pub use re_types_core::{
-    Archetype, ArchetypeName, AsComponents, Component, ComponentBatch, ComponentName, Datatype,
-    DatatypeBatch, DatatypeName, GenericIndicatorComponent, Loggable, LoggableBatch,
-    MaybeOwnedComponentBatch, NamedIndicatorComponent, SizeBytes,
+    Archetype, ArchetypeName, AsComponents, Component, ComponentBatch, ComponentDescriptor,
+    ComponentName, DatatypeName, DeserializationError, DeserializationResult,
+    GenericIndicatorComponent, Loggable, LoggableBatch, NamedIndicatorComponent,
+    SerializationError, SerializationResult, SerializedComponentBatch, SerializedComponentColumn,
 };
+
+pub use re_byte_size::SizeBytes;
 
 #[cfg(feature = "data_loaders")]
 pub use re_data_loader::{DataLoader, DataLoaderError, DataLoaderSettings, LoadedData};
@@ -104,11 +127,13 @@ pub mod web_viewer;
 
 /// Re-exports of other crates.
 pub mod external {
+    pub use re_grpc_client;
+    pub use re_grpc_server;
     pub use re_log;
     pub use re_log_encoding;
     pub use re_log_types;
-    pub use re_sdk_comms;
 
+    pub use re_chunk::external::*;
     pub use re_log::external::*;
     pub use re_log_types::external::*;
 

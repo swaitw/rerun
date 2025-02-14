@@ -1,19 +1,20 @@
 //! Rerun Viewport Panel
 //!
-//! This crate provides the central panel that contains all space views.
+//! This crate provides the central panel that contains all views.
 
-// TODO(#3408): remove unwrap()
+// TODO(#6330): remove unwrap()
 #![allow(clippy::unwrap_used)]
 
-mod auto_layout;
-mod screenshot;
-mod space_view_highlights;
 mod system_execution;
-mod viewport;
+mod view_highlights;
+mod viewport_ui;
 
-pub use self::viewport::Viewport;
+pub use self::viewport_ui::ViewportUi;
 
 pub mod external {
-    pub use re_space_view;
-    pub use re_types_blueprint;
+    pub use re_types;
+    pub use re_view;
 }
+
+// TODO(andreas): cfg test this only?
+pub use system_execution::execute_systems_for_view;

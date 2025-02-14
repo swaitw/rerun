@@ -1,12 +1,12 @@
-use std::collections::BTreeMap;
-
-use arrow2::array::{
-    Array as ArrowArray, ListArray as ArrowListArray, PrimitiveArray as ArrowPrimitiveArray,
-    StructArray as ArrowStructArray,
-};
+use arrow::array::FixedSizeBinaryArray;
+use arrow::array::{Array as ArrowArray, ListArray as ArrowListArray};
+use arrow::buffer::ScalarBuffer as ArrowScalarBuffer;
 use itertools::{izip, Itertools};
+use nohash_hasher::IntMap;
 
-use crate::{Chunk, ChunkError, ChunkId, ChunkResult, ChunkTimeline};
+use re_arrow_util::ArrowArrayDowncastRef as _;
+
+use crate::{chunk::ChunkComponents, Chunk, ChunkError, ChunkId, ChunkResult, TimeColumn};
 
 // ---
 
@@ -47,12 +47,11 @@ impl Chunk {
         let row_ids = {
             re_tracing::profile_scope!("row_ids");
 
-            let row_ids = arrow2::compute::concatenate::concatenate(&[&cl.row_ids, &cr.row_ids])?;
+            let row_ids = re_arrow_util::concat_arrays(&[&cl.row_ids, &cr.row_ids])?;
             #[allow(clippy::unwrap_used)]
             // concatenating 2 RowId arrays must yield another RowId array
             row_ids
-                .as_any()
-                .downcast_ref::<ArrowStructArray>()
+                .downcast_array_ref::<FixedSizeBinaryArray>()
                 .unwrap()
                 .clone()
         };
@@ -66,42 +65,55 @@ impl Chunk {
                         debug_assert_eq!(lhs_timeline, rhs_timeline);
                         lhs_time_chunk
                             .concatenated(rhs_time_chunk)
-                            .map(|time_chunk| (*lhs_timeline, time_chunk))
+                            .map(|time_column| (*lhs_timeline, time_column))
                     },
                 )
                 .collect()
         };
 
+        let lhs_per_desc: IntMap<_, _> = cl
+            .components
+            .values()
+            .flat_map(|per_desc| {
+                per_desc
+                    .iter()
+                    .map(|(component_desc, list_array)| (component_desc.clone(), list_array))
+            })
+            .collect();
+        let rhs_per_desc: IntMap<_, _> = cr
+            .components
+            .values()
+            .flat_map(|per_desc| {
+                per_desc
+                    .iter()
+                    .map(|(component_desc, list_array)| (component_desc.clone(), list_array))
+            })
+            .collect();
+
         // First pass: concat right onto left.
-        let mut components: BTreeMap<_, _> = {
+        let mut components: IntMap<_, _> = {
             re_tracing::profile_scope!("components (r2l)");
-            self.components
+            lhs_per_desc
                 .iter()
-                .filter_map(|(component_name, lhs_list_array)| {
-                    re_tracing::profile_scope!(format!("{}", component_name.as_str()));
-                    if let Some(rhs_list_array) = rhs.components.get(component_name) {
+                .filter_map(|(component_desc, &lhs_list_array)| {
+                    re_tracing::profile_scope!(component_desc.to_string());
+                    if let Some(&rhs_list_array) = rhs_per_desc.get(component_desc) {
                         re_tracing::profile_scope!(format!(
                             "concat (lhs={} rhs={})",
                             re_format::format_uint(lhs_list_array.values().len()),
                             re_format::format_uint(rhs_list_array.values().len()),
                         ));
 
-                        let list_array = arrow2::compute::concatenate::concatenate(&[
-                            lhs_list_array,
-                            rhs_list_array,
-                        ])
-                        .ok()?;
-                        let list_array = list_array
-                            .as_any()
-                            .downcast_ref::<ArrowListArray<i32>>()?
-                            .clone();
+                        let list_array =
+                            re_arrow_util::concat_arrays(&[lhs_list_array, rhs_list_array]).ok()?;
+                        let list_array = list_array.downcast_array_ref::<ArrowListArray>()?.clone();
 
-                        Some((*component_name, list_array))
+                        Some((component_desc.clone(), list_array))
                     } else {
                         re_tracing::profile_scope!("pad");
                         Some((
-                            *component_name,
-                            crate::util::pad_list_array_back(
+                            component_desc.clone(),
+                            re_arrow_util::pad_list_array_back(
                                 lhs_list_array,
                                 self.num_rows() + rhs.num_rows(),
                             ),
@@ -114,39 +126,33 @@ impl Chunk {
         // Second pass: concat left onto right, where necessary.
         components.extend({
             re_tracing::profile_scope!("components (l2r)");
-            rhs.components
+            rhs_per_desc
                 .iter()
-                .filter_map(|(component_name, rhs_list_array)| {
-                    if components.contains_key(component_name) {
+                .filter_map(|(component_desc, &rhs_list_array)| {
+                    if components.contains_key(component_desc) {
                         // Already did that one during the first pass.
                         return None;
                     }
 
-                    re_tracing::profile_scope!(component_name.as_str());
+                    re_tracing::profile_scope!(component_desc.to_string());
 
-                    if let Some(lhs_list_array) = self.components.get(component_name) {
+                    if let Some(&lhs_list_array) = lhs_per_desc.get(component_desc) {
                         re_tracing::profile_scope!(format!(
                             "concat (lhs={} rhs={})",
                             re_format::format_uint(lhs_list_array.values().len()),
                             re_format::format_uint(rhs_list_array.values().len()),
                         ));
 
-                        let list_array = arrow2::compute::concatenate::concatenate(&[
-                            lhs_list_array,
-                            rhs_list_array,
-                        ])
-                        .ok()?;
-                        let list_array = list_array
-                            .as_any()
-                            .downcast_ref::<ArrowListArray<i32>>()?
-                            .clone();
+                        let list_array =
+                            re_arrow_util::concat_arrays(&[lhs_list_array, rhs_list_array]).ok()?;
+                        let list_array = list_array.downcast_array_ref::<ArrowListArray>()?.clone();
 
-                        Some((*component_name, list_array))
+                        Some((component_desc.clone(), list_array))
                     } else {
                         re_tracing::profile_scope!("pad");
                         Some((
-                            *component_name,
-                            crate::util::pad_list_array_front(
+                            component_desc.clone(),
+                            re_arrow_util::pad_list_array_front(
                                 rhs_list_array,
                                 self.num_rows() + rhs.num_rows(),
                             ),
@@ -155,6 +161,14 @@ impl Chunk {
                 })
                 .collect_vec()
         });
+
+        let components = {
+            let mut per_name = ChunkComponents::default();
+            for (component_desc, list_array) in components {
+                per_name.insert_descriptor(component_desc.clone(), list_array);
+            }
+            per_name
+        };
 
         let chunk = Self {
             id: ChunkId::new(),
@@ -221,14 +235,48 @@ impl Chunk {
     #[inline]
     pub fn same_datatypes(&self, rhs: &Self) -> bool {
         self.components
-            .iter()
-            .all(|(component_name, lhs_list_array)| {
-                if let Some(rhs_list_array) = rhs.components.get(component_name) {
+            .values()
+            .flat_map(|per_desc| per_desc.iter())
+            .all(|(component_desc, lhs_list_array)| {
+                if let Some(rhs_list_array) = rhs
+                    .components
+                    .get(&component_desc.component_name)
+                    .and_then(|per_desc| per_desc.get(component_desc))
+                {
                     lhs_list_array.data_type() == rhs_list_array.data_type()
                 } else {
                     true
                 }
             })
+    }
+
+    /// Returns `true` if both chunks share the same descriptors for the components that
+    /// _they have in common_.
+    #[inline]
+    pub fn same_descriptors(&self, rhs: &Self) -> bool {
+        self.components.values().all(|lhs_per_desc| {
+            if lhs_per_desc.len() > 1 {
+                // If it's already in UB land, we might as well give up immediately.
+                return false;
+            }
+
+            lhs_per_desc.keys().all(|lhs_desc| {
+                let Some(rhs_per_desc) = rhs.components.get(&lhs_desc.component_name) else {
+                    return true;
+                };
+
+                if rhs_per_desc.len() > 1 {
+                    // If it's already in UB land, we might as well give up immediately.
+                    return false;
+                }
+
+                if let Some(rhs_desc) = rhs_per_desc.keys().next() {
+                    lhs_desc == rhs_desc
+                } else {
+                    true
+                }
+            })
+        })
     }
 
     /// Returns true if two chunks are concatenable.
@@ -239,32 +287,79 @@ impl Chunk {
     /// * Use the same datatypes for the components they have in common.
     #[inline]
     pub fn concatenable(&self, rhs: &Self) -> bool {
-        self.same_entity_paths(rhs) && self.same_timelines(rhs) && self.same_datatypes(rhs)
+        self.same_entity_paths(rhs)
+            && self.same_timelines(rhs)
+            && self.same_datatypes(rhs)
+            && self.same_descriptors(rhs)
+    }
+
+    /// Moves all indicator components from `self` into a new, dedicated chunk.
+    ///
+    /// The new chunk contains only the first index from each index column, and all the indicators,
+    /// packed in a single row.
+    /// Beware: `self` might be left with no component columns at all after this operation.
+    ///
+    /// This greatly reduces the overhead of indicators, both in the row-oriented and
+    /// column-oriented APIs.
+    /// See <https://github.com/rerun-io/rerun/issues/8768> for further rationale.
+    pub fn split_indicators(&mut self) -> Option<Self> {
+        let indicators: ChunkComponents = self
+            .components
+            .iter_flattened()
+            .filter(|&(descr, _list_array)| descr.component_name.is_indicator_component())
+            .filter(|&(_descr, list_array)| (!list_array.is_empty()))
+            .map(|(descr, list_array)| (descr.clone(), list_array.slice(0, 1)))
+            .collect();
+        if indicators.is_empty() {
+            return None;
+        }
+
+        let timelines = self
+            .timelines
+            .iter()
+            .map(|(timeline, time_column)| (*timeline, time_column.row_sliced(0, 1)))
+            .collect();
+
+        if let Ok(chunk) = Self::from_auto_row_ids(
+            ChunkId::new(),
+            self.entity_path.clone(),
+            timelines,
+            indicators,
+        ) {
+            self.components
+                .retain(|component_name, _per_desc| !component_name.is_indicator_component());
+            return Some(chunk);
+        }
+
+        None
     }
 }
 
-impl ChunkTimeline {
-    /// Concatenates two `ChunkTimeline`s into a new one.
+impl TimeColumn {
+    /// Concatenates two [`TimeColumn`]s into a new one.
     ///
     /// The order of the arguments matter: `self`'s contents will precede `rhs`' contents in the
-    /// returned `ChunkTimeline`.
+    /// returned [`TimeColumn`].
     ///
     /// This will return `None` if the time chunks do not share the same timeline.
     pub fn concatenated(&self, rhs: &Self) -> Option<Self> {
         if self.timeline != rhs.timeline {
             return None;
         }
+        re_tracing::profile_function!();
 
         let is_sorted =
             self.is_sorted && rhs.is_sorted && self.time_range.max() <= rhs.time_range.min();
 
         let time_range = self.time_range.union(rhs.time_range);
 
-        let times = arrow2::compute::concatenate::concatenate(&[&self.times, &rhs.times]).ok()?;
-        let times = times
-            .as_any()
-            .downcast_ref::<ArrowPrimitiveArray<i64>>()?
-            .clone();
+        let times = self
+            .times_raw()
+            .iter()
+            .chain(rhs.times_raw())
+            .copied()
+            .collect_vec();
+        let times = ArrowScalarBuffer::from(times);
 
         Some(Self {
             timeline: self.timeline,
@@ -280,7 +375,7 @@ mod tests {
     use super::*;
 
     use re_log_types::example_components::{MyColor, MyLabel, MyPoint, MyPoint64};
-    use re_types_core::Loggable;
+    use re_types_core::Component;
 
     use crate::{Chunk, RowId, Timeline};
 
@@ -356,45 +451,45 @@ mod tests {
                     row_id1,
                     timepoint1,
                     [
-                        (MyPoint::name(), Some(points1 as _)),
-                        (MyColor::name(), None),
-                        (MyLabel::name(), None),
+                        (MyPoint::descriptor(), Some(points1 as _)),
+                        (MyColor::descriptor(), None),
+                        (MyLabel::descriptor(), None),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id2,
                     timepoint2,
                     [
-                        (MyPoint::name(), None),
-                        (MyColor::name(), Some(colors2 as _)),
-                        (MyLabel::name(), Some(labels2 as _)),
+                        (MyPoint::descriptor(), None),
+                        (MyColor::descriptor(), Some(colors2 as _)),
+                        (MyLabel::descriptor(), Some(labels2 as _)),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id3,
                     timepoint3,
                     [
-                        (MyPoint::name(), Some(points3 as _)),
-                        (MyColor::name(), None),
-                        (MyLabel::name(), None),
+                        (MyPoint::descriptor(), Some(points3 as _)),
+                        (MyColor::descriptor(), None),
+                        (MyLabel::descriptor(), None),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id4,
                     timepoint4,
                     [
-                        (MyPoint::name(), None),
-                        (MyColor::name(), Some(colors4 as _)),
-                        (MyLabel::name(), None),
+                        (MyPoint::descriptor(), None),
+                        (MyColor::descriptor(), Some(colors4 as _)),
+                        (MyLabel::descriptor(), None),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id5,
                     timepoint5,
                     [
-                        (MyPoint::name(), Some(points5 as _)),
-                        (MyColor::name(), None),
-                        (MyLabel::name(), Some(labels5 as _)),
+                        (MyPoint::descriptor(), Some(points5 as _)),
+                        (MyColor::descriptor(), None),
+                        (MyLabel::descriptor(), Some(labels5 as _)),
                     ],
                 )
                 .build()?;
@@ -426,45 +521,45 @@ mod tests {
                     row_id4,
                     timepoint4,
                     [
-                        (MyPoint::name(), None),
-                        (MyColor::name(), Some(colors4 as _)),
-                        (MyLabel::name(), None),
+                        (MyPoint::descriptor(), None),
+                        (MyColor::descriptor(), Some(colors4 as _)),
+                        (MyLabel::descriptor(), None),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id5,
                     timepoint5,
                     [
-                        (MyPoint::name(), Some(points5 as _)),
-                        (MyColor::name(), None),
-                        (MyLabel::name(), Some(labels5 as _)),
+                        (MyPoint::descriptor(), Some(points5 as _)),
+                        (MyColor::descriptor(), None),
+                        (MyLabel::descriptor(), Some(labels5 as _)),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id1,
                     timepoint1,
                     [
-                        (MyPoint::name(), Some(points1 as _)),
-                        (MyColor::name(), None),
-                        (MyLabel::name(), None),
+                        (MyPoint::descriptor(), Some(points1 as _)),
+                        (MyColor::descriptor(), None),
+                        (MyLabel::descriptor(), None),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id2,
                     timepoint2,
                     [
-                        (MyPoint::name(), None),
-                        (MyColor::name(), Some(colors2 as _)),
-                        (MyLabel::name(), Some(labels2 as _)),
+                        (MyPoint::descriptor(), None),
+                        (MyColor::descriptor(), Some(colors2 as _)),
+                        (MyLabel::descriptor(), Some(labels2 as _)),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id3,
                     timepoint3,
                     [
-                        (MyPoint::name(), Some(points3 as _)),
-                        (MyColor::name(), None),
-                        (MyLabel::name(), None),
+                        (MyPoint::descriptor(), Some(points3 as _)),
+                        (MyColor::descriptor(), None),
+                        (MyLabel::descriptor(), None),
                     ],
                 )
                 .build()?;
@@ -557,45 +652,45 @@ mod tests {
                     row_id1,
                     timepoint1,
                     [
-                        (MyPoint::name(), Some(points1 as _)),
-                        (MyColor::name(), None),
-                        (MyLabel::name(), Some(labels1 as _)),
+                        (MyPoint::descriptor(), Some(points1 as _)),
+                        (MyColor::descriptor(), None),
+                        (MyLabel::descriptor(), Some(labels1 as _)),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id2,
                     timepoint2,
                     [
-                        (MyPoint::name(), None),
-                        (MyColor::name(), None),
-                        (MyLabel::name(), Some(labels2 as _)),
+                        (MyPoint::descriptor(), None),
+                        (MyColor::descriptor(), None),
+                        (MyLabel::descriptor(), Some(labels2 as _)),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id3,
                     timepoint3,
                     [
-                        (MyPoint::name(), Some(points3 as _)),
-                        (MyColor::name(), None),
-                        (MyLabel::name(), Some(labels3 as _)),
+                        (MyPoint::descriptor(), Some(points3 as _)),
+                        (MyColor::descriptor(), None),
+                        (MyLabel::descriptor(), Some(labels3 as _)),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id4,
                     timepoint4,
                     [
-                        (MyPoint::name(), None),
-                        (MyColor::name(), Some(colors4 as _)),
-                        (MyLabel::name(), Some(labels4 as _)),
+                        (MyPoint::descriptor(), None),
+                        (MyColor::descriptor(), Some(colors4 as _)),
+                        (MyLabel::descriptor(), Some(labels4 as _)),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id5,
                     timepoint5,
                     [
-                        (MyPoint::name(), None),
-                        (MyColor::name(), Some(colors5 as _)),
-                        (MyLabel::name(), Some(labels5 as _)),
+                        (MyPoint::descriptor(), None),
+                        (MyColor::descriptor(), Some(colors5 as _)),
+                        (MyLabel::descriptor(), Some(labels5 as _)),
                     ],
                 )
                 .build()?;
@@ -627,45 +722,45 @@ mod tests {
                     row_id4,
                     timepoint4,
                     [
-                        (MyPoint::name(), None),
-                        (MyColor::name(), Some(colors4 as _)),
-                        (MyLabel::name(), Some(labels4 as _)),
+                        (MyPoint::descriptor(), None),
+                        (MyColor::descriptor(), Some(colors4 as _)),
+                        (MyLabel::descriptor(), Some(labels4 as _)),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id5,
                     timepoint5,
                     [
-                        (MyPoint::name(), None),
-                        (MyColor::name(), Some(colors5 as _)),
-                        (MyLabel::name(), Some(labels5 as _)),
+                        (MyPoint::descriptor(), None),
+                        (MyColor::descriptor(), Some(colors5 as _)),
+                        (MyLabel::descriptor(), Some(labels5 as _)),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id1,
                     timepoint1,
                     [
-                        (MyPoint::name(), Some(points1 as _)),
-                        (MyColor::name(), None),
-                        (MyLabel::name(), Some(labels1 as _)),
+                        (MyPoint::descriptor(), Some(points1 as _)),
+                        (MyColor::descriptor(), None),
+                        (MyLabel::descriptor(), Some(labels1 as _)),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id2,
                     timepoint2,
                     [
-                        (MyPoint::name(), None),
-                        (MyColor::name(), None),
-                        (MyLabel::name(), Some(labels2 as _)),
+                        (MyPoint::descriptor(), None),
+                        (MyColor::descriptor(), None),
+                        (MyLabel::descriptor(), Some(labels2 as _)),
                     ],
                 )
                 .with_sparse_component_batches(
                     row_id3,
                     timepoint3,
                     [
-                        (MyPoint::name(), Some(points3 as _)),
-                        (MyColor::name(), None),
-                        (MyLabel::name(), Some(labels3 as _)),
+                        (MyPoint::descriptor(), Some(points3 as _)),
+                        (MyColor::descriptor(), None),
+                        (MyLabel::descriptor(), Some(labels3 as _)),
                     ],
                 )
                 .build()?;
@@ -783,7 +878,7 @@ mod tests {
                     row_id1,
                     timepoint1,
                     [
-                        (MyPoint::name(), points32bit), //
+                        (MyPoint::descriptor(), points32bit), //
                     ],
                 )
                 .build()?;
@@ -793,7 +888,7 @@ mod tests {
                     row_id2,
                     timepoint2,
                     [
-                        (MyPoint::name(), points64bit), //
+                        (MyPoint::descriptor(), points64bit), //
                     ],
                 )
                 .build()?;

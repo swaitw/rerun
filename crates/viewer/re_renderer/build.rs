@@ -119,11 +119,6 @@ fn should_run() -> bool {
 }
 
 fn main() {
-    // uncomment these when we update to Rust 1.80: https://blog.rust-lang.org/2024/05/06/check-cfg.html
-    // println!("cargo::rustc-check-cfg=cfg(native)");
-    // println!("cargo::rustc-check-cfg=cfg(web)");
-    // println!("cargo::rustc-check-cfg=cfg(load_shaders_from_disk)");
-
     cfg_aliases::cfg_aliases! {
         native: { not(target_arch = "wasm32") },
         web: { target_arch = "wasm32" },
@@ -158,7 +153,7 @@ fn main() {
         let is_wgsl = entry
             .file_name()
             .to_str()
-            .map_or(false, |s| s.ends_with(".wgsl"));
+            .is_some_and(|s| s.ends_with(".wgsl"));
         is_dir || is_wgsl
     }
 

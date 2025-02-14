@@ -11,15 +11,17 @@
 #![allow(clippy::redundant_closure)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
+#![allow(non_camel_case_types)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Component**: Filter used when magnifying an image/texture such that a single pixel/texel is displayed as multiple pixels on screen.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Default)]
+#[repr(u8)]
 pub enum MagnificationFilter {
     /// Show the nearest pixel value.
     ///
@@ -32,6 +34,101 @@ pub enum MagnificationFilter {
     ///
     /// Used as default for mesh rendering.
     Linear = 2,
+}
+
+impl ::re_types_core::Component for MagnificationFilter {
+    #[inline]
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("rerun.components.MagnificationFilter")
+    }
+}
+
+::re_types_core::macros::impl_into_cow!(MagnificationFilter);
+
+impl ::re_types_core::Loggable for MagnificationFilter {
+    #[inline]
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        #![allow(clippy::wildcard_imports)]
+        use arrow::datatypes::*;
+        DataType::UInt8
+    }
+
+    fn to_arrow_opt<'a>(
+        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
+    ) -> SerializationResult<arrow::array::ArrayRef>
+    where
+        Self: Clone + 'a,
+    {
+        #![allow(clippy::wildcard_imports)]
+        #![allow(clippy::manual_is_variant_and)]
+        use ::re_types_core::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
+        Ok({
+            let (somes, data0): (Vec<_>, Vec<_>) = data
+                .into_iter()
+                .map(|datum| {
+                    let datum: Option<::std::borrow::Cow<'a, Self>> = datum.map(Into::into);
+                    let datum = datum.map(|datum| *datum as u8);
+                    (datum.is_some(), datum)
+                })
+                .unzip();
+            let data0_validity: Option<arrow::buffer::NullBuffer> = {
+                let any_nones = somes.iter().any(|some| !*some);
+                any_nones.then(|| somes.into())
+            };
+            as_array_ref(PrimitiveArray::<UInt8Type>::new(
+                ScalarBuffer::from(
+                    data0
+                        .into_iter()
+                        .map(|v| v.unwrap_or_default())
+                        .collect::<Vec<_>>(),
+                ),
+                data0_validity,
+            ))
+        })
+    }
+
+    fn from_arrow_opt(
+        arrow_data: &dyn arrow::array::Array,
+    ) -> DeserializationResult<Vec<Option<Self>>>
+    where
+        Self: Sized,
+    {
+        #![allow(clippy::wildcard_imports)]
+        use ::re_types_core::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
+        Ok(arrow_data
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .ok_or_else(|| {
+                let expected = Self::arrow_datatype();
+                let actual = arrow_data.data_type().clone();
+                DeserializationError::datatype_mismatch(expected, actual)
+            })
+            .with_context("rerun.components.MagnificationFilter#enum")?
+            .into_iter()
+            .map(|typ| match typ {
+                Some(1) => Ok(Some(Self::Nearest)),
+                Some(2) => Ok(Some(Self::Linear)),
+                None => Ok(None),
+                Some(invalid) => Err(DeserializationError::missing_union_arm(
+                    Self::arrow_datatype(),
+                    "<invalid>",
+                    invalid as _,
+                )),
+            })
+            .collect::<DeserializationResult<Vec<Option<_>>>>()
+            .with_context("rerun.components.MagnificationFilter")?)
+    }
+}
+
+impl std::fmt::Display for MagnificationFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Nearest => write!(f, "Nearest"),
+            Self::Linear => write!(f, "Linear"),
+        }
+    }
 }
 
 impl ::re_types_core::reflection::Enum for MagnificationFilter {
@@ -53,7 +150,7 @@ impl ::re_types_core::reflection::Enum for MagnificationFilter {
     }
 }
 
-impl ::re_types_core::SizeBytes for MagnificationFilter {
+impl ::re_byte_size::SizeBytes for MagnificationFilter {
     #[inline]
     fn heap_size_bytes(&self) -> u64 {
         0
@@ -62,111 +159,5 @@ impl ::re_types_core::SizeBytes for MagnificationFilter {
     #[inline]
     fn is_pod() -> bool {
         true
-    }
-}
-
-impl std::fmt::Display for MagnificationFilter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Nearest => write!(f, "Nearest"),
-            Self::Linear => write!(f, "Linear"),
-        }
-    }
-}
-
-::re_types_core::macros::impl_into_cow!(MagnificationFilter);
-
-impl ::re_types_core::Loggable for MagnificationFilter {
-    type Name = ::re_types_core::ComponentName;
-
-    #[inline]
-    fn name() -> Self::Name {
-        "rerun.components.MagnificationFilter".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
-        DataType::Union(
-            std::sync::Arc::new(vec![
-                Field::new("_null_markers", DataType::Null, true),
-                Field::new("Nearest", DataType::Null, true),
-                Field::new("Linear", DataType::Null, true),
-            ]),
-            Some(std::sync::Arc::new(vec![0i32, 1i32, 2i32])),
-            UnionMode::Sparse,
-        )
-    }
-
-    fn to_arrow_opt<'a>(
-        data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
-    where
-        Self: Clone + 'a,
-    {
-        #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
-        Ok({
-            // Sparse Arrow union
-            let data: Vec<_> = data
-                .into_iter()
-                .map(|datum| {
-                    let datum: Option<::std::borrow::Cow<'a, Self>> = datum.map(Into::into);
-                    datum
-                })
-                .collect();
-            let num_variants = 2usize;
-            let types = data
-                .iter()
-                .map(|a| match a.as_deref() {
-                    None => 0,
-                    Some(value) => *value as i8,
-                })
-                .collect();
-            let fields: Vec<_> =
-                std::iter::repeat(NullArray::new(DataType::Null, data.len()).boxed())
-                    .take(1 + num_variants)
-                    .collect();
-            UnionArray::new(Self::arrow_datatype(), types, fields, None).boxed()
-        })
-    }
-
-    fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
-    ) -> DeserializationResult<Vec<Option<Self>>>
-    where
-        Self: Sized,
-    {
-        #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
-        Ok({
-            let arrow_data = arrow_data
-                .as_any()
-                .downcast_ref::<arrow2::array::UnionArray>()
-                .ok_or_else(|| {
-                    let expected = Self::arrow_datatype();
-                    let actual = arrow_data.data_type().clone();
-                    DeserializationError::datatype_mismatch(expected, actual)
-                })
-                .with_context("rerun.components.MagnificationFilter")?;
-            let arrow_data_types = arrow_data.types();
-            arrow_data_types
-                .iter()
-                .map(|typ| match typ {
-                    0 => Ok(None),
-                    1 => Ok(Some(Self::Nearest)),
-                    2 => Ok(Some(Self::Linear)),
-                    _ => Err(DeserializationError::missing_union_arm(
-                        Self::arrow_datatype(),
-                        "<invalid>",
-                        *typ as _,
-                    )),
-                })
-                .collect::<DeserializationResult<Vec<_>>>()
-                .with_context("rerun.components.MagnificationFilter")?
-        })
     }
 }

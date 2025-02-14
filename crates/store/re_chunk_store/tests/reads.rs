@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow2::array::Array as ArrowArray;
+use arrow::array::ArrayRef;
 
 use itertools::Itertools;
 use re_chunk::{Chunk, ChunkId, RowId, TimePoint};
@@ -12,33 +12,35 @@ use re_log_types::{
     example_components::{MyColor, MyIndex, MyPoint},
     EntityPath, TimeType, Timeline,
 };
-use re_types::testing::{build_some_large_structs, LargeStruct};
-use re_types::ComponentNameSet;
-use re_types_core::{ComponentName, Loggable as _};
+use re_types::{
+    testing::{build_some_large_structs, LargeStruct},
+    ComponentDescriptor, ComponentNameSet,
+};
+use re_types_core::Component as _;
 
 // ---
 
 fn query_latest_array(
     store: &ChunkStore,
     entity_path: &EntityPath,
-    component_name: ComponentName,
+    component_desc: &ComponentDescriptor,
     query: &LatestAtQuery,
-) -> Option<(TimeInt, RowId, Box<dyn ArrowArray>)> {
+) -> Option<(TimeInt, RowId, ArrayRef)> {
     re_tracing::profile_function!();
 
-    let (data_time, row_id, array) = store
-        .latest_at_relevant_chunks(query, entity_path, component_name)
+    let ((data_time, row_id), unit) = store
+        .latest_at_relevant_chunks(query, entity_path, component_desc.component_name)
         .into_iter()
-        .flat_map(|chunk| {
+        .filter_map(|chunk| {
             chunk
-                .latest_at(query, component_name)
-                .iter_rows(&query.timeline(), &component_name)
-                .collect_vec()
+                .latest_at(query, component_desc.component_name)
+                .into_unit()
+                .and_then(|chunk| chunk.index(&query.timeline()).map(|index| (index, chunk)))
         })
-        .max_by_key(|(data_time, row_id, _)| (*data_time, *row_id))
-        .and_then(|(data_time, row_id, array)| array.map(|array| (data_time, row_id, array)))?;
+        .max_by_key(|(index, _chunk)| *index)?;
 
-    Some((data_time, row_id, array))
+    unit.component_batch_raw(&component_desc.component_name)
+        .map(|array| (data_time, row_id, array))
 }
 
 // ---
@@ -53,13 +55,14 @@ fn all_components() -> anyhow::Result<()> {
     let frame2 = TimeInt::new_temporal(2);
 
     let assert_latest_components_at =
-        |store: &ChunkStore, entity_path: &EntityPath, expected: Option<&[ComponentName]>| {
+        |store: &ChunkStore, entity_path: &EntityPath, expected: Option<&[ComponentDescriptor]>| {
             let timeline = Timeline::new("frame_nr", TimeType::Sequence);
 
-            let component_names = store.all_components(&timeline, entity_path);
+            let component_names = store.all_components_on_timeline_sorted(&timeline, entity_path);
 
             let expected_component_names = expected.map(|expected| {
-                let expected: ComponentNameSet = expected.iter().copied().collect();
+                let expected: ComponentNameSet =
+                    expected.iter().map(|desc| desc.component_name).collect();
                 expected
             });
 
@@ -75,14 +78,14 @@ fn all_components() -> anyhow::Result<()> {
     );
 
     let components_a = &[
-        MyColor::name(),     // added by test, static
-        LargeStruct::name(), // added by test
+        MyColor::descriptor(),     // added by test, static
+        LargeStruct::descriptor(), // added by test
     ];
 
     let components_b = &[
-        MyColor::name(),     // added by test, static
-        MyPoint::name(),     // added by test
-        LargeStruct::name(), // added by test
+        MyColor::descriptor(),     // added by test, static
+        MyPoint::descriptor(),     // added by test
+        LargeStruct::descriptor(), // added by test
     ];
 
     let chunk = Chunk::builder(entity_path.clone())
@@ -118,6 +121,64 @@ fn all_components() -> anyhow::Result<()> {
     store.insert_chunk(&Arc::new(chunk))?;
 
     assert_latest_components_at(&mut store, &entity_path, Some(components_b));
+
+    Ok(())
+}
+
+#[test]
+fn test_all_components_on_timeline() -> anyhow::Result<()> {
+    re_log::setup_logging();
+
+    let entity_path1 = EntityPath::from("both/timeline");
+    let entity_path2 = EntityPath::from("only/timeline1");
+
+    let timeline1 = Timeline::new("timeline1", TimeType::Sequence);
+    let timeline2 = Timeline::new("timeline2", TimeType::Sequence);
+
+    let time = TimeInt::new_temporal(1);
+
+    let mut store = ChunkStore::new(
+        re_log_types::StoreId::random(re_log_types::StoreKind::Recording),
+        ChunkStoreConfig::COMPACTION_DISABLED,
+    );
+
+    let chunk = Chunk::builder(entity_path1.clone())
+        .with_component_batch(
+            RowId::new(),
+            [(timeline1, time), (timeline2, time)],
+            &build_some_large_structs(2),
+        )
+        .build()?;
+    store.insert_chunk(&Arc::new(chunk))?;
+
+    let chunk = Chunk::builder(entity_path2.clone())
+        .with_component_batches(
+            RowId::new(),
+            [(timeline1, time)],
+            [&build_some_large_structs(2) as _],
+        )
+        .build()?;
+    store.insert_chunk(&Arc::new(chunk))?;
+
+    // entity1 is on both timelines
+    assert!(!store
+        .all_components_on_timeline(&timeline1, &entity_path1)
+        .unwrap()
+        .is_empty());
+    assert!(!store
+        .all_components_on_timeline(&timeline2, &entity_path1)
+        .unwrap()
+        .is_empty());
+
+    // entity2 is only on timeline1
+    assert!(!store
+        .all_components_on_timeline(&timeline1, &entity_path2)
+        .unwrap()
+        .is_empty());
+
+    assert!(store
+        .all_components_on_timeline(&timeline2, &entity_path2)
+        .is_none());
 
     Ok(())
 }
@@ -193,60 +254,61 @@ fn latest_at() -> anyhow::Result<()> {
     store.insert_chunk(&chunk4)?;
     store.insert_chunk(&chunk5)?;
 
-    let assert_latest_components = |frame_nr: TimeInt, rows: &[(ComponentName, Option<RowId>)]| {
-        let timeline_frame_nr = Timeline::new("frame_nr", TimeType::Sequence);
+    let assert_latest_components =
+        |frame_nr: TimeInt, rows: &[(ComponentDescriptor, Option<RowId>)]| {
+            let timeline_frame_nr = Timeline::new("frame_nr", TimeType::Sequence);
 
-        for (component_name, expected_row_id) in rows {
-            let row_id = query_latest_array(
-                &store,
-                &entity_path,
-                *component_name,
-                &LatestAtQuery::new(timeline_frame_nr, frame_nr),
-            )
-            .map(|(_data_time, row_id, _array)| row_id);
+            for (component_desc, expected_row_id) in rows {
+                let row_id = query_latest_array(
+                    &store,
+                    &entity_path,
+                    component_desc,
+                    &LatestAtQuery::new(timeline_frame_nr, frame_nr),
+                )
+                .map(|(_data_time, row_id, _array)| row_id);
 
-            assert_eq!(*expected_row_id, row_id, "{component_name}");
-        }
-    };
+                assert_eq!(*expected_row_id, row_id, "{component_desc}");
+            }
+        };
 
     assert_latest_components(
         frame0,
         &[
-            (MyColor::name(), Some(row_id5)), // static
-            (MyIndex::name(), None),
-            (MyPoint::name(), None),
+            (MyColor::descriptor(), Some(row_id5)), // static
+            (MyIndex::descriptor(), None),
+            (MyPoint::descriptor(), None),
         ],
     );
     assert_latest_components(
         frame1,
         &[
-            (MyColor::name(), Some(row_id5)), // static
-            (MyIndex::name(), Some(row_id1)),
-            (MyPoint::name(), None),
+            (MyColor::descriptor(), Some(row_id5)), // static
+            (MyIndex::descriptor(), Some(row_id1)),
+            (MyPoint::descriptor(), None),
         ],
     );
     assert_latest_components(
         frame2,
         &[
-            (MyColor::name(), Some(row_id5)),
-            (MyPoint::name(), Some(row_id2)),
-            (MyIndex::name(), Some(row_id2)),
+            (MyColor::descriptor(), Some(row_id5)),
+            (MyPoint::descriptor(), Some(row_id2)),
+            (MyIndex::descriptor(), Some(row_id2)),
         ],
     );
     assert_latest_components(
         frame3,
         &[
-            (MyColor::name(), Some(row_id5)),
-            (MyPoint::name(), Some(row_id3)),
-            (MyIndex::name(), Some(row_id2)),
+            (MyColor::descriptor(), Some(row_id5)),
+            (MyPoint::descriptor(), Some(row_id3)),
+            (MyIndex::descriptor(), Some(row_id2)),
         ],
     );
     assert_latest_components(
         frame4,
         &[
-            (MyColor::name(), Some(row_id5)),
-            (MyPoint::name(), Some(row_id3)),
-            (MyIndex::name(), Some(row_id2)),
+            (MyColor::descriptor(), Some(row_id5)),
+            (MyPoint::descriptor(), Some(row_id3)),
+            (MyIndex::descriptor(), Some(row_id2)),
         ],
     );
 
@@ -310,24 +372,24 @@ fn latest_at_sparse_component_edge_case() -> anyhow::Result<()> {
             row_id1_1,
             [build_frame_nr(frame1)],
             [
-                (MyIndex::name(), None),
-                (MyPoint::name(), Some(&MyPoint::from_iter(0..1) as _)),
+                (MyIndex::descriptor(), None),
+                (MyPoint::descriptor(), Some(&MyPoint::from_iter(0..1) as _)),
             ],
         )
         .with_sparse_component_batches(
             row_id1_2,
             [build_frame_nr(frame2)],
             [
-                (MyIndex::name(), None),
-                (MyPoint::name(), Some(&MyPoint::from_iter(1..2) as _)),
+                (MyIndex::descriptor(), None),
+                (MyPoint::descriptor(), Some(&MyPoint::from_iter(1..2) as _)),
             ],
         )
         .with_sparse_component_batches(
             row_id1_3,
             [build_frame_nr(frame3)],
             [
-                (MyIndex::name(), Some(&MyIndex::from_iter(2..3) as _)),
-                (MyPoint::name(), Some(&MyPoint::from_iter(2..3) as _)),
+                (MyIndex::descriptor(), Some(&MyIndex::from_iter(2..3) as _)),
+                (MyPoint::descriptor(), Some(&MyPoint::from_iter(2..3) as _)),
             ],
         )
         .build()?;
@@ -345,8 +407,8 @@ fn latest_at_sparse_component_edge_case() -> anyhow::Result<()> {
             row_id2_1,
             [build_frame_nr(frame2)],
             [
-                (MyIndex::name(), Some(&MyIndex::from_iter(2..3) as _)),
-                (MyPoint::name(), Some(&MyPoint::from_iter(1..2) as _)),
+                (MyIndex::descriptor(), Some(&MyIndex::from_iter(2..3) as _)),
+                (MyPoint::descriptor(), Some(&MyPoint::from_iter(1..2) as _)),
             ],
         )
         .build()?;
@@ -363,7 +425,7 @@ fn latest_at_sparse_component_edge_case() -> anyhow::Result<()> {
     let row_id = query_latest_array(
         &store,
         &entity_path,
-        MyIndex::name(),
+        &MyIndex::descriptor(),
         &LatestAtQuery::new(Timeline::new_sequence("frame_nr"), TimeInt::MAX),
     )
     .map(|(_data_time, row_id, _array)| row_id);
@@ -441,22 +503,22 @@ fn latest_at_overlapped_chunks() -> anyhow::Result<()> {
         .with_sparse_component_batches(
             row_id1_1,
             [build_frame_nr(frame1)],
-            [(MyPoint::name(), Some(&points1 as _))],
+            [(MyPoint::descriptor(), Some(&points1 as _))],
         )
         .with_sparse_component_batches(
             row_id1_3,
             [build_frame_nr(frame3)],
-            [(MyPoint::name(), Some(&points3 as _))],
+            [(MyPoint::descriptor(), Some(&points3 as _))],
         )
         .with_sparse_component_batches(
             row_id1_5,
             [build_frame_nr(frame5)],
-            [(MyPoint::name(), Some(&points5 as _))],
+            [(MyPoint::descriptor(), Some(&points5 as _))],
         )
         .with_sparse_component_batches(
             row_id1_7,
             [build_frame_nr(frame7)],
-            [(MyPoint::name(), Some(&points7 as _))],
+            [(MyPoint::descriptor(), Some(&points7 as _))],
         )
         .build()?;
 
@@ -470,17 +532,17 @@ fn latest_at_overlapped_chunks() -> anyhow::Result<()> {
         .with_sparse_component_batches(
             row_id2_2,
             [build_frame_nr(frame2)],
-            [(MyPoint::name(), Some(&points2 as _))],
+            [(MyPoint::descriptor(), Some(&points2 as _))],
         )
         .with_sparse_component_batches(
             row_id2_3,
             [build_frame_nr(frame3)],
-            [(MyPoint::name(), Some(&points3 as _))],
+            [(MyPoint::descriptor(), Some(&points3 as _))],
         )
         .with_sparse_component_batches(
             row_id2_4,
             [build_frame_nr(frame4)],
-            [(MyPoint::name(), Some(&points4 as _))],
+            [(MyPoint::descriptor(), Some(&points4 as _))],
         )
         .build()?;
 
@@ -494,17 +556,17 @@ fn latest_at_overlapped_chunks() -> anyhow::Result<()> {
         .with_sparse_component_batches(
             row_id3_2,
             [build_frame_nr(frame2)],
-            [(MyPoint::name(), Some(&points2 as _))],
+            [(MyPoint::descriptor(), Some(&points2 as _))],
         )
         .with_sparse_component_batches(
             row_id3_4,
             [build_frame_nr(frame4)],
-            [(MyPoint::name(), Some(&points4 as _))],
+            [(MyPoint::descriptor(), Some(&points4 as _))],
         )
         .with_sparse_component_batches(
             row_id3_6,
             [build_frame_nr(frame6)],
-            [(MyPoint::name(), Some(&points6 as _))],
+            [(MyPoint::descriptor(), Some(&points6 as _))],
         )
         .build()?;
 
@@ -524,8 +586,8 @@ fn latest_at_overlapped_chunks() -> anyhow::Result<()> {
         (TimeInt::MAX, row_id1_7), //
     ] {
         let query = LatestAtQuery::new(Timeline::new_sequence("frame_nr"), at);
-        eprintln!("{} @ {query:?}", MyPoint::name());
-        let row_id = query_latest_array(&store, &entity_path, MyPoint::name(), &query)
+        eprintln!("{} @ {query:?}", MyPoint::descriptor());
+        let row_id = query_latest_array(&store, &entity_path, &MyPoint::descriptor(), &query)
             .map(|(_data_time, row_id, _array)| row_id);
         assert_eq!(expected_row_id, row_id.unwrap());
     }
@@ -711,21 +773,20 @@ fn range() -> anyhow::Result<()> {
     #[allow(clippy::type_complexity)]
     let assert_range_components =
         |time_range: ResolvedTimeRange,
-         component_name: ComponentName,
+         component_desc: ComponentDescriptor,
          row_ids_at_times: &[(TimeInt, RowId)]| {
             let timeline_frame_nr = Timeline::new("frame_nr", TimeType::Sequence);
 
             let query = RangeQuery::new(timeline_frame_nr, time_range);
-            let results = store.range_relevant_chunks(&query, &entity_path, component_name);
+            let results =
+                store.range_relevant_chunks(&query, &entity_path, component_desc.component_name);
 
-            eprintln!("================= {component_name} @ {query:?} ===============");
+            eprintln!("================= {component_desc} @ {query:?} ===============");
             let mut results_processed = 0usize;
             for chunk in results {
-                let chunk = chunk.range(&query, component_name);
+                let chunk = chunk.range(&query, component_desc.component_name);
                 eprintln!("{chunk}");
-                for (data_time, row_id, _array) in
-                    chunk.iter_rows(&timeline_frame_nr, &component_name)
-                {
+                for (data_time, row_id) in chunk.iter_indices(&timeline_frame_nr) {
                     let (expected_data_time, expected_row_id) = row_ids_at_times[results_processed];
                     assert_eq!(expected_data_time, data_time);
                     assert_eq!(expected_row_id, row_id);
@@ -742,52 +803,60 @@ fn range() -> anyhow::Result<()> {
 
     assert_range_components(
         ResolvedTimeRange::new(frame1, frame1),
-        MyColor::name(),
-        &[(TimeInt::STATIC, row_id5)],
-    );
-    assert_range_components(ResolvedTimeRange::new(frame1, frame1), MyPoint::name(), &[]);
-    assert_range_components(
-        ResolvedTimeRange::new(frame2, frame2),
-        MyColor::name(),
+        MyColor::descriptor(),
         &[(TimeInt::STATIC, row_id5)],
     );
     assert_range_components(
+        ResolvedTimeRange::new(frame1, frame1),
+        MyPoint::descriptor(),
+        &[],
+    );
+    assert_range_components(
         ResolvedTimeRange::new(frame2, frame2),
-        MyPoint::name(),
+        MyColor::descriptor(),
+        &[(TimeInt::STATIC, row_id5)],
+    );
+    assert_range_components(
+        ResolvedTimeRange::new(frame2, frame2),
+        MyPoint::descriptor(),
         &[(frame2, row_id2)],
     );
     assert_range_components(
         ResolvedTimeRange::new(frame3, frame3),
-        MyColor::name(),
+        MyColor::descriptor(),
         &[(TimeInt::STATIC, row_id5)],
     );
     assert_range_components(
         ResolvedTimeRange::new(frame3, frame3),
-        MyPoint::name(),
+        MyPoint::descriptor(),
         &[(frame3, row_id3)],
     );
     assert_range_components(
         ResolvedTimeRange::new(frame4, frame4),
-        MyColor::name(),
+        MyColor::descriptor(),
         &[(TimeInt::STATIC, row_id5)],
     );
     assert_range_components(
         ResolvedTimeRange::new(frame4, frame4),
-        MyPoint::name(),
+        MyPoint::descriptor(),
         &[(frame4, row_id4_25), (frame4, row_id4_4)],
     );
     assert_range_components(
         ResolvedTimeRange::new(frame5, frame5),
-        MyColor::name(),
+        MyColor::descriptor(),
         &[(TimeInt::STATIC, row_id5)],
     );
-    assert_range_components(ResolvedTimeRange::new(frame5, frame5), MyPoint::name(), &[]);
+    assert_range_components(
+        ResolvedTimeRange::new(frame5, frame5),
+        MyPoint::descriptor(),
+        &[],
+    );
 
     // Full range
 
     assert_range_components(
         ResolvedTimeRange::new(frame1, frame5),
-        MyPoint::name(),
+        MyPoint::descriptor(),
         &[
             (frame2, row_id2),
             (frame3, row_id3),
@@ -797,7 +866,7 @@ fn range() -> anyhow::Result<()> {
     );
     assert_range_components(
         ResolvedTimeRange::new(frame1, frame5),
-        MyColor::name(),
+        MyColor::descriptor(),
         &[(TimeInt::STATIC, row_id5)],
     );
 
@@ -805,7 +874,7 @@ fn range() -> anyhow::Result<()> {
 
     assert_range_components(
         ResolvedTimeRange::new(TimeInt::MIN, TimeInt::MAX),
-        MyPoint::name(),
+        MyPoint::descriptor(),
         &[
             (frame2, row_id2),
             (frame3, row_id3),
@@ -815,7 +884,7 @@ fn range() -> anyhow::Result<()> {
     );
     assert_range_components(
         ResolvedTimeRange::new(TimeInt::MIN, TimeInt::MAX),
-        MyColor::name(),
+        MyColor::descriptor(),
         &[(TimeInt::STATIC, row_id5)],
     );
 
@@ -892,6 +961,176 @@ fn range() -> anyhow::Result<()> {
             ],
         );
     }
+
+    Ok(())
+}
+
+#[test]
+fn range_overlapped_chunks() -> anyhow::Result<()> {
+    re_log::setup_logging();
+
+    let mut store = ChunkStore::new(
+        re_log_types::StoreId::random(re_log_types::StoreKind::Recording),
+        ChunkStoreConfig::COMPACTION_DISABLED,
+    );
+
+    let entity_path = EntityPath::from("this/that");
+
+    let frame0 = TimeInt::new_temporal(0);
+    let frame1 = TimeInt::new_temporal(1);
+    let frame2 = TimeInt::new_temporal(2);
+    let frame3 = TimeInt::new_temporal(3);
+    let frame4 = TimeInt::new_temporal(4);
+    let frame5 = TimeInt::new_temporal(5);
+    let frame6 = TimeInt::new_temporal(6);
+    let frame7 = TimeInt::new_temporal(7);
+    let frame8 = TimeInt::new_temporal(8);
+
+    let points1 = MyPoint::from_iter(0..1);
+    let points2 = MyPoint::from_iter(1..2);
+    let points3 = MyPoint::from_iter(2..3);
+    let points4 = MyPoint::from_iter(3..4);
+    let points5 = MyPoint::from_iter(4..5);
+    let points7_1 = MyPoint::from_iter(6..7);
+    let points7_2 = MyPoint::from_iter(7..8);
+    let points7_3 = MyPoint::from_iter(8..9);
+
+    let row_id1_1 = RowId::new();
+    let row_id1_3 = RowId::new();
+    let row_id1_5 = RowId::new();
+    let row_id1_7_1 = RowId::new();
+    let row_id1_7_2 = RowId::new();
+    let row_id1_7_3 = RowId::new();
+    let chunk1_1 = Chunk::builder(entity_path.clone())
+        .with_sparse_component_batches(
+            row_id1_1,
+            [build_frame_nr(frame1)],
+            [(MyPoint::descriptor(), Some(&points1 as _))],
+        )
+        .with_sparse_component_batches(
+            row_id1_3,
+            [build_frame_nr(frame3)],
+            [(MyPoint::descriptor(), Some(&points3 as _))],
+        )
+        .with_sparse_component_batches(
+            row_id1_5,
+            [build_frame_nr(frame5)],
+            [(MyPoint::descriptor(), Some(&points5 as _))],
+        )
+        .with_sparse_component_batches(
+            row_id1_7_1,
+            [build_frame_nr(frame7)],
+            [(MyPoint::descriptor(), Some(&points7_1 as _))],
+        )
+        .with_sparse_component_batches(
+            row_id1_7_2,
+            [build_frame_nr(frame7)],
+            [(MyPoint::descriptor(), Some(&points7_2 as _))],
+        )
+        .with_sparse_component_batches(
+            row_id1_7_3,
+            [build_frame_nr(frame7)],
+            [(MyPoint::descriptor(), Some(&points7_3 as _))],
+        )
+        .build()?;
+
+    let chunk1_1 = Arc::new(chunk1_1);
+    store.insert_chunk(&chunk1_1)?;
+    let chunk1_2 = Arc::new(chunk1_1.clone_as(ChunkId::new(), RowId::new()));
+    store.insert_chunk(&chunk1_2)?; // x2 !
+    let chunk1_3 = Arc::new(chunk1_1.clone_as(ChunkId::new(), RowId::new()));
+    store.insert_chunk(&chunk1_3)?; // x3 !!
+
+    let row_id2_2 = RowId::new();
+    let row_id2_3 = RowId::new();
+    let row_id2_4 = RowId::new();
+    let chunk2 = Chunk::builder(entity_path.clone())
+        .with_sparse_component_batches(
+            row_id2_2,
+            [build_frame_nr(frame2)],
+            [(MyPoint::descriptor(), Some(&points2 as _))],
+        )
+        .with_sparse_component_batches(
+            row_id2_3,
+            [build_frame_nr(frame3)],
+            [(MyPoint::descriptor(), Some(&points3 as _))],
+        )
+        .with_sparse_component_batches(
+            row_id2_4,
+            [build_frame_nr(frame4)],
+            [(MyPoint::descriptor(), Some(&points4 as _))],
+        )
+        .build()?;
+
+    let chunk2 = Arc::new(chunk2);
+    store.insert_chunk(&chunk2)?;
+
+    let assert_range_chunk = |time_range: ResolvedTimeRange,
+                              mut expected_chunk_ids: Vec<ChunkId>| {
+        let timeline_frame_nr = Timeline::new("frame_nr", TimeType::Sequence);
+
+        eprintln!("--- {time_range:?} ---");
+        let mut chunk_ids = store
+            .range_relevant_chunks_for_all_components(
+                &RangeQuery::new(timeline_frame_nr, time_range),
+                &entity_path,
+            )
+            .into_iter()
+            .map(|chunk| {
+                eprintln!("{chunk}");
+                chunk.id()
+            })
+            .collect_vec();
+        chunk_ids.sort();
+
+        expected_chunk_ids.sort();
+
+        similar_asserts::assert_eq!(expected_chunk_ids, chunk_ids);
+    };
+
+    // Unit ranges
+    assert_range_chunk(ResolvedTimeRange::new(frame0, frame0), vec![]);
+    assert_range_chunk(
+        ResolvedTimeRange::new(frame1, frame1),
+        vec![chunk1_1.id(), chunk1_2.id(), chunk1_3.id()],
+    );
+    assert_range_chunk(
+        ResolvedTimeRange::new(frame2, frame2),
+        vec![chunk1_1.id(), chunk1_2.id(), chunk1_3.id(), chunk2.id()],
+    );
+    assert_range_chunk(
+        ResolvedTimeRange::new(frame3, frame3),
+        vec![chunk1_1.id(), chunk1_2.id(), chunk1_3.id(), chunk2.id()],
+    );
+    assert_range_chunk(
+        ResolvedTimeRange::new(frame4, frame4),
+        vec![chunk1_1.id(), chunk1_2.id(), chunk1_3.id(), chunk2.id()],
+    );
+    assert_range_chunk(
+        ResolvedTimeRange::new(frame5, frame5),
+        vec![chunk1_1.id(), chunk1_2.id(), chunk1_3.id()],
+    );
+    assert_range_chunk(
+        ResolvedTimeRange::new(frame6, frame6),
+        vec![chunk1_1.id(), chunk1_2.id(), chunk1_3.id()],
+    );
+    assert_range_chunk(
+        ResolvedTimeRange::new(frame7, frame7),
+        vec![chunk1_1.id(), chunk1_2.id(), chunk1_3.id()],
+    );
+    assert_range_chunk(ResolvedTimeRange::new(frame8, frame8), vec![]);
+
+    // Full range
+    assert_range_chunk(
+        ResolvedTimeRange::new(frame1, frame5),
+        vec![chunk1_1.id(), chunk1_2.id(), chunk1_3.id(), chunk2.id()],
+    );
+
+    // Infinite range
+    assert_range_chunk(
+        ResolvedTimeRange::EVERYTHING,
+        vec![chunk1_1.id(), chunk1_2.id(), chunk1_3.id(), chunk2.id()],
+    );
 
     Ok(())
 }

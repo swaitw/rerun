@@ -11,6 +11,7 @@ use re_log::ResultExt as _;
 use re_memory::AccountingAllocator;
 use re_viewer_context::{SystemCommand, SystemCommandSender};
 
+use crate::app_state::recording_config_entry;
 use crate::history::install_popstate_listener;
 use crate::web_tools::{url_to_receiver, Callback, JsResultExt as _, StringOrStringArray};
 
@@ -47,24 +48,47 @@ impl WebHandle {
         })
     }
 
-    /// - `url` is an optional URL to either an .rrd file over http, or a Rerun WebSocket server.
-    /// - `manifest_url` is an optional URL to an `examples_manifest.json` file over http.
-    /// - `force_wgpu_backend` is an optional string to force a specific backend, either `webgl` or `webgpu`.
     #[wasm_bindgen]
-    pub async fn start(&self, canvas_id: String) -> Result<(), wasm_bindgen::JsValue> {
+    pub async fn start(&self, canvas: JsValue) -> Result<(), wasm_bindgen::JsValue> {
+        let main_thread_token = crate::MainThreadToken::i_promise_i_am_on_the_main_thread();
+
+        let canvas = if let Some(canvas_id) = canvas.as_string() {
+            // For backwards compatibility with old JS/HTML written before 2024-08-30
+            let document = web_sys::window()
+                .ok_or_else(|| "Failed to get window. Are we not in a browser?".to_owned())?
+                .document()
+                .ok_or_else(|| {
+                    "Failed to get window.document. Are we not in a browser?".to_owned()
+                })?;
+            let element = document
+                .get_element_by_id(&canvas_id)
+                .ok_or_else(|| format!("Canvas element '{canvas_id}' not found."))?;
+            element
+                .dyn_into::<web_sys::HtmlCanvasElement>()
+                .map_err(|element| {
+                    format!("Expected a canvas element or canvas id, got {element:?}")
+                })?
+        } else {
+            canvas
+                .dyn_into::<web_sys::HtmlCanvasElement>()
+                .map_err(|element| {
+                    format!("Expected a canvas element or canvas id, got {element:?}")
+                })?
+        };
+
         let app_options = self.app_options.clone();
         let web_options = eframe::WebOptions {
-            follow_system_theme: false,
-            default_theme: eframe::Theme::Dark,
-            wgpu_options: crate::wgpu_options(app_options.render_backend.clone()),
+            wgpu_options: crate::wgpu_options(app_options.render_backend.as_deref()),
             depth_buffer: 0,
+            dithering: true,
+            ..Default::default()
         };
 
         self.runner
             .start(
-                &canvas_id,
+                canvas,
                 web_options,
-                Box::new(move |cc| Ok(Box::new(create_app(cc, app_options)?))),
+                Box::new(move |cc| Ok(Box::new(create_app(main_thread_token, cc, app_options)?))),
             )
             .await?;
 
@@ -216,7 +240,7 @@ impl WebHandle {
 
     /// Add an rrd to the viewer directly from a byte array.
     #[wasm_bindgen]
-    pub fn send_rrd_to_channel(&mut self, id: &str, data: &[u8]) {
+    pub fn send_rrd_to_channel(&self, id: &str, data: &[u8]) {
         use std::{ops::ControlFlow, sync::Arc};
         let Some(app) = self.runner.app_mut::<crate::App>() else {
             return;
@@ -261,6 +285,271 @@ impl WebHandle {
             );
         }
     }
+
+    #[wasm_bindgen]
+    pub fn get_active_recording_id(&self) -> Option<String> {
+        let app = self.runner.app_mut::<crate::App>()?;
+        let hub = app.store_hub.as_ref()?;
+        let recording = hub.active_recording()?;
+
+        Some(recording.store_id().to_string())
+    }
+
+    #[wasm_bindgen]
+    pub fn set_active_recording_id(&self, store_id: &str) {
+        let Some(mut app) = self.runner.app_mut::<crate::App>() else {
+            return;
+        };
+
+        let Some(hub) = app.store_hub.as_mut() else {
+            return;
+        };
+        let store_id = re_log_types::StoreId::from_string(
+            re_log_types::StoreKind::Recording,
+            store_id.to_owned(),
+        );
+        if !hub.store_bundle().contains(&store_id) {
+            return;
+        };
+
+        hub.set_activate_recording(store_id);
+
+        app.egui_ctx.request_repaint();
+    }
+
+    #[wasm_bindgen]
+    pub fn get_active_timeline(&self, store_id: &str) -> Option<String> {
+        let mut app = self.runner.app_mut::<crate::App>()?;
+        let crate::App {
+            store_hub: Some(ref hub),
+            state,
+            ..
+        } = &mut *app
+        else {
+            return None;
+        };
+
+        let store_id = re_log_types::StoreId::from_string(
+            re_log_types::StoreKind::Recording,
+            store_id.to_owned(),
+        );
+        if !hub.store_bundle().contains(&store_id) {
+            return None;
+        };
+
+        let rec_cfg = state.recording_config_mut(&store_id)?;
+        let time_ctrl = rec_cfg.time_ctrl.read();
+        Some(time_ctrl.timeline().name().as_str().to_owned())
+    }
+
+    /// Set the active timeline.
+    ///
+    /// This does nothing if the timeline can't be found.
+    #[wasm_bindgen]
+    pub fn set_active_timeline(&self, store_id: &str, timeline: &str) {
+        let Some(mut app) = self.runner.app_mut::<crate::App>() else {
+            return;
+        };
+        let crate::App {
+            store_hub: Some(ref hub),
+            state,
+            egui_ctx,
+            ..
+        } = &mut *app
+        else {
+            return;
+        };
+
+        let store_id = re_log_types::StoreId::from_string(
+            re_log_types::StoreKind::Recording,
+            store_id.to_owned(),
+        );
+        let Some(recording) = hub.store_bundle().get(&store_id) else {
+            return;
+        };
+        let rec_cfg =
+            recording_config_entry(&mut state.recording_configs, store_id.clone(), recording);
+
+        let Some(timeline) = recording
+            .timelines()
+            .find(|t| t.name().as_str() == timeline)
+        else {
+            re_log::warn!("Failed to find timeline {timeline} for {store_id}");
+            return;
+        };
+
+        rec_cfg.time_ctrl.write().set_timeline(*timeline);
+
+        egui_ctx.request_repaint();
+    }
+
+    #[wasm_bindgen]
+    pub fn get_time_for_timeline(&self, store_id: &str, timeline: &str) -> Option<f64> {
+        let app = self.runner.app_mut::<crate::App>()?;
+        let crate::App {
+            store_hub: Some(ref hub),
+            state,
+            ..
+        } = &*app
+        else {
+            return None;
+        };
+
+        let store_id = re_log_types::StoreId::from_string(
+            re_log_types::StoreKind::Recording,
+            store_id.to_owned(),
+        );
+        let recording = hub.store_bundle().get(&store_id)?;
+        let rec_cfg = state.recording_config(&store_id)?;
+        let timeline = recording
+            .timelines()
+            .find(|t| t.name().as_str() == timeline)?;
+
+        let time_ctrl = rec_cfg.time_ctrl.read();
+        time_ctrl.time_for_timeline(*timeline).map(|v| v.as_f64())
+    }
+
+    #[wasm_bindgen]
+    pub fn set_time_for_timeline(&self, store_id: &str, timeline: &str, time: f64) {
+        let Some(mut app) = self.runner.app_mut::<crate::App>() else {
+            return;
+        };
+        let crate::App {
+            store_hub: Some(ref hub),
+            state,
+            egui_ctx,
+            ..
+        } = &mut *app
+        else {
+            return;
+        };
+
+        let store_id = re_log_types::StoreId::from_string(
+            re_log_types::StoreKind::Recording,
+            store_id.to_owned(),
+        );
+        let Some(recording) = hub.store_bundle().get(&store_id) else {
+            return;
+        };
+        let rec_cfg =
+            recording_config_entry(&mut state.recording_configs, store_id.clone(), recording);
+        let Some(timeline) = recording
+            .timelines()
+            .find(|t| t.name().as_str() == timeline)
+        else {
+            re_log::warn!("Failed to find timeline {timeline} for {store_id}");
+            return;
+        };
+
+        rec_cfg
+            .time_ctrl
+            .write()
+            .set_timeline_and_time(*timeline, time);
+        egui_ctx.request_repaint();
+    }
+
+    #[wasm_bindgen]
+    pub fn get_timeline_time_range(&self, store_id: &str, timeline: &str) -> JsValue {
+        let Some(app) = self.runner.app_mut::<crate::App>() else {
+            return JsValue::null();
+        };
+        let crate::App {
+            store_hub: Some(ref hub),
+            ..
+        } = &*app
+        else {
+            return JsValue::null();
+        };
+
+        let store_id = re_log_types::StoreId::from_string(
+            re_log_types::StoreKind::Recording,
+            store_id.to_owned(),
+        );
+        let Some(recording) = hub.store_bundle().get(&store_id) else {
+            return JsValue::null();
+        };
+        let Some(timeline) = recording
+            .timelines()
+            .find(|t| t.name().as_str() == timeline)
+        else {
+            return JsValue::null();
+        };
+
+        let Some(time_range) = recording.time_range_for(timeline) else {
+            return JsValue::null();
+        };
+
+        let min = time_range.min().as_f64();
+        let max = time_range.max().as_f64();
+
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"min".into(), &min.into()).ok_or_log_js_error();
+        js_sys::Reflect::set(&obj, &"max".into(), &max.into()).ok_or_log_js_error();
+
+        JsValue::from(obj)
+    }
+
+    #[wasm_bindgen]
+    pub fn get_playing(&self, store_id: &str) -> Option<bool> {
+        let app = self.runner.app_mut::<crate::App>()?;
+        let crate::App {
+            store_hub: Some(ref hub),
+            state,
+            ..
+        } = &*app
+        else {
+            return None;
+        };
+
+        let store_id = re_log_types::StoreId::from_string(
+            re_log_types::StoreKind::Recording,
+            store_id.to_owned(),
+        );
+        if !hub.store_bundle().contains(&store_id) {
+            return None;
+        };
+        let rec_cfg = state.recording_config(&store_id)?;
+
+        let time_ctrl = rec_cfg.time_ctrl.read();
+        Some(time_ctrl.play_state() == re_viewer_context::PlayState::Playing)
+    }
+
+    #[wasm_bindgen]
+    pub fn set_playing(&self, store_id: &str, value: bool) {
+        let Some(mut app) = self.runner.app_mut::<crate::App>() else {
+            return;
+        };
+        let crate::App {
+            store_hub,
+            state,
+            egui_ctx,
+            ..
+        } = &mut *app;
+
+        let Some(hub) = store_hub.as_ref() else {
+            return;
+        };
+        let store_id = re_log_types::StoreId::from_string(
+            re_log_types::StoreKind::Recording,
+            store_id.to_owned(),
+        );
+        let Some(recording) = hub.store_bundle().get(&store_id) else {
+            return;
+        };
+        let rec_cfg = recording_config_entry(&mut state.recording_configs, store_id, recording);
+
+        let play_state = if value {
+            re_viewer_context::PlayState::Playing
+        } else {
+            re_viewer_context::PlayState::Paused
+        };
+
+        rec_cfg
+            .time_ctrl
+            .write()
+            .set_play_state(recording.times_per_timeline(), play_state);
+        egui_ctx.request_repaint();
+    }
 }
 
 // TODO(jprochazk): figure out a way to auto-generate these types on JS side
@@ -300,13 +589,33 @@ pub struct AppOptions {
     url: Option<StringOrStringArray>,
     manifest_url: Option<String>,
     render_backend: Option<String>,
+    video_decoder: Option<String>,
     hide_welcome_screen: Option<bool>,
     panel_state_overrides: Option<PanelStateOverrides>,
+    timeline: Option<TimelineOptions>,
     fullscreen: Option<FullscreenOptions>,
     enable_history: Option<bool>,
 
     notebook: Option<bool>,
     persist: Option<bool>,
+}
+
+// Keep in sync with the `TimelineOptions` interface in `rerun_js/web-viewer/index.ts`
+#[derive(Clone, Deserialize)]
+pub struct TimelineOptions {
+    /// Fired when the a different timeline is selected.
+    pub on_timelinechange: Callback,
+
+    /// Fired when the timepoint changes.
+    ///
+    /// Does not fire when `on_seek` is called.
+    pub on_timeupdate: Callback,
+
+    /// Fired when the timeline is paused.
+    pub on_pause: Callback,
+
+    /// Fired when the timeline is played.
+    pub on_play: Callback,
 }
 
 // Keep in sync with the `FullscreenOptions` interface in `rerun_js/web-viewer/index.ts`
@@ -339,6 +648,7 @@ impl From<PanelStateOverrides> for crate::app_blueprint::PanelStateOverrides {
 }
 
 fn create_app(
+    main_thread_token: crate::MainThreadToken,
     cc: &eframe::CreationContext<'_>,
     app_options: AppOptions,
 ) -> Result<crate::App, re_renderer::RenderContextError> {
@@ -346,41 +656,63 @@ fn create_app(
     let app_env = crate::AppEnvironment::Web {
         url: cc.integration_info.web_info.location.url.clone(),
     };
-    let enable_history = app_options.enable_history.unwrap_or(false);
+
+    let AppOptions {
+        url,
+        manifest_url,
+        render_backend,
+        video_decoder,
+        hide_welcome_screen,
+        panel_state_overrides,
+        timeline,
+        fullscreen,
+        enable_history,
+
+        notebook,
+        persist,
+    } = app_options;
+
+    let enable_history = enable_history.unwrap_or(false);
+
+    let video_decoder_hw_acceleration = video_decoder.and_then(|s| match s.parse() {
+        Err(()) => {
+            re_log::warn_once!("Failed to parse --video-decoder value: {s}. Ignoring.");
+            None
+        }
+        Ok(hw_accell) => Some(hw_accell),
+    });
+
     let startup_options = crate::StartupOptions {
         memory_limit: re_memory::MemoryLimit {
             // On wasm32 we only have 4GB of memory to play around with.
             max_bytes: Some(2_500_000_000),
         },
         location: Some(cc.integration_info.web_info.location.clone()),
-        persist_state: app_options.persist.unwrap_or(true),
-        is_in_notebook: app_options.notebook.unwrap_or(false),
+        persist_state: persist.unwrap_or(true),
+        is_in_notebook: notebook.unwrap_or(false),
         expect_data_soon: None,
-        force_wgpu_backend: None,
-        hide_welcome_screen: app_options.hide_welcome_screen.unwrap_or(false),
-        fullscreen_options: app_options.fullscreen.clone(),
-        panel_state_overrides: app_options.panel_state_overrides.unwrap_or_default().into(),
+        force_wgpu_backend: render_backend.clone(),
+        video_decoder_hw_acceleration,
+        hide_welcome_screen: hide_welcome_screen.unwrap_or(false),
+        timeline_options: timeline.clone(),
+        fullscreen_options: fullscreen.clone(),
+        panel_state_overrides: panel_state_overrides.unwrap_or_default().into(),
+
         enable_history,
     };
     crate::customize_eframe_and_setup_renderer(cc)?;
 
-    let mut app = crate::App::new(
-        build_info,
-        &app_env,
-        startup_options,
-        cc.egui_ctx.clone(),
-        cc.storage,
-    );
+    let mut app = crate::App::new(main_thread_token, build_info, &app_env, startup_options, cc);
 
     if enable_history {
         install_popstate_listener(&mut app).ok_or_log_js_error();
     }
 
-    if let Some(manifest_url) = app_options.manifest_url {
+    if let Some(manifest_url) = manifest_url {
         app.set_examples_manifest_url(manifest_url);
     }
 
-    if let Some(urls) = app_options.url {
+    if let Some(urls) = url {
         let follow_if_http = false;
         for url in urls.into_inner() {
             if let Some(receiver) =
@@ -402,6 +734,7 @@ fn create_app(
 /// by rerun employees manually in `app.rerun.io`.
 #[cfg(feature = "analytics")]
 #[wasm_bindgen]
+#[allow(clippy::unwrap_used)] // This is only run by rerun employees, so it's fine to panic
 pub fn set_email(email: String) {
     let mut config = re_analytics::Config::load().unwrap().unwrap_or_default();
     config.opt_in_metadata.insert("email".into(), email.into());

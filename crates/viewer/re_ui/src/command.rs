@@ -1,4 +1,5 @@
-use egui::{Key, KeyboardShortcut, Modifiers};
+use egui::{os::OperatingSystem, Key, KeyboardShortcut, Modifiers};
+use smallvec::{smallvec, SmallVec};
 
 /// Interface for sending [`UICommand`] messages.
 pub trait UICommandSender {
@@ -14,11 +15,15 @@ pub trait UICommandSender {
 pub enum UICommand {
     // Listed in the order they show up in the command palette by default!
     Open,
+    Import,
     SaveRecording,
     SaveRecordingSelection,
     SaveBlueprint,
     CloseCurrentRecording,
     CloseAllRecordings,
+
+    Undo,
+    Redo,
 
     #[cfg(not(target_arch = "wasm32"))]
     Quit,
@@ -27,7 +32,7 @@ pub enum UICommand {
     OpenRerunDiscord,
 
     ResetViewer,
-    ClearAndGenerateBlueprint,
+    ClearActiveBlueprintAndEnableHeuristics,
 
     #[cfg(not(target_arch = "wasm32"))]
     OpenProfiler,
@@ -38,6 +43,8 @@ pub enum UICommand {
     ToggleBlueprintPanel,
     ToggleSelectionPanel,
     ToggleTimePanel,
+    ToggleChunkStoreBrowser,
+    Settings,
 
     #[cfg(debug_assertions)]
     ToggleBlueprintInspectionPanel,
@@ -52,9 +59,6 @@ pub enum UICommand {
     ZoomOut,
     #[cfg(not(target_arch = "wasm32"))]
     ZoomReset,
-
-    SelectionPrevious,
-    SelectionNext,
 
     ToggleCommandPalette,
 
@@ -73,9 +77,10 @@ pub enum UICommand {
     #[cfg(not(target_arch = "wasm32"))]
     PrintBlueprintStore,
     #[cfg(not(target_arch = "wasm32"))]
-    ClearPrimaryCache,
-    #[cfg(not(target_arch = "wasm32"))]
     PrintPrimaryCache,
+
+    #[cfg(debug_assertions)]
+    ResetEguiMemory,
 
     #[cfg(target_arch = "wasm32")]
     CopyDirectLink,
@@ -85,8 +90,6 @@ pub enum UICommand {
     RestartWithWebGl,
     #[cfg(target_arch = "wasm32")]
     RestartWithWebGpu,
-
-    ToggleChunkBasedDataDensityGraph,
 }
 
 impl UICommand {
@@ -109,7 +112,8 @@ impl UICommand {
 
             Self::SaveBlueprint => ("Save blueprint…", "Save the current viewer setup as a Rerun blueprint file (.rbl)"),
 
-            Self::Open => ("Open…", "Open any supported files (.rrd, images, meshes, …)"),
+            Self::Open => ("Open…", "Open any supported files (.rrd, images, meshes, …) in a new recording"),
+            Self::Import => ("Import…", "Import any supported files (.rrd, images, meshes, …) in the current recording"),
 
             Self::CloseCurrentRecording => (
                 "Close current recording",
@@ -117,7 +121,10 @@ impl UICommand {
             ),
 
             Self::CloseAllRecordings => ("Close all recordings",
-                "Close all open current recording (unsaved data will be lost)",),
+                                         "Close all open current recording (unsaved data will be lost)"),
+
+            Self::Undo => ("Undo", "Undo the last blueprint edit for the open recording"),
+            Self::Redo => ("Redo", "Redo the last undone thing"),
 
             #[cfg(not(target_arch = "wasm32"))]
             Self::Quit => ("Quit", "Close the Rerun Viewer"),
@@ -130,11 +137,10 @@ impl UICommand {
                 "Reset the Viewer to how it looked the first time you ran it, forgetting all stored blueprints and UI state",
             ),
 
-            Self::ClearAndGenerateBlueprint => (
-                "Clear and generate new blueprint",
-                "Clear the current blueprint and generate a new one based on heuristics."
+            Self::ClearActiveBlueprintAndEnableHeuristics => (
+                "Reset to heuristic blueprint",
+                "Re-populate viewport with automatically chosen views"
             ),
-
 
             #[cfg(not(target_arch = "wasm32"))]
             Self::OpenProfiler => (
@@ -152,6 +158,8 @@ impl UICommand {
             Self::ToggleBlueprintPanel => ("Toggle blueprint panel", "Toggle the left panel"),
             Self::ToggleSelectionPanel => ("Toggle selection panel", "Toggle the right panel"),
             Self::ToggleTimePanel => ("Toggle time panel", "Toggle the bottom panel"),
+            Self::ToggleChunkStoreBrowser => ("Toggle chunk store browser", "Toggle the chunk store browser"),
+            Self::Settings => ("Settings…", "Show the settings screen"),
 
             #[cfg(debug_assertions)]
             Self::ToggleBlueprintInspectionPanel => (
@@ -164,7 +172,6 @@ impl UICommand {
                 "Toggle egui debug panel",
                 "View and change global egui style settings",
             ),
-
 
             #[cfg(not(target_arch = "wasm32"))]
             Self::ToggleFullscreen => (
@@ -188,8 +195,6 @@ impl UICommand {
                 "Resets the UI zoom level to the operating system's default value",
             ),
 
-            Self::SelectionPrevious => ("Previous selection", "Go to previous selection"),
-            Self::SelectionNext => ("Next selection", "Go to next selection"),
             Self::ToggleCommandPalette => ("Command palette…", "Toggle the Command Palette"),
 
             Self::PlaybackTogglePlayPause => {
@@ -222,16 +227,16 @@ impl UICommand {
                 "Prints the entire blueprint store to the console and clipboard. WARNING: this may be A LOT of text.",
             ),
             #[cfg(not(target_arch = "wasm32"))]
-            Self::ClearPrimaryCache => (
-                "Clear primary cache",
-                "Clears the primary cache in its entirety.",
-            ),
-            #[cfg(not(target_arch = "wasm32"))]
             Self::PrintPrimaryCache => (
                 "Print primary cache",
                 "Prints the state of the entire primary cache to the console and clipboard. WARNING: this may be A LOT of text.",
             ),
 
+            #[cfg(debug_assertions)]
+            Self::ResetEguiMemory => (
+                "Reset egui memory",
+                "Reset egui memory, useful for debugging UI code.",
+            ),
 
             #[cfg(target_arch = "wasm32")]
             Self::CopyDirectLink => (
@@ -249,116 +254,143 @@ impl UICommand {
                 "Restart with WebGPU",
                 "Reloads the webpage and force WebGPU for rendering. All data will be lost."
             ),
-
-            Self::ToggleChunkBasedDataDensityGraph => (
-                "Toggle chunk-based data density graph",
-                "Toggle between the old and new data density graph",
-            ),
         }
     }
 
-    #[allow(clippy::unnecessary_wraps)] // Only on some platforms
-    pub fn kb_shortcut(self) -> Option<KeyboardShortcut> {
+    /// All keyboard shortcuts, with the primary first.
+    pub fn kb_shortcuts(self, os: OperatingSystem) -> SmallVec<[KeyboardShortcut; 2]> {
         fn key(key: Key) -> KeyboardShortcut {
             KeyboardShortcut::new(Modifiers::NONE, key)
+        }
+
+        fn ctrl(key: Key) -> KeyboardShortcut {
+            KeyboardShortcut::new(Modifiers::CTRL, key)
         }
 
         fn cmd(key: Key) -> KeyboardShortcut {
             KeyboardShortcut::new(Modifiers::COMMAND, key)
         }
 
+        fn cmd_shift(key: Key) -> KeyboardShortcut {
+            KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, key)
+        }
+
         fn cmd_alt(key: Key) -> KeyboardShortcut {
-            KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), key)
+            KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, key)
         }
 
         fn ctrl_shift(key: Key) -> KeyboardShortcut {
-            KeyboardShortcut::new(Modifiers::CTRL.plus(Modifiers::SHIFT), key)
-        }
-
-        fn cmd_shift(key: Key) -> KeyboardShortcut {
-            KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), key)
+            KeyboardShortcut::new(Modifiers::CTRL | Modifiers::SHIFT, key)
         }
 
         match self {
-            Self::SaveRecording => Some(cmd(Key::S)),
-            Self::SaveRecordingSelection => Some(cmd_alt(Key::S)),
-            Self::SaveBlueprint => None,
-            Self::Open => Some(cmd(Key::O)),
-            Self::CloseCurrentRecording => None,
-            Self::CloseAllRecordings => None,
+            Self::SaveRecording => smallvec![cmd(Key::S)],
+            Self::SaveRecordingSelection => smallvec![cmd_alt(Key::S)],
+            Self::SaveBlueprint => smallvec![],
+            Self::Open => smallvec![cmd(Key::O)],
+            Self::Import => smallvec![cmd_shift(Key::O)],
+            Self::CloseCurrentRecording => smallvec![],
+            Self::CloseAllRecordings => smallvec![],
+
+            Self::Undo => smallvec![cmd(Key::Z)],
+            Self::Redo => {
+                if os == OperatingSystem::Mac {
+                    smallvec![cmd_shift(Key::Z), cmd(Key::Y)]
+                } else {
+                    smallvec![ctrl(Key::Y), ctrl_shift(Key::Z)]
+                }
+            }
 
             #[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
-            Self::Quit => Some(KeyboardShortcut::new(Modifiers::ALT, Key::F4)),
+            Self::Quit => smallvec![KeyboardShortcut::new(Modifiers::ALT, Key::F4)],
 
-            Self::OpenWebHelp => None,
-            Self::OpenRerunDiscord => None,
+            Self::OpenWebHelp => smallvec![],
+            Self::OpenRerunDiscord => smallvec![],
 
             #[cfg(all(not(target_arch = "wasm32"), not(target_os = "windows")))]
-            Self::Quit => Some(cmd(Key::Q)),
+            Self::Quit => smallvec![cmd(Key::Q)],
 
-            Self::ResetViewer => Some(ctrl_shift(Key::R)),
-            Self::ClearAndGenerateBlueprint => None,
+            Self::ResetViewer => smallvec![ctrl_shift(Key::R)],
+            Self::ClearActiveBlueprintAndEnableHeuristics => smallvec![],
 
             #[cfg(not(target_arch = "wasm32"))]
-            Self::OpenProfiler => Some(ctrl_shift(Key::P)),
-            Self::ToggleMemoryPanel => Some(ctrl_shift(Key::M)),
-            Self::TogglePanelStateOverrides => None,
-            Self::ToggleTopPanel => None,
-            Self::ToggleBlueprintPanel => Some(ctrl_shift(Key::B)),
-            Self::ToggleSelectionPanel => Some(ctrl_shift(Key::S)),
-            Self::ToggleTimePanel => Some(ctrl_shift(Key::T)),
+            Self::OpenProfiler => smallvec![ctrl_shift(Key::P)],
+            Self::ToggleMemoryPanel => smallvec![ctrl_shift(Key::M)],
+            Self::TogglePanelStateOverrides => smallvec![],
+            Self::ToggleTopPanel => smallvec![],
+            Self::ToggleBlueprintPanel => smallvec![ctrl_shift(Key::B)],
+            Self::ToggleSelectionPanel => smallvec![ctrl_shift(Key::S)],
+            Self::ToggleTimePanel => smallvec![ctrl_shift(Key::T)],
+            Self::ToggleChunkStoreBrowser => smallvec![ctrl_shift(Key::D)],
+            Self::Settings => smallvec![cmd(Key::Comma)],
 
             #[cfg(debug_assertions)]
-            Self::ToggleBlueprintInspectionPanel => Some(ctrl_shift(Key::I)),
+            Self::ToggleBlueprintInspectionPanel => smallvec![ctrl_shift(Key::I)],
 
             #[cfg(debug_assertions)]
-            Self::ToggleEguiDebugPanel => Some(ctrl_shift(Key::U)),
+            Self::ToggleEguiDebugPanel => smallvec![ctrl_shift(Key::U)],
 
             #[cfg(not(target_arch = "wasm32"))]
-            Self::ToggleFullscreen => Some(key(Key::F11)),
+            Self::ToggleFullscreen => smallvec![key(Key::F11)],
             #[cfg(target_arch = "wasm32")]
-            Self::ToggleFullscreen => None,
+            Self::ToggleFullscreen => smallvec![],
 
             #[cfg(not(target_arch = "wasm32"))]
-            Self::ZoomIn => Some(egui::gui_zoom::kb_shortcuts::ZOOM_IN),
+            Self::ZoomIn => smallvec![egui::gui_zoom::kb_shortcuts::ZOOM_IN],
             #[cfg(not(target_arch = "wasm32"))]
-            Self::ZoomOut => Some(egui::gui_zoom::kb_shortcuts::ZOOM_OUT),
+            Self::ZoomOut => smallvec![egui::gui_zoom::kb_shortcuts::ZOOM_OUT],
             #[cfg(not(target_arch = "wasm32"))]
-            Self::ZoomReset => Some(egui::gui_zoom::kb_shortcuts::ZOOM_RESET),
+            Self::ZoomReset => smallvec![egui::gui_zoom::kb_shortcuts::ZOOM_RESET],
 
-            Self::SelectionPrevious => Some(ctrl_shift(Key::ArrowLeft)),
-            Self::SelectionNext => Some(ctrl_shift(Key::ArrowRight)),
-            Self::ToggleCommandPalette => Some(cmd(Key::P)),
+            Self::ToggleCommandPalette => smallvec![cmd(Key::P)],
 
-            Self::PlaybackTogglePlayPause => Some(key(Key::Space)),
-            Self::PlaybackFollow => Some(cmd(Key::ArrowRight)),
-            Self::PlaybackStepBack => Some(key(Key::ArrowLeft)),
-            Self::PlaybackStepForward => Some(key(Key::ArrowRight)),
-            Self::PlaybackRestart => Some(cmd(Key::ArrowLeft)),
+            Self::PlaybackTogglePlayPause => smallvec![key(Key::Space)],
+            Self::PlaybackFollow => smallvec![cmd(Key::ArrowRight)],
+            Self::PlaybackStepBack => smallvec![key(Key::ArrowLeft)],
+            Self::PlaybackStepForward => smallvec![key(Key::ArrowRight)],
+            Self::PlaybackRestart => smallvec![cmd(Key::ArrowLeft)],
 
             #[cfg(not(target_arch = "wasm32"))]
-            Self::ScreenshotWholeApp => None,
+            Self::ScreenshotWholeApp => smallvec![],
             #[cfg(not(target_arch = "wasm32"))]
-            Self::PrintChunkStore => None,
+            Self::PrintChunkStore => smallvec![],
             #[cfg(not(target_arch = "wasm32"))]
-            Self::PrintBlueprintStore => None,
+            Self::PrintBlueprintStore => smallvec![],
             #[cfg(not(target_arch = "wasm32"))]
-            Self::ClearPrimaryCache => None,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::PrintPrimaryCache => None,
+            Self::PrintPrimaryCache => smallvec![],
 
-            #[cfg(target_arch = "wasm32")]
-            Self::CopyDirectLink => None,
+            #[cfg(debug_assertions)]
+            Self::ResetEguiMemory => smallvec![],
 
             #[cfg(target_arch = "wasm32")]
-            Self::RestartWithWebGl => None,
+            Self::CopyDirectLink => smallvec![],
+
             #[cfg(target_arch = "wasm32")]
-            Self::RestartWithWebGpu => None,
+            Self::RestartWithWebGl => smallvec![],
+            #[cfg(target_arch = "wasm32")]
+            Self::RestartWithWebGpu => smallvec![],
+        }
+    }
 
-            #[cfg(target_arch = "wasm32 ")]
-            Self::ViewportMode(_) => None,
+    /// Primary keyboard shortcut
+    fn primary_kb_shortcut(self, os: OperatingSystem) -> Option<KeyboardShortcut> {
+        self.kb_shortcuts(os).first().copied()
+    }
 
-            Self::ToggleChunkBasedDataDensityGraph => Some(cmd_shift(Key::D)),
+    /// Return the keyboard shortcut for this command, nicely formatted
+    pub fn formatted_kb_shortcut(self, egui_ctx: &egui::Context) -> Option<String> {
+        // Note: we only show the primary shortcut to the user.
+        // The fallbacks are there for people who have muscle memory for the other shortcuts.
+        self.primary_kb_shortcut(egui_ctx.os())
+            .map(|shortcut| egui_ctx.format_shortcut(&shortcut))
+    }
+
+    /// Add e.g. " (Ctrl+F11)" as a suffix
+    pub fn format_shortcut_tooltip_suffix(self, egui_ctx: &egui::Context) -> String {
+        if let Some(shortcut_text) = self.formatted_kb_shortcut(egui_ctx) {
+            format!(" ({shortcut_text})")
+        } else {
+            Default::default()
         }
     }
 
@@ -384,14 +416,18 @@ impl UICommand {
         }
 
         let mut commands: Vec<(KeyboardShortcut, Self)> = Self::iter()
-            .filter_map(|cmd| cmd.kb_shortcut().map(|kb_shortcut| (kb_shortcut, cmd)))
+            .flat_map(|cmd| {
+                cmd.kb_shortcuts(egui_ctx.os())
+                    .into_iter()
+                    .map(move |kb_shortcut| (kb_shortcut, cmd))
+            })
             .collect();
 
         // If the user pressed `Cmd-Shift-S` then egui will match that
         // with both `Cmd-Shift-S` and `Cmd-S`.
         // The reason is that `Shift` (and `Alt`) are sometimes required to produce certain keys,
         // such as `+` (`Shift =` on an american keyboard).
-        // The result of this is that we bust check for `Cmd-Shift-S` before `Cmd-S`, etc.
+        // The result of this is that we must check for `Cmd-Shift-S` before `Cmd-S`, etc.
         // So we order the commands here so that the commands with `Shift` and `Alt` in them
         // are checked first.
         commands.sort_by_key(|(kb_shortcut, _cmd)| {
@@ -444,20 +480,11 @@ impl UICommand {
             egui::Button::new(self.text())
         };
 
-        if let Some(shortcut) = self.kb_shortcut() {
-            button = button.shortcut_text(egui_ctx.format_shortcut(&shortcut));
+        if let Some(shortcut_text) = self.formatted_kb_shortcut(egui_ctx) {
+            button = button.shortcut_text(shortcut_text);
         }
 
         button
-    }
-
-    /// Add e.g. " (Ctrl+F11)" as a suffix
-    pub fn format_shortcut_tooltip_suffix(self, egui_ctx: &egui::Context) -> String {
-        if let Some(kb_shortcut) = self.kb_shortcut() {
-            format!(" ({})", egui_ctx.format_shortcut(&kb_shortcut))
-        } else {
-            Default::default()
-        }
     }
 
     pub fn tooltip_with_shortcut(self, egui_ctx: &egui::Context) -> String {
@@ -490,19 +517,25 @@ fn check_for_clashing_command_shortcuts() {
 
     use strum::IntoEnumIterator as _;
 
-    for a_cmd in UICommand::iter() {
-        if let Some(a_shortcut) = a_cmd.kb_shortcut() {
-            for b_cmd in UICommand::iter() {
-                if a_cmd == b_cmd {
-                    continue;
-                }
-                if let Some(b_shortcut) = b_cmd.kb_shortcut() {
-                    assert!(
-                        !clashes(a_shortcut, b_shortcut),
-                        "Command '{a_cmd:?}' and '{b_cmd:?}' have overlapping keyboard shortcuts: {:?} vs {:?}",
-                        a_shortcut.format(&egui::ModifierNames::NAMES, true),
-                        b_shortcut.format(&egui::ModifierNames::NAMES, true),
-                    );
+    for os in [
+        OperatingSystem::Mac,
+        OperatingSystem::Windows,
+        OperatingSystem::Nix,
+    ] {
+        for a_cmd in UICommand::iter() {
+            for a_shortcut in a_cmd.kb_shortcuts(os) {
+                for b_cmd in UICommand::iter() {
+                    if a_cmd == b_cmd {
+                        continue;
+                    }
+                    for b_shortcut in b_cmd.kb_shortcuts(os) {
+                        assert!(
+                            !clashes(a_shortcut, b_shortcut),
+                            "Command '{a_cmd:?}' and '{b_cmd:?}' have overlapping keyboard shortcuts: {:?} vs {:?}",
+                            a_shortcut.format(&egui::ModifierNames::NAMES, true),
+                            b_shortcut.format(&egui::ModifierNames::NAMES, true),
+                        );
+                    }
                 }
             }
         }

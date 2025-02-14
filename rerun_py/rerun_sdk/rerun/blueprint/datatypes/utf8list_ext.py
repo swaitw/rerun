@@ -12,7 +12,7 @@ class Utf8ListExt:
     """Extension for [Utf8List][rerun.blueprint.datatypes.Utf8List]."""
 
     @staticmethod
-    def visualizers__field_converter_override(value: str | list[str]) -> list[str]:
+    def value__field_converter_override(value: str | list[str]) -> list[str]:
         if isinstance(value, str):
             return [value]
         return value
@@ -31,7 +31,14 @@ class Utf8ListExt:
             if len(data) == 0:
                 array = []
             elif isinstance(data[0], Utf8List):
+                # List of Utf8List!
                 array = [datum.value for datum in data]  # type: ignore[union-attr]
+            elif isinstance(data[0], Sequence):
+                # It's a nested sequence. Might still be a string though since strings are sequences.
+                if isinstance(data[0], str):
+                    array = [[str(datum) for datum in data]]
+                else:
+                    array = [[str(item) for item in sub_array] for sub_array in data]  # type: ignore[union-attr]
             else:
                 array = [[str(datum) for datum in data]]
         else:

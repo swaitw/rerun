@@ -7,12 +7,13 @@ from __future__ import annotations
 
 from rerun._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
 from .. import datatypes
 
-__all__ = ["AffixFuzzer21", "AffixFuzzer21Batch", "AffixFuzzer21Type"]
+__all__ = ["AffixFuzzer21", "AffixFuzzer21Batch"]
 
 
 class AffixFuzzer21(datatypes.AffixFuzzer21, ComponentMixin):
@@ -23,12 +24,8 @@ class AffixFuzzer21(datatypes.AffixFuzzer21, ComponentMixin):
     pass
 
 
-class AffixFuzzer21Type(datatypes.AffixFuzzer21Type):
-    _TYPE_NAME: str = "rerun.testing.components.AffixFuzzer21"
-
-
 class AffixFuzzer21Batch(datatypes.AffixFuzzer21Batch, ComponentBatchMixin):
-    _ARROW_TYPE = AffixFuzzer21Type()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.testing.components.AffixFuzzer21")
 
 
 # This is patched in late to avoid circular dependencies.

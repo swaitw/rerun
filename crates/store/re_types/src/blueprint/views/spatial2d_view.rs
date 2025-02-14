@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **View**: For viewing spatial 2D data.
@@ -37,7 +37,14 @@ pub struct Spatial2DView {
     pub time_ranges: crate::blueprint::archetypes::VisibleTimeRanges,
 }
 
-impl ::re_types_core::SizeBytes for Spatial2DView {
+impl ::re_types_core::View for Spatial2DView {
+    #[inline]
+    fn identifier() -> ::re_types_core::ViewClassIdentifier {
+        "2D".into()
+    }
+}
+
+impl ::re_byte_size::SizeBytes for Spatial2DView {
     #[inline]
     fn heap_size_bytes(&self) -> u64 {
         self.background.heap_size_bytes()
@@ -50,12 +57,5 @@ impl ::re_types_core::SizeBytes for Spatial2DView {
         <crate::blueprint::archetypes::Background>::is_pod()
             && <crate::blueprint::archetypes::VisualBounds2D>::is_pod()
             && <crate::blueprint::archetypes::VisibleTimeRanges>::is_pod()
-    }
-}
-
-impl ::re_types_core::View for Spatial2DView {
-    #[inline]
-    fn identifier() -> ::re_types_core::SpaceViewClassIdentifier {
-        "2D".into()
     }
 }

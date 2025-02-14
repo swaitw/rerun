@@ -4,10 +4,10 @@
 #pragma once
 
 #include "../collection.hpp"
-#include "../compiler_utils.hpp"
+#include "../component_batch.hpp"
+#include "../component_column.hpp"
 #include "../components/color.hpp"
 #include "../components/tensor_data.hpp"
-#include "../data_cell.hpp"
 #include "../indicator_component.hpp"
 #include "../result.hpp"
 
@@ -38,23 +38,38 @@ namespace rerun::archetypes {
     /// ```
     struct BarChart {
         /// The values. Should always be a 1-dimensional tensor (i.e. a vector).
-        rerun::components::TensorData values;
+        std::optional<ComponentBatch> values;
 
         /// The color of the bar chart
-        std::optional<rerun::components::Color> color;
+        std::optional<ComponentBatch> color;
 
       public:
         static constexpr const char IndicatorComponentName[] = "rerun.components.BarChartIndicator";
 
         /// Indicator component, used to identify the archetype when converting to a list of components.
         using IndicatorComponent = rerun::components::IndicatorComponent<IndicatorComponentName>;
+        /// The name of the archetype as used in `ComponentDescriptor`s.
+        static constexpr const char ArchetypeName[] = "rerun.archetypes.BarChart";
 
-      public:
-        // Extensions to generated type defined in 'bar_chart_ext.cpp'
+        /// `ComponentDescriptor` for the `values` field.
+        static constexpr auto Descriptor_values = ComponentDescriptor(
+            ArchetypeName, "values",
+            Loggable<rerun::components::TensorData>::Descriptor.component_name
+        );
+        /// `ComponentDescriptor` for the `color` field.
+        static constexpr auto Descriptor_color = ComponentDescriptor(
+            ArchetypeName, "color", Loggable<rerun::components::Color>::Descriptor.component_name
+        );
 
+      public: // START of extensions from bar_chart_ext.cpp:
         BarChart(rerun::datatypes::TensorBuffer buffer) {
+            // Forwarding like this can spuriously fail, since the move might be evaluated before `num_elems`:
+            //BarChart(rerun::components::TensorData({buffer.num_elems()}, std::move(buffer)));
+
             auto num_elems = buffer.num_elems();
-            this->values = rerun::components::TensorData({num_elems}, std::move(buffer));
+            *this = std::move(*this).with_values(
+                rerun::components::TensorData({num_elems}, std::move(buffer))
+            );
         }
 
         // --------------------------------------------------------------------
@@ -162,18 +177,72 @@ namespace rerun::archetypes {
             return BarChart(std::move(f64));
         }
 
+        // END of extensions from bar_chart_ext.cpp, start of generated code:
+
       public:
         BarChart() = default;
         BarChart(BarChart&& other) = default;
+        BarChart(const BarChart& other) = default;
+        BarChart& operator=(const BarChart& other) = default;
+        BarChart& operator=(BarChart&& other) = default;
 
-        explicit BarChart(rerun::components::TensorData _values) : values(std::move(_values)) {}
+        explicit BarChart(rerun::components::TensorData _values)
+            : values(ComponentBatch::from_loggable(std::move(_values), Descriptor_values)
+                         .value_or_throw()) {}
+
+        /// Update only some specific fields of a `BarChart`.
+        static BarChart update_fields() {
+            return BarChart();
+        }
+
+        /// Clear all the fields of a `BarChart`.
+        static BarChart clear_fields();
+
+        /// The values. Should always be a 1-dimensional tensor (i.e. a vector).
+        BarChart with_values(const rerun::components::TensorData& _values) && {
+            values = ComponentBatch::from_loggable(_values, Descriptor_values).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// This method makes it possible to pack multiple `values` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_values` should
+        /// be used when logging a single row's worth of data.
+        BarChart with_many_values(const Collection<rerun::components::TensorData>& _values) && {
+            values = ComponentBatch::from_loggable(_values, Descriptor_values).value_or_throw();
+            return std::move(*this);
+        }
 
         /// The color of the bar chart
-        BarChart with_color(rerun::components::Color _color) && {
-            color = std::move(_color);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        BarChart with_color(const rerun::components::Color& _color) && {
+            color = ComponentBatch::from_loggable(_color, Descriptor_color).value_or_throw();
+            return std::move(*this);
         }
+
+        /// This method makes it possible to pack multiple `color` in a single component batch.
+        ///
+        /// This only makes sense when used in conjunction with `columns`. `with_color` should
+        /// be used when logging a single row's worth of data.
+        BarChart with_many_color(const Collection<rerun::components::Color>& _color) && {
+            color = ComponentBatch::from_loggable(_color, Descriptor_color).value_or_throw();
+            return std::move(*this);
+        }
+
+        /// Partitions the component data into multiple sub-batches.
+        ///
+        /// Specifically, this transforms the existing `ComponentBatch` data into `ComponentColumn`s
+        /// instead, via `ComponentBatch::partitioned`.
+        ///
+        /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+        ///
+        /// The specified `lengths` must sum to the total length of the component batch.
+        Collection<ComponentColumn> columns(const Collection<uint32_t>& lengths_);
+
+        /// Partitions the component data into unit-length sub-batches.
+        ///
+        /// This is semantically similar to calling `columns` with `std::vector<uint32_t>(n, 1)`,
+        /// where `n` is automatically guessed.
+        Collection<ComponentColumn> columns();
     };
 
 } // namespace rerun::archetypes
@@ -187,6 +256,6 @@ namespace rerun {
     template <>
     struct AsComponents<archetypes::BarChart> {
         /// Serialize all set component batches.
-        static Result<std::vector<DataCell>> serialize(const archetypes::BarChart& archetype);
+        static Result<Collection<ComponentBatch>> as_batches(const archetypes::BarChart& archetype);
     };
 } // namespace rerun

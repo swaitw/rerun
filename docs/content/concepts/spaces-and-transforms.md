@@ -6,7 +6,7 @@ order: 300
 ## The definition of a space
 
 Every entity in Rerun exists in some _space_. This is at the core of how Rerun organizes the visualizations of the data
-that you have logged. In the [Rerun Viewer](../reference/viewer.md) you view data by configuring a _space view_, which is a view
+that you have logged. In the [Rerun Viewer](../reference/viewer.md) you view data by configuring a _view_, which is a view
 of a set of entities _as seen from a particular origin._
 
 The origin of a space is, very loosely, a generalization of the idea of a "coordinate system" (sometimes known as a "coordinate frame") to arbitrary data. If a collection of
@@ -18,7 +18,7 @@ For example:
 -   For scalar plots it means they share the same plot axes.
 -   For text logs, it means they share the same conceptual stream.
 
-As explained below, a space view _may_ display data belonging to multiple spaces, but there must be a well-defined
+As explained below, a view _may_ display data belonging to multiple spaces, but there must be a well-defined
 means of transforming the data from one space to another.
 
 Which entities belong to which spaces is a function of the transform system, which uses the following rules to define
@@ -59,7 +59,7 @@ space we have the entities `world/robot` and `world/robot/observed_features`.
 Practically speaking, this means that the position values of the points from `world/mapped_keypoints` and the points
 from `world/robot/observed_features` are not directly comparable. If you were to directly draw these points in a single
 coordinate system the results would be meaningless. As noted above, Rerun can still display these entities in the same
-space view because it is able to automatically transform data between different spaces.
+view because it is able to automatically transform data between different spaces.
 
 ## Space transformations
 
@@ -75,7 +75,6 @@ transforms that can be logged:
     [`rr.Transform3D`](https://ref.rerun.io/docs/python/stable/common/archetypes/#rerun.archetypes.Transform3D)).
 -   Pinhole transforms define a 3D -> 2D camera projection (see
     [`rr.Pinhole`](https://ref.rerun.io/docs/python/stable/common/archetypes/#rerun.archetypes.Pinhole)).
--   A disconnected space specifies that the data cannot be transformed (see [`rr.DisconnectedSpace`](https://ref.rerun.io/docs/python/stable/common/archetypes/#rerun.archetypes.DisconnectedSpace)). In this case it will not be possible to combine the data into a single view, and you will need to create two separate views to explore the data.
 
 In the future, Rerun will be adding support for additional types of transforms.
 
@@ -110,7 +109,8 @@ Note that none of the names in the paths are special.
 
 You can use [`rr.ViewCoordinates`](https://ref.rerun.io/docs/python/stable/common/archetypes/#rerun.archetypes.ViewCoordinates) to set your preferred view coordinate systems, giving semantic meaning to the XYZ axes of the space.
 
-For 3D spaces it can be used to log what the up-axis is in your coordinate system. This will help Rerun set a good default view of your 3D scene, as well as make the virtual eye interactions more natural. This can be done with `rr.log("world", rr.ViewCoordinates(up="+Z"), static=True)`.
+For 3D spaces it can be used to log what the up-axis is in your coordinate system. This will help Rerun set a good default view of your 3D scene, as well as make the virtual eye interactions more natural. This can be done with `rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)`.
+Note that in this example the archetype is logged at the root path, this will make it apply to all 3D views. Generally, a 3D view picks up view coordinates at or above its origin entity path.
 
 You can also use this `log_view_coordinates` for pinhole entities, but it is encouraged that you instead use [`rr.log(…, rr.Pinhole(camera_xyz=…))`](https://ref.rerun.io/docs/python/stable/common/archetypes/#rerun.archetypes.Pinhole) for this. The default coordinate system for pinhole entities is `RDF` (X=Right, Y=Down, Z=Forward).
 

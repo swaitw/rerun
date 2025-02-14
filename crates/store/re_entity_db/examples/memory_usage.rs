@@ -1,10 +1,10 @@
-// TODO(#3408): remove unwrap()
+// TODO(#6330): remove unwrap()
 #![allow(clippy::unwrap_used)]
 
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 thread_local! {
-    static LIVE_BYTES_IN_THREAD: AtomicUsize = AtomicUsize::new(0);
+    static LIVE_BYTES_IN_THREAD: AtomicUsize = const { AtomicUsize::new(0) };
 }
 
 struct TrackingAllocator {
@@ -66,11 +66,11 @@ fn log_messages() {
 
     fn encode_log_msg(log_msg: &LogMsg) -> Vec<u8> {
         let mut bytes = vec![];
-        let encoding_options = re_log_encoding::EncodingOptions::COMPRESSED;
-        re_log_encoding::encoder::encode(
+        let encoding_options = re_log_encoding::EncodingOptions::MSGPACK_COMPRESSED;
+        re_log_encoding::encoder::encode_ref(
             re_build_info::CrateVersion::LOCAL,
             encoding_options,
-            std::iter::once(log_msg),
+            std::iter::once(log_msg).map(Ok),
             &mut bytes,
         )
         .unwrap();
@@ -78,7 +78,7 @@ fn log_messages() {
     }
 
     fn decode_log_msg(mut bytes: &[u8]) -> LogMsg {
-        let version_policy = re_log_encoding::decoder::VersionPolicy::Error;
+        let version_policy = re_log_encoding::VersionPolicy::Error;
         let mut messages = re_log_encoding::decoder::Decoder::new(version_policy, &mut bytes)
             .unwrap()
             .collect::<Result<Vec<LogMsg>, _>>()

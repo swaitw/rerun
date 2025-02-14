@@ -8,40 +8,9 @@ struct Confidence {
     float value;
 };
 
-/// A custom archetype that extends Rerun's builtin `rerun::Points3D` archetype with a custom component.
-struct CustomPoints3D {
-    static constexpr const char IndicatorName[] = "user.CustomPoints3DIndicator";
-    using IndicatorComponent = rerun::components::IndicatorComponent<IndicatorName>;
-
-    rerun::Points3D points;
-    // Using a rerun::Collection is not strictly necessary, you could also use an std::vector for example,
-    // but useful for avoiding allocations since `rerun::Collection` can borrow data from other containers.
-    std::optional<rerun::Collection<Confidence>> confidences;
-};
-
-template <>
-struct rerun::AsComponents<CustomPoints3D> {
-    static Result<std::vector<DataCell>> serialize(const CustomPoints3D& archetype) {
-        auto cells = AsComponents<rerun::Points3D>::serialize(archetype.points).value_or_throw();
-
-        // Add a custom indicator component.
-        CustomPoints3D::IndicatorComponent indicator;
-        cells.push_back(DataCell::from_loggable(indicator).value_or_throw());
-
-        // Add custom confidence components if present.
-        if (archetype.confidences) {
-            cells.push_back(DataCell::from_loggable(*archetype.confidences).value_or_throw());
-        }
-
-        return cells;
-    }
-};
-
-// ---
-
 template <>
 struct rerun::Loggable<Confidence> {
-    static constexpr const char Name[] = "user.Confidence";
+    static constexpr ComponentDescriptor Descriptor = "user.Confidence";
 
     static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
         return rerun::Loggable<rerun::Float32>::arrow_datatype();
@@ -55,6 +24,35 @@ struct rerun::Loggable<Confidence> {
             reinterpret_cast<const rerun::Float32*>(instances),
             num_instances
         );
+    }
+};
+
+/// A custom archetype that extends Rerun's builtin `rerun::Points3D` archetype with a custom component.
+struct CustomPoints3D {
+    rerun::Points3D points;
+    // Using a rerun::Collection is not strictly necessary, you could also use an std::vector for example,
+    // but useful for avoiding allocations since `rerun::Collection` can borrow data from other containers.
+    std::optional<rerun::Collection<Confidence>> confidences;
+};
+
+template <>
+struct rerun::AsComponents<CustomPoints3D> {
+    static Result<rerun::Collection<ComponentBatch>> as_batches(const CustomPoints3D& archetype) {
+        auto batches = AsComponents<rerun::Points3D>::as_batches(archetype.points)
+                           .value_or_throw()
+                           .to_vector();
+
+        // Add custom confidence components if present.
+        if (archetype.confidences) {
+            auto descriptor = rerun::Loggable<Confidence>::Descriptor
+                                  .or_with_archetype_name("user.CustomPoints3D")
+                                  .or_with_archetype_field_name("confidences");
+            batches.push_back(
+                ComponentBatch::from_loggable(*archetype.confidences, descriptor).value_or_throw()
+            );
+        }
+
+        return rerun::take_ownership(std::move(batches));
     }
 };
 

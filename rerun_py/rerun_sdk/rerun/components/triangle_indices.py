@@ -8,10 +8,11 @@ from __future__ import annotations
 from .. import datatypes
 from .._baseclasses import (
     ComponentBatchMixin,
+    ComponentDescriptor,
     ComponentMixin,
 )
 
-__all__ = ["TriangleIndices", "TriangleIndicesBatch", "TriangleIndicesType"]
+__all__ = ["TriangleIndices", "TriangleIndicesBatch"]
 
 
 class TriangleIndices(datatypes.UVec3D, ComponentMixin):
@@ -24,12 +25,8 @@ class TriangleIndices(datatypes.UVec3D, ComponentMixin):
     pass
 
 
-class TriangleIndicesType(datatypes.UVec3DType):
-    _TYPE_NAME: str = "rerun.components.TriangleIndices"
-
-
 class TriangleIndicesBatch(datatypes.UVec3DBatch, ComponentBatchMixin):
-    _ARROW_TYPE = TriangleIndicesType()
+    _COMPONENT_DESCRIPTOR: ComponentDescriptor = ComponentDescriptor("rerun.components.TriangleIndices")
 
 
 # This is patched in late to avoid circular dependencies.

@@ -1,7 +1,7 @@
 //! This example shows how to wrap the Rerun Viewer in your own GUI.
 
 use re_viewer::external::{
-    arrow2, eframe, egui, re_chunk_store, re_entity_db, re_log, re_log_types, re_memory, re_types,
+    arrow, eframe, egui, re_chunk_store, re_entity_db, re_log, re_log_types, re_memory, re_types,
 };
 
 // By using `re_memory::AccountingAllocator` Rerun can keep track of exactly how much memory it is using,
@@ -11,7 +11,10 @@ use re_viewer::external::{
 static GLOBAL: re_memory::AccountingAllocator<mimalloc::MiMalloc> =
     re_memory::AccountingAllocator::new(mimalloc::MiMalloc);
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let main_thread_token = re_viewer::MainThreadToken::i_promise_i_am_on_the_main_thread();
+
     // Direct calls using the `log` crate to stderr. Control with `RUST_LOG=debug` etc.
     re_log::setup_logging();
 
@@ -19,18 +22,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // them to Rerun analytics (if the `analytics` feature is on in `Cargo.toml`).
     re_crash_handler::install_crash_handlers(re_viewer::build_info());
 
-    // Listen for TCP connections from Rerun's logging SDKs.
+    // Listen for gRPC connections from Rerun's logging SDKs.
     // There are other ways of "feeding" the viewer though - all you need is a `re_smart_channel::Receiver`.
-    let rx = re_sdk_comms::serve(
-        "0.0.0.0",
-        re_sdk_comms::DEFAULT_SERVER_PORT,
-        Default::default(),
-    )?;
+    let rx = re_grpc_server::spawn_with_recv(
+        "0.0.0.0:9876".parse()?,
+        "75%".parse()?,
+        re_grpc_server::shutdown::never(),
+    );
 
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_app_id("rerun_extend_viewer_ui_example"),
-        ..re_viewer::native::eframe_options(None)
-    };
+    let mut native_options = re_viewer::native::eframe_options(None);
+    native_options.viewport = native_options
+        .viewport
+        .with_app_id("rerun_extend_viewer_ui_example");
 
     let startup_options = re_viewer::StartupOptions::default();
 
@@ -45,11 +48,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             re_viewer::customize_eframe_and_setup_renderer(cc)?;
 
             let mut rerun_app = re_viewer::App::new(
+                main_thread_token,
                 re_viewer::build_info(),
                 &app_env,
                 startup_options,
-                cc.egui_ctx.clone(),
-                cc.storage,
+                cc,
             );
             rerun_app.add_receiver(rx);
             Ok(Box::new(MyApp { rerun_app }))
@@ -130,7 +133,11 @@ fn entity_ui(
     entity_path: &re_log_types::EntityPath,
 ) {
     // Each entity can have many components (e.g. position, color, radius, …):
-    if let Some(components) = entity_db.store().all_components(&timeline, entity_path) {
+    if let Some(components) = entity_db
+        .storage_engine()
+        .store()
+        .all_components_on_timeline_sorted(&timeline, entity_path)
+    {
         for component in components {
             ui.collapsing(component.to_string(), |ui| {
                 component_ui(ui, entity_db, timeline, entity_path, component);
@@ -150,18 +157,13 @@ fn component_ui(
     // just show the last value logged for each component:
     let query = re_chunk_store::LatestAtQuery::latest(timeline);
 
-    let results = entity_db.query_caches().latest_at(
-        entity_db.store(),
-        &query,
-        entity_path,
-        [component_name],
-    );
-    let component = results
-        .components
-        .get(&component_name)
-        .and_then(|result| result.raw(entity_db.resolver(), component_name));
+    let results =
+        entity_db
+            .storage_engine()
+            .cache()
+            .latest_at(&query, entity_path, [component_name]);
 
-    if let Some(data) = component {
+    if let Some(data) = results.component_batch_raw(&component_name) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, true])
             .show(ui, |ui| {
@@ -169,25 +171,24 @@ fn component_ui(
 
                 let num_instances = data.len();
                 for i in 0..num_instances {
-                    ui.label(format_arrow(&*data.sliced(i, 1)));
+                    ui.label(format_arrow(&*data.slice(i, 1)));
                 }
             });
     };
 }
 
-fn format_arrow(value: &dyn arrow2::array::Array) -> String {
-    use re_types::SizeBytes as _;
+fn format_arrow(array: &dyn arrow::array::Array) -> String {
+    use arrow::util::display::{ArrayFormatter, FormatOptions};
 
-    let bytes = value.total_size_bytes();
-    if bytes < 256 {
+    let num_bytes = array.get_buffer_memory_size();
+    if array.len() == 1 && num_bytes < 256 {
         // Print small items:
-        let mut string = String::new();
-        let display = arrow2::array::get_display(value, "null");
-        if display(&mut string, 0).is_ok() {
-            return string;
+        let options = FormatOptions::default();
+        if let Ok(formatter) = ArrayFormatter::try_new(array, &options) {
+            return formatter.value(0).to_string();
         }
     }
 
     // Fallback:
-    format!("{bytes} bytes")
+    format!("{num_bytes} bytes")
 }

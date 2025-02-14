@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Datatype**: An Axis-Aligned Bounding Box in 2D space, implemented as the minimum and maximum corners.
@@ -29,33 +29,14 @@ pub struct Range2D {
     pub y_range: crate::datatypes::Range1D,
 }
 
-impl ::re_types_core::SizeBytes for Range2D {
-    #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.x_range.heap_size_bytes() + self.y_range.heap_size_bytes()
-    }
-
-    #[inline]
-    fn is_pod() -> bool {
-        <crate::datatypes::Range1D>::is_pod() && <crate::datatypes::Range1D>::is_pod()
-    }
-}
-
 ::re_types_core::macros::impl_into_cow!(Range2D);
 
 impl ::re_types_core::Loggable for Range2D {
-    type Name = ::re_types_core::DatatypeName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.datatypes.Range2D".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
+    fn arrow_datatype() -> arrow::datatypes::DataType {
         #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
-        DataType::Struct(std::sync::Arc::new(vec![
+        use arrow::datatypes::*;
+        DataType::Struct(Fields::from(vec![
             Field::new(
                 "x_range",
                 <crate::datatypes::Range1D>::arrow_datatype(),
@@ -71,14 +52,27 @@ impl ::re_types_core::Loggable for Range2D {
 
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> SerializationResult<arrow::array::ArrayRef>
     where
         Self: Clone + 'a,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
+        #![allow(clippy::manual_is_variant_and)]
+        use ::re_types_core::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
+            let fields = Fields::from(vec![
+                Field::new(
+                    "x_range",
+                    <crate::datatypes::Range1D>::arrow_datatype(),
+                    false,
+                ),
+                Field::new(
+                    "y_range",
+                    <crate::datatypes::Range1D>::arrow_datatype(),
+                    false,
+                ),
+            ]);
             let (somes, data): (Vec<_>, Vec<_>) = data
                 .into_iter()
                 .map(|datum| {
@@ -86,12 +80,12 @@ impl ::re_types_core::Loggable for Range2D {
                     (datum.is_some(), datum)
                 })
                 .unzip();
-            let bitmap: Option<arrow2::bitmap::Bitmap> = {
+            let validity: Option<arrow::buffer::NullBuffer> = {
                 let any_nones = somes.iter().any(|some| !*some);
                 any_nones.then(|| somes.into())
             };
-            StructArray::new(
-                Self::arrow_datatype(),
+            as_array_ref(StructArray::new(
+                fields,
                 vec![
                     {
                         let (somes, x_range): (Vec<_>, Vec<_>) = data
@@ -101,44 +95,36 @@ impl ::re_types_core::Loggable for Range2D {
                                 (datum.is_some(), datum)
                             })
                             .unzip();
-                        let x_range_bitmap: Option<arrow2::bitmap::Bitmap> = {
+                        let x_range_validity: Option<arrow::buffer::NullBuffer> = {
                             let any_nones = somes.iter().any(|some| !*some);
                             any_nones.then(|| somes.into())
                         };
                         {
-                            use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
                             let x_range_inner_data: Vec<_> = x_range
                                 .into_iter()
                                 .map(|datum| datum.map(|datum| datum.0).unwrap_or_default())
                                 .flatten()
                                 .collect();
-                            let x_range_inner_bitmap: Option<arrow2::bitmap::Bitmap> =
-                                x_range_bitmap.as_ref().map(|bitmap| {
-                                    bitmap
+                            let x_range_inner_validity: Option<arrow::buffer::NullBuffer> =
+                                x_range_validity.as_ref().map(|validity| {
+                                    validity
                                         .iter()
                                         .map(|b| std::iter::repeat(b).take(2usize))
                                         .flatten()
                                         .collect::<Vec<_>>()
                                         .into()
                                 });
-                            FixedSizeListArray::new(
-                                DataType::FixedSizeList(
-                                    std::sync::Arc::new(Field::new(
-                                        "item",
-                                        DataType::Float64,
-                                        false,
-                                    )),
-                                    2usize,
-                                ),
-                                PrimitiveArray::new(
-                                    DataType::Float64,
-                                    x_range_inner_data.into_iter().collect(),
-                                    x_range_inner_bitmap,
-                                )
-                                .boxed(),
-                                x_range_bitmap,
-                            )
-                            .boxed()
+                            as_array_ref(FixedSizeListArray::new(
+                                std::sync::Arc::new(Field::new("item", DataType::Float64, false)),
+                                2,
+                                as_array_ref(PrimitiveArray::<Float64Type>::new(
+                                    ScalarBuffer::from(
+                                        x_range_inner_data.into_iter().collect::<Vec<_>>(),
+                                    ),
+                                    x_range_inner_validity,
+                                )),
+                                x_range_validity,
+                            ))
                         }
                     },
                     {
@@ -149,66 +135,57 @@ impl ::re_types_core::Loggable for Range2D {
                                 (datum.is_some(), datum)
                             })
                             .unzip();
-                        let y_range_bitmap: Option<arrow2::bitmap::Bitmap> = {
+                        let y_range_validity: Option<arrow::buffer::NullBuffer> = {
                             let any_nones = somes.iter().any(|some| !*some);
                             any_nones.then(|| somes.into())
                         };
                         {
-                            use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
                             let y_range_inner_data: Vec<_> = y_range
                                 .into_iter()
                                 .map(|datum| datum.map(|datum| datum.0).unwrap_or_default())
                                 .flatten()
                                 .collect();
-                            let y_range_inner_bitmap: Option<arrow2::bitmap::Bitmap> =
-                                y_range_bitmap.as_ref().map(|bitmap| {
-                                    bitmap
+                            let y_range_inner_validity: Option<arrow::buffer::NullBuffer> =
+                                y_range_validity.as_ref().map(|validity| {
+                                    validity
                                         .iter()
                                         .map(|b| std::iter::repeat(b).take(2usize))
                                         .flatten()
                                         .collect::<Vec<_>>()
                                         .into()
                                 });
-                            FixedSizeListArray::new(
-                                DataType::FixedSizeList(
-                                    std::sync::Arc::new(Field::new(
-                                        "item",
-                                        DataType::Float64,
-                                        false,
-                                    )),
-                                    2usize,
-                                ),
-                                PrimitiveArray::new(
-                                    DataType::Float64,
-                                    y_range_inner_data.into_iter().collect(),
-                                    y_range_inner_bitmap,
-                                )
-                                .boxed(),
-                                y_range_bitmap,
-                            )
-                            .boxed()
+                            as_array_ref(FixedSizeListArray::new(
+                                std::sync::Arc::new(Field::new("item", DataType::Float64, false)),
+                                2,
+                                as_array_ref(PrimitiveArray::<Float64Type>::new(
+                                    ScalarBuffer::from(
+                                        y_range_inner_data.into_iter().collect::<Vec<_>>(),
+                                    ),
+                                    y_range_inner_validity,
+                                )),
+                                y_range_validity,
+                            ))
                         }
                     },
                 ],
-                bitmap,
-            )
-            .boxed()
+                validity,
+            ))
         })
     }
 
     fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
+        arrow_data: &dyn arrow::array::Array,
     ) -> DeserializationResult<Vec<Option<Self>>>
     where
         Self: Sized,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
+        use ::re_types_core::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
             let arrow_data = arrow_data
                 .as_any()
-                .downcast_ref::<arrow2::array::StructArray>()
+                .downcast_ref::<arrow::array::StructArray>()
                 .ok_or_else(|| {
                     let expected = Self::arrow_datatype();
                     let actual = arrow_data.data_type().clone();
@@ -219,10 +196,10 @@ impl ::re_types_core::Loggable for Range2D {
                 Vec::new()
             } else {
                 let (arrow_data_fields, arrow_data_arrays) =
-                    (arrow_data.fields(), arrow_data.values());
+                    (arrow_data.fields(), arrow_data.columns());
                 let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data_fields
                     .iter()
-                    .map(|field| field.name.as_str())
+                    .map(|field| field.name().as_str())
                     .zip(arrow_data_arrays)
                     .collect();
                 let x_range = {
@@ -237,7 +214,7 @@ impl ::re_types_core::Loggable for Range2D {
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::FixedSizeListArray>()
+                            .downcast_ref::<arrow::array::FixedSizeListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::FixedSizeList(
                                     std::sync::Arc::new(Field::new(
@@ -245,7 +222,7 @@ impl ::re_types_core::Loggable for Range2D {
                                         DataType::Float64,
                                         false,
                                     )),
-                                    2usize,
+                                    2,
                                 );
                                 let actual = arrow_data.data_type().clone();
                                 DeserializationError::datatype_mismatch(expected, actual)
@@ -269,39 +246,36 @@ impl ::re_types_core::Loggable for Range2D {
                                     })
                                     .with_context("rerun.datatypes.Range2D#x_range")?
                                     .into_iter()
-                                    .map(|opt| opt.copied())
                                     .collect::<Vec<_>>()
                             };
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets,
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, end): (usize, usize)| {
-                                    debug_assert!(end - start == 2usize);
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets, arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|(start, end): (usize, usize)| {
+                                        debug_assert!(end - start == 2usize);
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data =
-                                        unsafe { arrow_data_inner.get_unchecked(start..end) };
-                                    let data = data.iter().cloned().map(Option::unwrap_or_default);
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            unsafe { arrow_data_inner.get_unchecked(start..end) };
+                                        let data =
+                                            data.iter().cloned().map(Option::unwrap_or_default);
 
-                                    // NOTE: Unwrapping cannot fail: the length must be correct.
-                                    #[allow(clippy::unwrap_used)]
-                                    Ok(array_init::from_iter(data).unwrap())
+                                        // NOTE: Unwrapping cannot fail: the length must be correct.
+                                        #[allow(clippy::unwrap_used)]
+                                        Ok(array_init::from_iter(data).unwrap())
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .map(|res_or_opt| {
-                                res_or_opt
-                                    .map(|res_or_opt| res_or_opt.map(crate::datatypes::Range1D))
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .map(|res_or_opt| {
+                                    res_or_opt
+                                        .map(|res_or_opt| res_or_opt.map(crate::datatypes::Range1D))
+                                })
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
@@ -318,7 +292,7 @@ impl ::re_types_core::Loggable for Range2D {
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::FixedSizeListArray>()
+                            .downcast_ref::<arrow::array::FixedSizeListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::FixedSizeList(
                                     std::sync::Arc::new(Field::new(
@@ -326,7 +300,7 @@ impl ::re_types_core::Loggable for Range2D {
                                         DataType::Float64,
                                         false,
                                     )),
-                                    2usize,
+                                    2,
                                 );
                                 let actual = arrow_data.data_type().clone();
                                 DeserializationError::datatype_mismatch(expected, actual)
@@ -350,46 +324,43 @@ impl ::re_types_core::Loggable for Range2D {
                                     })
                                     .with_context("rerun.datatypes.Range2D#y_range")?
                                     .into_iter()
-                                    .map(|opt| opt.copied())
                                     .collect::<Vec<_>>()
                             };
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets,
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, end): (usize, usize)| {
-                                    debug_assert!(end - start == 2usize);
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets, arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|(start, end): (usize, usize)| {
+                                        debug_assert!(end - start == 2usize);
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data =
-                                        unsafe { arrow_data_inner.get_unchecked(start..end) };
-                                    let data = data.iter().cloned().map(Option::unwrap_or_default);
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            unsafe { arrow_data_inner.get_unchecked(start..end) };
+                                        let data =
+                                            data.iter().cloned().map(Option::unwrap_or_default);
 
-                                    // NOTE: Unwrapping cannot fail: the length must be correct.
-                                    #[allow(clippy::unwrap_used)]
-                                    Ok(array_init::from_iter(data).unwrap())
+                                        // NOTE: Unwrapping cannot fail: the length must be correct.
+                                        #[allow(clippy::unwrap_used)]
+                                        Ok(array_init::from_iter(data).unwrap())
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .map(|res_or_opt| {
-                                res_or_opt
-                                    .map(|res_or_opt| res_or_opt.map(crate::datatypes::Range1D))
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .map(|res_or_opt| {
+                                    res_or_opt
+                                        .map(|res_or_opt| res_or_opt.map(crate::datatypes::Range1D))
+                                })
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                 };
-                arrow2::bitmap::utils::ZipValidity::new_with_validity(
+                ZipValidity::new_with_validity(
                     ::itertools::izip!(x_range, y_range),
-                    arrow_data.validity(),
+                    arrow_data.nulls(),
                 )
                 .map(|opt| {
                     opt.map(|(x_range, y_range)| {
@@ -408,5 +379,17 @@ impl ::re_types_core::Loggable for Range2D {
                 .with_context("rerun.datatypes.Range2D")?
             }
         })
+    }
+}
+
+impl ::re_byte_size::SizeBytes for Range2D {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.x_range.heap_size_bytes() + self.y_range.heap_size_bytes()
+    }
+
+    #[inline]
+    fn is_pod() -> bool {
+        <crate::datatypes::Range1D>::is_pod() && <crate::datatypes::Range1D>::is_pod()
     }
 }

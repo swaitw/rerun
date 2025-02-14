@@ -10,7 +10,7 @@ use re_log_types::{
     example_components::{MyColor, MyIndex, MyPoint},
     EntityPath, StoreId, TimeInt, TimePoint, Timeline,
 };
-use re_query::PromiseResolver;
+use re_types::ComponentBatch;
 use re_types_core::{archetypes::Clear, components::ClearIsRecursive, AsComponents};
 
 // ---
@@ -22,15 +22,13 @@ fn query_latest_component<C: re_types_core::Component>(
 ) -> Option<(TimeInt, RowId, C)> {
     re_tracing::profile_function!();
 
-    let resolver = PromiseResolver::default();
-
     let results = db
-        .query_caches()
-        .latest_at(db.store(), query, entity_path, [C::name()]);
-    let results = results.get_required(C::name()).ok()?;
+        .storage_engine()
+        .cache()
+        .latest_at(query, entity_path, [C::descriptor()]);
 
-    let &(data_time, row_id) = results.index();
-    let data = results.dense::<C>(&resolver)?.first().cloned()?;
+    let (data_time, row_id) = results.index();
+    let data = results.component_mono::<C>()?;
 
     Some((data_time, row_id, data))
 }
@@ -125,11 +123,7 @@ fn clears() -> anyhow::Result<()> {
         let timepoint = TimePoint::from_iter([(timeline_frame, 10)]);
         let clear = Clear::flat();
         let chunk = Chunk::builder(entity_path_parent.clone())
-            .with_component_batches(
-                row_id,
-                timepoint,
-                clear.as_component_batches().iter().map(|b| b.as_ref()),
-            )
+            .with_serialized_batches(row_id, timepoint, clear.as_serialized_batches())
             .build()?;
 
         db.add_chunk(&Arc::new(chunk))?;
@@ -144,7 +138,10 @@ fn clears() -> anyhow::Result<()> {
             let (_, _, got_clear) =
                 query_latest_component::<ClearIsRecursive>(&db, &entity_path_parent, &query)
                     .unwrap();
-            similar_asserts::assert_eq!(clear.is_recursive, got_clear);
+            similar_asserts::assert_eq!(
+                clear.is_recursive.map(|batch| batch.array),
+                got_clear.serialized().map(|batch| batch.array)
+            );
 
             // child1
             assert!(query_latest_component::<MyPoint>(&db, &entity_path_child1, &query).is_some());
@@ -163,11 +160,7 @@ fn clears() -> anyhow::Result<()> {
         let timepoint = TimePoint::from_iter([(timeline_frame, 10)]);
         let clear = Clear::recursive();
         let chunk = Chunk::builder(entity_path_parent.clone())
-            .with_component_batches(
-                row_id,
-                timepoint,
-                clear.as_component_batches().iter().map(|b| b.as_ref()),
-            )
+            .with_serialized_batches(row_id, timepoint, clear.as_serialized_batches())
             .build()?;
 
         db.add_chunk(&Arc::new(chunk))?;
@@ -182,7 +175,10 @@ fn clears() -> anyhow::Result<()> {
             let (_, _, got_clear) =
                 query_latest_component::<ClearIsRecursive>(&db, &entity_path_parent, &query)
                     .unwrap();
-            similar_asserts::assert_eq!(clear.is_recursive, got_clear);
+            similar_asserts::assert_eq!(
+                clear.is_recursive.map(|batch| batch.array),
+                got_clear.serialized().map(|batch| batch.array)
+            );
 
             // child1
             assert!(query_latest_component::<MyPoint>(&db, &entity_path_child1, &query).is_none());
@@ -348,10 +344,10 @@ fn clears_respect_index_order() -> anyhow::Result<()> {
 
     let clear = Clear::recursive();
     let chunk = Chunk::builder(entity_path.clone())
-        .with_component_batches(
+        .with_serialized_batches(
             row_id1, // older row id!
             timepoint.clone(),
-            clear.as_component_batches().iter().map(|b| b.as_ref()),
+            clear.as_serialized_batches(),
         )
         .build()?;
 
@@ -367,15 +363,18 @@ fn clears_respect_index_order() -> anyhow::Result<()> {
         // the `Clear` component itself doesn't get cleared!
         let (_, _, got_clear) =
             query_latest_component::<ClearIsRecursive>(&db, &entity_path, &query).unwrap();
-        similar_asserts::assert_eq!(clear.is_recursive, got_clear);
+        similar_asserts::assert_eq!(
+            clear.is_recursive.map(|batch| batch.array),
+            got_clear.serialized().map(|batch| batch.array)
+        );
     }
 
     let clear = Clear::recursive();
     let chunk = Chunk::builder(entity_path.clone())
-        .with_component_batches(
+        .with_serialized_batches(
             row_id3, // newer row id!
             timepoint.clone(),
-            clear.as_component_batches().iter().map(|b| b.as_ref()),
+            clear.as_serialized_batches(),
         )
         .build()?;
 
@@ -389,68 +388,10 @@ fn clears_respect_index_order() -> anyhow::Result<()> {
         // the `Clear` component itself doesn't get cleared!
         let (_, _, got_clear) =
             query_latest_component::<ClearIsRecursive>(&db, &entity_path, &query).unwrap();
-        similar_asserts::assert_eq!(clear.is_recursive, got_clear);
-    }
-
-    Ok(())
-}
-
-#[test]
-fn clear_and_gc() -> anyhow::Result<()> {
-    if true {
-        // TODO(#6552): Keeping this around for now so we don't forget about it, but this cannot work with
-        // read-time clears.
-        // We will replace this with a dedicated store API to remove an entity path in its entirety.
-        return Ok(());
-    }
-
-    re_log::setup_logging();
-
-    let mut db = EntityDb::new(StoreId::random(re_log_types::StoreKind::Recording));
-
-    let timepoint = TimePoint::default().with(Timeline::new_sequence("blueprint"), 0);
-    let entity_path: EntityPath = "space_view".into();
-
-    // Insert a component, then clear it, then GC.
-    {
-        // EntityTree is Empty when we start
-        assert_eq!(db.tree().num_children_and_fields(), 0);
-
-        let point = MyPoint::new(1.0, 2.0);
-
-        let chunk = Chunk::builder(entity_path.clone())
-            .with_component_batch(RowId::new(), timepoint.clone(), &[point] as _)
-            .build()?;
-        db.add_chunk(&Arc::new(chunk))?;
-        eprintln!("{}", db.store());
-
-        db.gc_everything_but_the_latest_row_on_non_default_timelines();
-
-        let stats = db.store().stats();
-        assert_eq!(stats.temporal_chunks.total_num_rows, 1);
-
-        let chunk = Chunk::builder(entity_path.clone())
-            .with_component_batches(
-                RowId::new(),
-                timepoint.clone(),
-                Clear::recursive()
-                    .as_component_batches()
-                    .iter()
-                    .map(|b| b.as_ref()),
-            )
-            .build()?;
-
-        db.add_chunk(&Arc::new(chunk))?;
-        eprintln!("{}", db.store());
-
-        db.gc_everything_but_the_latest_row_on_non_default_timelines();
-
-        // No rows should remain because the table should have been purged
-        let stats = db.store().stats();
-        assert_eq!(stats.temporal_chunks.total_num_rows, 0);
-
-        // EntityTree should be empty again when we end since everything was GC'd
-        assert_eq!(db.tree().num_children_and_fields(), 0);
+        similar_asserts::assert_eq!(
+            clear.is_recursive.map(|batch| batch.array),
+            got_clear.serialized().map(|batch| batch.array)
+        );
     }
 
     Ok(())

@@ -6,10 +6,7 @@ use super::{
     pipeline_layout_pool::{GpuPipelineLayoutHandle, GpuPipelineLayoutPool},
     resource::PoolError,
     shader_module_pool::{GpuShaderModuleHandle, GpuShaderModulePool},
-    static_resource_pool::{
-        StaticResourcePool, StaticResourcePoolAccessor, StaticResourcePoolMemMoveAccessor,
-        StaticResourcePoolReadLockAccessor,
-    },
+    static_resource_pool::{StaticResourcePool, StaticResourcePoolReadLockAccessor},
 };
 
 slotmap::new_key_type! { pub struct GpuRenderPipelineHandle; }
@@ -149,13 +146,13 @@ impl RenderPipelineDesc {
                 layout: Some(pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: vertex_shader_module,
-                    entry_point: &self.vertex_entrypoint,
+                    entry_point: Some(&self.vertex_entrypoint),
                     buffers: &buffers,
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: wgpu::FragmentState {
                     module: fragment_shader_module,
-                    entry_point: &self.fragment_entrypoint,
+                    entry_point: Some(&self.fragment_entrypoint),
                     targets: &self.render_targets,
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 }
@@ -164,16 +161,14 @@ impl RenderPipelineDesc {
                 depth_stencil: self.depth_stencil.clone(),
                 multisample: self.multisample,
                 multiview: None, // Multi-layered render target support isn't widespread
+                cache: None,
             }),
         )
     }
 }
 
 pub type GpuRenderPipelinePoolAccessor<'a> =
-    dyn StaticResourcePoolAccessor<GpuRenderPipelineHandle, wgpu::RenderPipeline> + 'a;
-
-pub type GpuRenderPipelinePoolMoveAccessor =
-    StaticResourcePoolMemMoveAccessor<GpuRenderPipelineHandle, wgpu::RenderPipeline>;
+    StaticResourcePoolReadLockAccessor<'a, GpuRenderPipelineHandle, wgpu::RenderPipeline>;
 
 #[derive(Default)]
 pub struct GpuRenderPipelinePool {
@@ -253,22 +248,6 @@ impl GpuRenderPipelinePool {
         &self,
     ) -> StaticResourcePoolReadLockAccessor<'_, GpuRenderPipelineHandle, wgpu::RenderPipeline> {
         self.pool.resources()
-    }
-
-    /// Takes out all resources from the pool.
-    ///
-    /// This is useful when the existing resources need to be accessed without
-    /// taking a lock on the pool.
-    /// Resource can be put with `return_resources`.
-    pub fn take_resources(&mut self) -> GpuRenderPipelinePoolMoveAccessor {
-        self.pool.take_resources()
-    }
-
-    /// Counterpart to `take_resources`.
-    ///
-    /// Logs an error if resources were added to the pool since `take_resources` was called.
-    pub fn return_resources(&mut self, resources: GpuRenderPipelinePoolMoveAccessor) {
-        self.pool.return_resources(resources);
     }
 
     pub fn num_resources(&self) -> usize {

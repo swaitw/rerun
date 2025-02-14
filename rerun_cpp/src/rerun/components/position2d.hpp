@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../datatypes/vec2d.hpp"
 #include "../result.hpp"
 
@@ -15,9 +16,7 @@ namespace rerun::components {
     struct Position2D {
         rerun::datatypes::Vec2D xy;
 
-      public:
-        // Extensions to generated type defined in 'position2d_ext.cpp'
-
+      public: // START of extensions from position2d_ext.cpp:
         /// Construct Position2D from x/y values.
         Position2D(float x, float y) : xy{x, y} {}
 
@@ -28,6 +27,8 @@ namespace rerun::components {
         float y() const {
             return xy.y();
         }
+
+        // END of extensions from position2d_ext.cpp, start of generated code:
 
       public:
         Position2D() = default;
@@ -59,7 +60,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::Position2D> {
-        static constexpr const char Name[] = "rerun.components.Position2D";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.Position2D";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -70,7 +71,16 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const components::Position2D* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::Vec2D>::to_arrow(&instances->xy, num_instances);
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::Vec2D>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::Vec2D>::to_arrow(&instances->xy, num_instances);
+            }
         }
     };
 } // namespace rerun

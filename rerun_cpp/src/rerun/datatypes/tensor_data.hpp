@@ -4,12 +4,14 @@
 #pragma once
 
 #include "../collection.hpp"
+#include "../component_descriptor.hpp"
 #include "../result.hpp"
 #include "tensor_buffer.hpp"
-#include "tensor_dimension.hpp"
 
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <string>
 
 namespace arrow {
     class Array;
@@ -26,26 +28,28 @@ namespace rerun::datatypes {
     ///
     /// These dimensions are combined with an index to look up values from the `buffer` field,
     /// which stores a contiguous array of typed values.
-    ///
-    /// Note that the buffer may in a format with downsampled chroma, such as NV12 or YUY2.
-    /// For chroma downsampled formats the shape has to be the shape of the decoded image.
     struct TensorData {
-        /// The shape of the tensor, including optional names for each dimension.
-        rerun::Collection<rerun::datatypes::TensorDimension> shape;
+        /// The shape of the tensor, i.e. the length of each dimension.
+        rerun::Collection<uint64_t> shape;
+
+        /// The names of the dimensions of the tensor (optional).
+        ///
+        /// If set, should be the same length as `datatypes::TensorData::shape`.
+        /// If it has a different length your names may show up improperly,
+        /// and some constructors may produce a warning or even an error.
+        ///
+        /// Example: `["height", "width", "channel", "batch"]`.
+        std::optional<rerun::Collection<std::string>> names;
 
         /// The content/data.
         rerun::datatypes::TensorBuffer buffer;
 
-      public:
-        // Extensions to generated type defined in 'tensor_data_ext.cpp'
-
+      public: // START of extensions from tensor_data_ext.cpp:
         /// New tensor data from shape and tensor buffer.
         ///
         /// \param shape_ Shape of the tensor.
         /// \param buffer_ The tensor buffer containing the tensor's data.
-        TensorData(
-            Collection<rerun::datatypes::TensorDimension> shape_, datatypes::TensorBuffer buffer_
-        )
+        TensorData(Collection<uint64_t> shape_, datatypes::TensorBuffer buffer_)
             : shape(std::move(shape_)), buffer(std::move(buffer_)) {}
 
         /// New tensor data from dimensions and pointer to tensor data.
@@ -54,14 +58,16 @@ namespace rerun::datatypes {
         /// \param shape_ Shape of the tensor. Determines the number of elements expected to be in `data`.
         /// \param data Target of the pointer must outlive the archetype.
         template <typename TElement>
-        explicit TensorData(Collection<datatypes::TensorDimension> shape_, const TElement* data)
+        explicit TensorData(Collection<uint64_t> shape_, const TElement* data)
             : shape(std::move(shape_)) {
             size_t num_elements = shape.empty() ? 0 : 1;
             for (const auto& dim : shape) {
-                num_elements *= dim.size;
+                num_elements *= dim;
             }
             buffer = rerun::Collection<TElement>::borrow(data, num_elements);
         }
+
+        // END of extensions from tensor_data_ext.cpp, start of generated code:
 
       public:
         TensorData() = default;
@@ -75,7 +81,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::TensorData> {
-        static constexpr const char Name[] = "rerun.datatypes.TensorData";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.TensorData";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

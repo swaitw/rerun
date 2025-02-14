@@ -36,8 +36,9 @@ impl Snippets {
         let snippet_root = snippets_dir.join("all");
         let snippets = collect_snippets_recursively(&snippet_root, &config, &snippet_root)?;
 
-        println!("Running {} snippets…", snippets.len());
         let progress = MultiProgress::new();
+
+        println!("Running {} snippets…", snippets.len());
         let results: Vec<anyhow::Result<PathBuf>> = snippets
             .into_par_iter()
             .map(|example| example.build(&progress, &self.output_dir))
@@ -160,11 +161,6 @@ impl Snippet {
         cmd.arg(&self.path);
         cmd.args(&self.extra_args);
 
-        let final_args = cmd
-            .get_args()
-            .map(|arg| arg.to_string_lossy().to_string())
-            .collect::<Vec<_>>();
-
         cmd.envs([
             ("RERUN_FLUSH_NUM_ROWS", "0"),
             ("RERUN_STRICT", "1"),
@@ -175,22 +171,9 @@ impl Snippet {
             ),
         ]);
 
-        let output = wait_for_output(cmd, &self.name, progress)?;
+        wait_for_output(cmd, &self.name, progress)?;
 
-        if output.status.success() {
-            Ok(rrd_path)
-        } else {
-            anyhow::bail!(
-                "Failed to run `python3 {}`: \
-                \nstdout: \
-                \n{} \
-                \nstderr: \
-                \n{}",
-                final_args.join(" "),
-                String::from_utf8(output.stdout)?,
-                String::from_utf8(output.stderr)?,
-            );
-        }
+        Ok(rrd_path)
     }
 }
 

@@ -5,8 +5,8 @@
 
 #include "../../blueprint/components/view_fit.hpp"
 #include "../../collection.hpp"
-#include "../../compiler_utils.hpp"
-#include "../../data_cell.hpp"
+#include "../../component_batch.hpp"
+#include "../../component_column.hpp"
 #include "../../indicator_component.hpp"
 #include "../../result.hpp"
 
@@ -19,7 +19,7 @@ namespace rerun::blueprint::archetypes {
     /// **Archetype**: Configures how a selected tensor slice is shown on screen.
     struct TensorViewFit {
         /// How the image is scaled to fit the view.
-        std::optional<rerun::blueprint::components::ViewFit> scaling;
+        std::optional<ComponentBatch> scaling;
 
       public:
         static constexpr const char IndicatorComponentName[] =
@@ -27,17 +27,51 @@ namespace rerun::blueprint::archetypes {
 
         /// Indicator component, used to identify the archetype when converting to a list of components.
         using IndicatorComponent = rerun::components::IndicatorComponent<IndicatorComponentName>;
+        /// The name of the archetype as used in `ComponentDescriptor`s.
+        static constexpr const char ArchetypeName[] = "rerun.blueprint.archetypes.TensorViewFit";
+
+        /// `ComponentDescriptor` for the `scaling` field.
+        static constexpr auto Descriptor_scaling = ComponentDescriptor(
+            ArchetypeName, "scaling",
+            Loggable<rerun::blueprint::components::ViewFit>::Descriptor.component_name
+        );
 
       public:
         TensorViewFit() = default;
         TensorViewFit(TensorViewFit&& other) = default;
+        TensorViewFit(const TensorViewFit& other) = default;
+        TensorViewFit& operator=(const TensorViewFit& other) = default;
+        TensorViewFit& operator=(TensorViewFit&& other) = default;
+
+        /// Update only some specific fields of a `TensorViewFit`.
+        static TensorViewFit update_fields() {
+            return TensorViewFit();
+        }
+
+        /// Clear all the fields of a `TensorViewFit`.
+        static TensorViewFit clear_fields();
 
         /// How the image is scaled to fit the view.
-        TensorViewFit with_scaling(rerun::blueprint::components::ViewFit _scaling) && {
-            scaling = std::move(_scaling);
-            // See: https://github.com/rerun-io/rerun/issues/4027
-            RR_WITH_MAYBE_UNINITIALIZED_DISABLED(return std::move(*this);)
+        TensorViewFit with_scaling(const rerun::blueprint::components::ViewFit& _scaling) && {
+            scaling = ComponentBatch::from_loggable(_scaling, Descriptor_scaling).value_or_throw();
+            return std::move(*this);
         }
+
+        /// Partitions the component data into multiple sub-batches.
+        ///
+        /// Specifically, this transforms the existing `ComponentBatch` data into `ComponentColumn`s
+        /// instead, via `ComponentBatch::partitioned`.
+        ///
+        /// This makes it possible to use `RecordingStream::send_columns` to send columnar data directly into Rerun.
+        ///
+        /// The specified `lengths` must sum to the total length of the component batch.
+        Collection<ComponentColumn> columns(const Collection<uint32_t>& lengths_);
+
+        /// Partitions the component data into unit-length sub-batches.
+        ///
+        /// This is semantically similar to calling `columns` with `std::vector<uint32_t>(n, 1)`,
+        /// where `n` is automatically guessed.
+        Collection<ComponentColumn> columns();
     };
 
 } // namespace rerun::blueprint::archetypes
@@ -51,7 +85,7 @@ namespace rerun {
     template <>
     struct AsComponents<blueprint::archetypes::TensorViewFit> {
         /// Serialize all set component batches.
-        static Result<std::vector<DataCell>> serialize(
+        static Result<Collection<ComponentBatch>> as_batches(
             const blueprint::archetypes::TensorViewFit& archetype
         );
     };

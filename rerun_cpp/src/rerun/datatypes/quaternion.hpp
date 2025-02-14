@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../rerun_sdk_export.hpp"
 #include "../result.hpp"
 
@@ -24,10 +25,9 @@ namespace rerun::datatypes {
     struct Quaternion {
         std::array<float, 4> xyzw;
 
-      public:
-        // Extensions to generated type defined in 'quaternion_ext.cpp'
-
+      public: // START of extensions from quaternion_ext.cpp:
         RERUN_SDK_EXPORT static const Quaternion IDENTITY;
+        RERUN_SDK_EXPORT static const Quaternion INVALID;
 
         /// Construct Quaternion from x/y/z/w values.
         static Quaternion from_xyzw(float x, float y, float z, float w) {
@@ -77,6 +77,8 @@ namespace rerun::datatypes {
             return xyzw[3];
         }
 
+        // END of extensions from quaternion_ext.cpp, start of generated code:
+
       public:
         Quaternion() = default;
     };
@@ -89,7 +91,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::Quaternion> {
-        static constexpr const char Name[] = "rerun.datatypes.Quaternion";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.Quaternion";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../datatypes/float32.hpp"
 #include "../result.hpp"
 
@@ -21,9 +22,7 @@ namespace rerun::components {
     struct Radius {
         rerun::datatypes::Float32 value;
 
-      public:
-        // Extensions to generated type defined in 'radius_ext.cpp'
-
+      public: // START of extensions from radius_ext.cpp:
         /// Creates a new radius in scene units.
         ///
         /// Values passed must be finite positive.
@@ -37,6 +36,8 @@ namespace rerun::components {
         static Radius ui_points(float radius_in_ui_points) {
             return Radius(-radius_in_ui_points);
         }
+
+        // END of extensions from radius_ext.cpp, start of generated code:
 
       public:
         Radius() = default;
@@ -68,7 +69,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<components::Radius> {
-        static constexpr const char Name[] = "rerun.components.Radius";
+        static constexpr ComponentDescriptor Descriptor = "rerun.components.Radius";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -79,7 +80,19 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const components::Radius* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::Float32>::to_arrow(&instances->value, num_instances);
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::Float32>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::Float32>::to_arrow(
+                    &instances->value,
+                    num_instances
+                );
+            }
         }
     };
 } // namespace rerun

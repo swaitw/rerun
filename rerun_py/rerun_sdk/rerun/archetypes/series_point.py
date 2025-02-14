@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from attrs import define, field
 
 from .. import components, datatypes
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
 from ..error_utils import catch_and_log_exceptions
 
@@ -115,10 +117,10 @@ class SeriesPoint(Archetype):
     def __attrs_clear__(self) -> None:
         """Convenience method for calling `__attrs_init__` with all `None`s."""
         self.__attrs_init__(
-            color=None,  # type: ignore[arg-type]
-            marker=None,  # type: ignore[arg-type]
-            name=None,  # type: ignore[arg-type]
-            marker_size=None,  # type: ignore[arg-type]
+            color=None,
+            marker=None,
+            name=None,
+            marker_size=None,
         )
 
     @classmethod
@@ -128,28 +130,133 @@ class SeriesPoint(Archetype):
         inst.__attrs_clear__()
         return inst
 
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        clear_unset: bool = False,
+        color: datatypes.Rgba32Like | None = None,
+        marker: components.MarkerShapeLike | None = None,
+        name: datatypes.Utf8Like | None = None,
+        marker_size: datatypes.Float32Like | None = None,
+    ) -> SeriesPoint:
+        """
+        Update only some specific fields of a `SeriesPoint`.
+
+        Parameters
+        ----------
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        color:
+            Color for the corresponding series.
+        marker:
+            What shape to use to represent the point
+        name:
+            Display name of the series.
+
+            Used in the legend.
+        marker_size:
+            Size of the marker.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "color": color,
+                "marker": marker,
+                "name": name,
+                "marker_size": marker_size,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def cleared(cls) -> SeriesPoint:
+        """Clear all the fields of a `SeriesPoint`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        color: datatypes.Rgba32ArrayLike | None = None,
+        marker: components.MarkerShapeArrayLike | None = None,
+        name: datatypes.Utf8ArrayLike | None = None,
+        marker_size: datatypes.Float32ArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        color:
+            Color for the corresponding series.
+        marker:
+            What shape to use to represent the point
+        name:
+            Display name of the series.
+
+            Used in the legend.
+        marker_size:
+            Size of the marker.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                color=color,
+                marker=marker,
+                name=name,
+                marker_size=marker_size,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
     color: components.ColorBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.ColorBatch._optional,  # type: ignore[misc]
+        converter=components.ColorBatch._converter,  # type: ignore[misc]
     )
     # Color for the corresponding series.
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     marker: components.MarkerShapeBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.MarkerShapeBatch._optional,  # type: ignore[misc]
+        converter=components.MarkerShapeBatch._converter,  # type: ignore[misc]
     )
     # What shape to use to represent the point
     #
     # (Docstring intentionally commented out to hide this field from the docs)
 
     name: components.NameBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.NameBatch._optional,  # type: ignore[misc]
+        converter=components.NameBatch._converter,  # type: ignore[misc]
     )
     # Display name of the series.
     #
@@ -158,9 +265,9 @@ class SeriesPoint(Archetype):
     # (Docstring intentionally commented out to hide this field from the docs)
 
     marker_size: components.MarkerSizeBatch | None = field(
-        metadata={"component": "optional"},
+        metadata={"component": True},
         default=None,
-        converter=components.MarkerSizeBatch._optional,  # type: ignore[misc]
+        converter=components.MarkerSizeBatch._converter,  # type: ignore[misc]
     )
     # Size of the marker.
     #

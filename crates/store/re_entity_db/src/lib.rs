@@ -13,7 +13,7 @@ mod times_per_timeline;
 mod versioned_instance_path;
 
 pub use self::{
-    entity_db::EntityDb,
+    entity_db::{EntityDb, DEFAULT_GC_TIME_BUDGET},
     entity_tree::EntityTree,
     instance_path::{InstancePath, InstancePathHash},
     store_bundle::{StoreBundle, StoreLoadError},
@@ -22,6 +22,7 @@ pub use self::{
     versioned_instance_path::{VersionedInstancePath, VersionedInstancePathHash},
 };
 
+#[doc(no_inline)]
 pub use re_log_types::{EntityPath, EntityPathPart, TimeInt, Timeline};
 
 pub mod external {

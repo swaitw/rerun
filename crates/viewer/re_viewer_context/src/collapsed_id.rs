@@ -5,22 +5,51 @@ use std::hash::Hash;
 
 use re_log_types::EntityPath;
 
-use crate::{ContainerId, SpaceViewId};
+use crate::{ContainerId, Contents, Item, ViewId};
 
 /// The various scopes for which we want to track collapsed state.
 #[derive(Debug, Clone, Copy, Hash)]
+#[allow(clippy::enum_variant_names)]
 pub enum CollapseScope {
     /// Stream tree from the time panel
     StreamsTree,
 
-    /// Blueprint tree from the blueprint panel
+    /// Stream tree from the time panel, when the filter is active
+    StreamsTreeFiltered { session_id: egui::Id },
+
+    /// The stream tree from the blueprint debug time panel
+    BlueprintStreamsTree,
+
+    /// The stream tree from the blueprint debug time panel, when the filter is active
+    BlueprintStreamsTreeFiltered { session_id: egui::Id },
+
+    /// Blueprint tree from the blueprint panel (left panel)
     BlueprintTree,
+
+    /// Blueprint tree from the blueprint panel (left panel), when the filter is active
+    BlueprintTreeFiltered { session_id: egui::Id },
 }
 
 impl CollapseScope {
     const ALL: [Self; 2] = [Self::StreamsTree, Self::BlueprintTree];
 
     // convenience functions
+
+    /// Create a [`CollapsedId`] for an [`Item`] of supported kind.
+    pub fn item(self, item: Item) -> Option<CollapsedId> {
+        match item {
+            Item::InstancePath(instance_path) => Some(self.entity(instance_path.entity_path)),
+            Item::Container(container_id) => Some(self.container(container_id)),
+            Item::View(view_id) => Some(self.view(view_id)),
+            Item::DataResult(view_id, instance_path) => {
+                Some(self.data_result(view_id, instance_path.entity_path))
+            }
+
+            Item::AppId(_) | Item::DataSource(_) | Item::StoreId(_) | Item::ComponentPath(_) => {
+                None
+            }
+        }
+    }
 
     /// Create a [`CollapsedId`] for a container in this scope.
     pub fn container(self, container_id: ContainerId) -> CollapsedId {
@@ -30,18 +59,26 @@ impl CollapseScope {
         }
     }
 
-    /// Create a [`CollapsedId`] for a space view in this scope.
-    pub fn space_view(self, space_view_id: SpaceViewId) -> CollapsedId {
+    /// Create a [`CollapsedId`] for a view in this scope.
+    pub fn view(self, view_id: ViewId) -> CollapsedId {
         CollapsedId {
-            item: CollapseItem::SpaceView(space_view_id),
+            item: CollapseItem::View(view_id),
             scope: self,
         }
     }
 
+    /// Create a [`CollapsedId`] for a [`Contents`] in this scope.
+    pub fn contents(self, contents: Contents) -> CollapsedId {
+        match contents {
+            Contents::Container(container_id) => self.container(container_id),
+            Contents::View(view_id) => self.view(view_id),
+        }
+    }
+
     /// Create a [`CollapsedId`] for a data result in this scope.
-    pub fn data_result(self, space_view_id: SpaceViewId, entity_path: EntityPath) -> CollapsedId {
+    pub fn data_result(self, view_id: ViewId, entity_path: EntityPath) -> CollapsedId {
         CollapsedId {
-            item: CollapseItem::DataResult(space_view_id, entity_path),
+            item: CollapseItem::DataResult(view_id, entity_path),
             scope: self,
         }
     }
@@ -60,8 +97,8 @@ impl CollapseScope {
 #[derive(Debug, Clone, Hash)]
 pub enum CollapseItem {
     Container(ContainerId),
-    SpaceView(SpaceViewId),
-    DataResult(SpaceViewId, EntityPath),
+    View(ViewId),
+    DataResult(ViewId, EntityPath),
     Entity(EntityPath),
 }
 

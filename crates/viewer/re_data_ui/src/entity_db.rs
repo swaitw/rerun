@@ -1,7 +1,7 @@
+use re_byte_size::SizeBytes;
 use re_chunk_store::ChunkStoreConfig;
 use re_entity_db::EntityDb;
 use re_log_types::StoreKind;
-use re_types::SizeBytes;
 use re_ui::UiExt as _;
 use re_viewer_context::{UiLayout, ViewerContext};
 
@@ -16,7 +16,7 @@ impl crate::DataUi for EntityDb {
         _query: &re_chunk_store::LatestAtQuery,
         _db: &re_entity_db::EntityDb,
     ) {
-        if ui_layout == UiLayout::List {
+        if ui_layout.is_single_line() {
             // TODO(emilk): standardize this formatting with that in `entity_db_button_ui`
             let mut string = self.store_id().to_string();
             if let Some(data_source) = &self.data_source {
@@ -49,7 +49,7 @@ impl crate::DataUi for EntityDb {
 
                 if let Some(cloned_from) = cloned_from {
                     ui.grid_left_hand_label("Clone of");
-                    crate::item_ui::store_id_button_ui(ctx, ui, cloned_from);
+                    crate::item_ui::store_id_button_ui(ctx, ui, cloned_from, ui_layout);
                     ui.end_row();
                 }
 
@@ -108,7 +108,7 @@ impl crate::DataUi for EntityDb {
                     chunk_max_bytes,
                     chunk_max_rows,
                     chunk_max_rows_if_unsorted,
-                } = self.store().config();
+                } = self.storage_engine().store().config();
 
                 ui.grid_left_hand_label("Compaction");
                 ui.label(format!(
@@ -163,10 +163,11 @@ impl crate::DataUi for EntityDb {
         });
 
         let hub = ctx.store_context.hub;
+        let store_id = Some(self.store_id());
 
         match self.store_kind() {
             StoreKind::Recording => {
-                if Some(self.store_id()) == hub.active_recording_id() {
+                if store_id.as_ref() == hub.active_recording_id() {
                     ui.add_space(8.0);
                     ui.label("This is the active recording");
                 }
@@ -177,9 +178,9 @@ impl crate::DataUi for EntityDb {
 
                 if is_active_app_id {
                     let is_default =
-                        hub.default_blueprint_id_for_app(active_app_id) == Some(self.store_id());
+                        hub.default_blueprint_id_for_app(active_app_id) == store_id.as_ref();
                     let is_active =
-                        hub.active_blueprint_id_for_app(active_app_id) == Some(self.store_id());
+                        hub.active_blueprint_id_for_app(active_app_id) == store_id.as_ref();
 
                     match (is_default, is_active) {
                         (false, false) => {}
@@ -190,7 +191,8 @@ impl crate::DataUi for EntityDb {
                             if let Some(active_blueprint) =
                                 hub.active_blueprint_for_app(active_app_id)
                             {
-                                if active_blueprint.cloned_from() == Some(self.store_id()) {
+                                if active_blueprint.cloned_from() == Some(self.store_id()).as_ref()
+                                {
                                     // The active blueprint is a clone of the selected blueprint.
                                     if self.latest_row_id() == active_blueprint.latest_row_id() {
                                         ui.label(

@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 /// **Datatype**: A helper type for mapping [`datatypes::ClassId`][crate::datatypes::ClassId]s to class descriptions.
@@ -30,33 +30,14 @@ pub struct ClassDescriptionMapElem {
     pub class_description: crate::datatypes::ClassDescription,
 }
 
-impl ::re_types_core::SizeBytes for ClassDescriptionMapElem {
-    #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.class_id.heap_size_bytes() + self.class_description.heap_size_bytes()
-    }
-
-    #[inline]
-    fn is_pod() -> bool {
-        <crate::datatypes::ClassId>::is_pod() && <crate::datatypes::ClassDescription>::is_pod()
-    }
-}
-
 ::re_types_core::macros::impl_into_cow!(ClassDescriptionMapElem);
 
 impl ::re_types_core::Loggable for ClassDescriptionMapElem {
-    type Name = ::re_types_core::DatatypeName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.datatypes.ClassDescriptionMapElem".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
+    fn arrow_datatype() -> arrow::datatypes::DataType {
         #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
-        DataType::Struct(std::sync::Arc::new(vec![
+        use arrow::datatypes::*;
+        DataType::Struct(Fields::from(vec![
             Field::new(
                 "class_id",
                 <crate::datatypes::ClassId>::arrow_datatype(),
@@ -72,14 +53,27 @@ impl ::re_types_core::Loggable for ClassDescriptionMapElem {
 
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> SerializationResult<arrow::array::ArrayRef>
     where
         Self: Clone + 'a,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
+        #![allow(clippy::manual_is_variant_and)]
+        use ::re_types_core::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
+            let fields = Fields::from(vec![
+                Field::new(
+                    "class_id",
+                    <crate::datatypes::ClassId>::arrow_datatype(),
+                    false,
+                ),
+                Field::new(
+                    "class_description",
+                    <crate::datatypes::ClassDescription>::arrow_datatype(),
+                    false,
+                ),
+            ]);
             let (somes, data): (Vec<_>, Vec<_>) = data
                 .into_iter()
                 .map(|datum| {
@@ -87,12 +81,12 @@ impl ::re_types_core::Loggable for ClassDescriptionMapElem {
                     (datum.is_some(), datum)
                 })
                 .unzip();
-            let bitmap: Option<arrow2::bitmap::Bitmap> = {
+            let validity: Option<arrow::buffer::NullBuffer> = {
                 let any_nones = somes.iter().any(|some| !*some);
                 any_nones.then(|| somes.into())
             };
-            StructArray::new(
-                Self::arrow_datatype(),
+            as_array_ref(StructArray::new(
+                fields,
                 vec![
                     {
                         let (somes, class_id): (Vec<_>, Vec<_>) = data
@@ -102,19 +96,19 @@ impl ::re_types_core::Loggable for ClassDescriptionMapElem {
                                 (datum.is_some(), datum)
                             })
                             .unzip();
-                        let class_id_bitmap: Option<arrow2::bitmap::Bitmap> = {
+                        let class_id_validity: Option<arrow::buffer::NullBuffer> = {
                             let any_nones = somes.iter().any(|some| !*some);
                             any_nones.then(|| somes.into())
                         };
-                        PrimitiveArray::new(
-                            DataType::UInt16,
-                            class_id
-                                .into_iter()
-                                .map(|datum| datum.map(|datum| datum.0).unwrap_or_default())
-                                .collect(),
-                            class_id_bitmap,
-                        )
-                        .boxed()
+                        as_array_ref(PrimitiveArray::<UInt16Type>::new(
+                            ScalarBuffer::from(
+                                class_id
+                                    .into_iter()
+                                    .map(|datum| datum.map(|datum| datum.0).unwrap_or_default())
+                                    .collect::<Vec<_>>(),
+                            ),
+                            class_id_validity,
+                        ))
                     },
                     {
                         let (somes, class_description): (Vec<_>, Vec<_>) = data
@@ -125,35 +119,34 @@ impl ::re_types_core::Loggable for ClassDescriptionMapElem {
                                 (datum.is_some(), datum)
                             })
                             .unzip();
-                        let class_description_bitmap: Option<arrow2::bitmap::Bitmap> = {
+                        let class_description_validity: Option<arrow::buffer::NullBuffer> = {
                             let any_nones = somes.iter().any(|some| !*some);
                             any_nones.then(|| somes.into())
                         };
                         {
-                            _ = class_description_bitmap;
+                            _ = class_description_validity;
                             crate::datatypes::ClassDescription::to_arrow_opt(class_description)?
                         }
                     },
                 ],
-                bitmap,
-            )
-            .boxed()
+                validity,
+            ))
         })
     }
 
     fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
+        arrow_data: &dyn arrow::array::Array,
     ) -> DeserializationResult<Vec<Option<Self>>>
     where
         Self: Sized,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
+        use ::re_types_core::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
             let arrow_data = arrow_data
                 .as_any()
-                .downcast_ref::<arrow2::array::StructArray>()
+                .downcast_ref::<arrow::array::StructArray>()
                 .ok_or_else(|| {
                     let expected = Self::arrow_datatype();
                     let actual = arrow_data.data_type().clone();
@@ -164,10 +157,10 @@ impl ::re_types_core::Loggable for ClassDescriptionMapElem {
                 Vec::new()
             } else {
                 let (arrow_data_fields, arrow_data_arrays) =
-                    (arrow_data.fields(), arrow_data.values());
+                    (arrow_data.fields(), arrow_data.columns());
                 let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data_fields
                     .iter()
-                    .map(|field| field.name.as_str())
+                    .map(|field| field.name().as_str())
                     .zip(arrow_data_arrays)
                     .collect();
                 let class_id = {
@@ -189,7 +182,6 @@ impl ::re_types_core::Loggable for ClassDescriptionMapElem {
                         })
                         .with_context("rerun.datatypes.ClassDescriptionMapElem#class_id")?
                         .into_iter()
-                        .map(|opt| opt.copied())
                         .map(|res_or_opt| res_or_opt.map(crate::datatypes::ClassId))
                 };
                 let class_description = {
@@ -205,9 +197,9 @@ impl ::re_types_core::Loggable for ClassDescriptionMapElem {
                         .with_context("rerun.datatypes.ClassDescriptionMapElem#class_description")?
                         .into_iter()
                 };
-                arrow2::bitmap::utils::ZipValidity::new_with_validity(
+                ZipValidity::new_with_validity(
                     ::itertools::izip!(class_id, class_description),
-                    arrow_data.validity(),
+                    arrow_data.nulls(),
                 )
                 .map(|opt| {
                     opt.map(|(class_id, class_description)| {
@@ -228,5 +220,17 @@ impl ::re_types_core::Loggable for ClassDescriptionMapElem {
                 .with_context("rerun.datatypes.ClassDescriptionMapElem")?
             }
         })
+    }
+}
+
+impl ::re_byte_size::SizeBytes for ClassDescriptionMapElem {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.class_id.heap_size_bytes() + self.class_description.heap_size_bytes()
+    }
+
+    #[inline]
+    fn is_pod() -> bool {
+        <crate::datatypes::ClassId>::is_pod() && <crate::datatypes::ClassDescription>::is_pod()
     }
 }

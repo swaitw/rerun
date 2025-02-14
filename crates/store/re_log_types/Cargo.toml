@@ -42,24 +42,24 @@ serde = [
 [dependencies]
 
 # Rerun
+re_arrow_util.workspace = true
 re_build_info.workspace = true
+re_byte_size.workspace = true
 re_format.workspace = true
-re_format_arrow.workspace = true
 re_log.workspace = true
 re_string_interner.workspace = true
 re_tracing.workspace = true
 re_tuid.workspace = true
 re_types_core.workspace = true
 
+
 # External
 ahash.workspace = true
 anyhow.workspace = true
-arrow2 = { workspace = true, features = [
-  "io_ipc",
-  "io_print",
-  "compute_concatenate",
-] }
+arrow = { workspace = true, features = ["ipc"] }
+arrow2 = { workspace = true, features = ["arrow", "io_ipc"] }
 backtrace.workspace = true
+bytemuck.workspace = true
 clean-path.workspace = true
 document-features.workspace = true
 fixed = { workspace = true, default-features = false }
@@ -71,8 +71,6 @@ natord.workspace = true
 nohash-hasher.workspace = true
 num-derive.workspace = true
 num-traits.workspace = true
-similar-asserts.workspace = true
-smallvec.workspace = true
 static_assertions.workspace = true
 thiserror.workspace = true
 time = { workspace = true, features = ["formatting", "macros", "local-offset"] }
@@ -84,11 +82,6 @@ web-time.workspace = true
 # Optional dependencies:
 serde = { workspace = true, optional = true, features = ["derive", "rc"] }
 serde_bytes = { workspace = true, optional = true }
-
-# Native dependencies:
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-crossbeam.workspace = true
-
 
 [dev-dependencies]
 criterion.workspace = true

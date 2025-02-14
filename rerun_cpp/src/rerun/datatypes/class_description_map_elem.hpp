@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../component_descriptor.hpp"
 #include "../result.hpp"
 #include "class_description.hpp"
 #include "class_id.hpp"
@@ -27,12 +28,12 @@ namespace rerun::datatypes {
         /// The value: class name, color, etc.
         rerun::datatypes::ClassDescription class_description;
 
-      public:
-        // Extensions to generated type defined in 'class_description_map_elem_ext.cpp'
-
+      public: // START of extensions from class_description_map_elem_ext.cpp:
         ClassDescriptionMapElem(ClassDescription _class_description)
             : class_id(_class_description.info.id),
               class_description(std::move(_class_description)) {}
+
+        // END of extensions from class_description_map_elem_ext.cpp, start of generated code:
 
       public:
         ClassDescriptionMapElem() = default;
@@ -46,7 +47,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<datatypes::ClassDescriptionMapElem> {
-        static constexpr const char Name[] = "rerun.datatypes.ClassDescriptionMapElem";
+        static constexpr ComponentDescriptor Descriptor = "rerun.datatypes.ClassDescriptionMapElem";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype();

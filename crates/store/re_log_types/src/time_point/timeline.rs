@@ -1,17 +1,10 @@
-use arrow2::datatypes::{DataType, TimeUnit};
-
 use crate::{time::TimeZone, ResolvedTimeRange, TimeType};
 
 re_string_interner::declare_new_type!(
     /// The name of a timeline. Often something like `"log_time"` or `"frame_nr"`.
+    #[cfg_attr(feature = "serde", derive(::serde::Deserialize, ::serde::Serialize))]
     pub struct TimelineName;
 );
-
-impl Default for TimelineName {
-    fn default() -> Self {
-        Self::from(String::default())
-    }
-}
 
 // ----------------------------------------------------------------------------
 
@@ -20,20 +13,11 @@ impl Default for TimelineName {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct Timeline {
-    /// Name of the timeline (e.g. "log_time").
+    /// Name of the timeline (e.g. `log_time`).
     name: TimelineName,
 
     /// Sequence or time?
     typ: TimeType,
-}
-
-impl Default for Timeline {
-    fn default() -> Self {
-        Self {
-            name: TimelineName::default(),
-            typ: TimeType::Sequence,
-        }
-    }
 }
 
 impl Timeline {
@@ -115,17 +99,14 @@ impl Timeline {
 
     /// Returns the appropriate arrow datatype to represent this timeline.
     #[inline]
-    pub fn datatype(&self) -> DataType {
-        match self.typ {
-            TimeType::Time => DataType::Timestamp(TimeUnit::Nanosecond, None),
-            TimeType::Sequence => DataType::Int64,
-        }
+    pub fn datatype(&self) -> arrow::datatypes::DataType {
+        self.typ.datatype()
     }
 }
 
 impl nohash_hasher::IsEnabled for Timeline {}
 
-impl re_types_core::SizeBytes for Timeline {
+impl re_byte_size::SizeBytes for Timeline {
     #[inline]
     fn heap_size_bytes(&self) -> u64 {
         0

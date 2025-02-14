@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import glob
+import importlib
 from os.path import basename, dirname, isfile, join
 
 import rerun as rr
 
 
 def log_checks(args: argparse.Namespace) -> None:
-    import glob
-    import importlib
-
     modules = glob.glob(join(dirname(__file__), "*.py"))
     modules = [basename(f)[:-3] for f in modules if isfile(f) and basename(f).startswith("check_")]
 

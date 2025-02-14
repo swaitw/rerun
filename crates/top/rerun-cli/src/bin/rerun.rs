@@ -17,11 +17,17 @@ static GLOBAL: AccountingAllocator<mimalloc::MiMalloc> =
     AccountingAllocator::new(mimalloc::MiMalloc);
 
 fn main() -> std::process::ExitCode {
+    let main_thread_token = rerun::MainThreadToken::i_promise_i_am_on_the_main_thread();
     re_log::setup_logging();
 
     let build_info = re_build_info::build_info!();
 
-    let result = rerun::run(build_info, rerun::CallSource::Cli, std::env::args());
+    let result = rerun::run(
+        main_thread_token,
+        build_info,
+        rerun::CallSource::Cli,
+        std::env::args(),
+    );
 
     match result {
         Ok(exit_code) => std::process::ExitCode::from(exit_code),

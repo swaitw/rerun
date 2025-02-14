@@ -2,19 +2,77 @@
 
 use std::sync::Arc;
 
-use re_types_core::{DeserializationError, Loggable, SizeBytes};
+use re_arrow_util::ArrowArrayDowncastRef as _;
+use re_byte_size::SizeBytes;
+use re_types_core::{
+    Component, ComponentDescriptor, DeserializationError, Loggable, SerializedComponentBatch,
+};
 
 // ----------------------------------------------------------------------------
 
 #[derive(Debug)]
-pub struct MyPoints;
+pub struct MyPoints {
+    pub points: Option<SerializedComponentBatch>,
+    pub colors: Option<SerializedComponentBatch>,
+    pub labels: Option<SerializedComponentBatch>,
+}
 
 impl MyPoints {
     pub const NUM_COMPONENTS: usize = 5;
 }
 
+impl MyPoints {
+    pub fn descriptor_points() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("example.MyPoints".into()),
+            archetype_field_name: Some("points".into()),
+            component_name: MyPoint::name(),
+        }
+    }
+
+    pub fn descriptor_colors() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("example.MyPoints".into()),
+            archetype_field_name: Some("colors".into()),
+            component_name: MyColor::name(),
+        }
+    }
+
+    pub fn descriptor_labels() -> ComponentDescriptor {
+        ComponentDescriptor {
+            archetype_name: Some("example.MyPoints".into()),
+            archetype_field_name: Some("labels".into()),
+            component_name: MyLabel::name(),
+        }
+    }
+
+    pub fn clear_fields() -> Self {
+        Self {
+            points: Some(SerializedComponentBatch::new(
+                MyPoint::arrow_empty(),
+                Self::descriptor_points(),
+            )),
+            colors: Some(SerializedComponentBatch::new(
+                MyColor::arrow_empty(),
+                Self::descriptor_colors(),
+            )),
+            labels: Some(SerializedComponentBatch::new(
+                MyLabel::arrow_empty(),
+                Self::descriptor_labels(),
+            )),
+        }
+    }
+}
+
 impl re_types_core::Archetype for MyPoints {
     type Indicator = re_types_core::GenericIndicatorComponent<Self>;
+
+    fn indicator() -> SerializedComponentBatch {
+        use re_types_core::ComponentBatch as _;
+        // These is no such thing as failing to serialized an indicator.
+        #[allow(clippy::unwrap_used)]
+        Self::Indicator::default().serialized().unwrap()
+    }
 
     fn name() -> re_types_core::ArchetypeName {
         "example.MyPoints".into()
@@ -24,15 +82,15 @@ impl re_types_core::Archetype for MyPoints {
         "MyPoints"
     }
 
-    fn required_components() -> ::std::borrow::Cow<'static, [re_types_core::ComponentName]> {
-        vec![MyPoint::name()].into()
+    fn required_components() -> ::std::borrow::Cow<'static, [re_types_core::ComponentDescriptor]> {
+        vec![MyPoint::descriptor()].into()
     }
 
-    fn recommended_components() -> std::borrow::Cow<'static, [re_types_core::ComponentName]> {
+    fn recommended_components() -> std::borrow::Cow<'static, [re_types_core::ComponentDescriptor]> {
         vec![
-            re_types_core::LoggableBatch::name(&Self::Indicator::default()),
-            MyColor::name(),
-            MyLabel::name(),
+            re_types_core::ComponentBatch::descriptor(&Self::Indicator::default()).into_owned(),
+            MyColor::descriptor(),
+            MyLabel::descriptor(),
         ]
         .into()
     }
@@ -40,7 +98,8 @@ impl re_types_core::Archetype for MyPoints {
 
 // ----------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
 pub struct MyPoint {
     pub x: f32,
     pub y: f32,
@@ -74,26 +133,22 @@ impl SizeBytes for MyPoint {
 }
 
 impl Loggable for MyPoint {
-    type Name = re_types_core::ComponentName;
-
-    fn name() -> Self::Name {
-        "example.MyPoint".into()
-    }
-
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        use arrow2::datatypes::DataType::Float32;
-        arrow2::datatypes::DataType::Struct(Arc::new(vec![
-            arrow2::datatypes::Field::new("x", Float32, false),
-            arrow2::datatypes::Field::new("y", Float32, false),
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        use arrow::datatypes::DataType::Float32;
+        arrow::datatypes::DataType::Struct(arrow::datatypes::Fields::from(vec![
+            arrow::datatypes::Field::new("x", Float32, false),
+            arrow::datatypes::Field::new("y", Float32, false),
         ]))
     }
 
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<std::borrow::Cow<'a, Self>>>>,
-    ) -> re_types_core::SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> re_types_core::SerializationResult<arrow::array::ArrayRef>
     where
         Self: 'a,
     {
+        use arrow::datatypes::DataType::Float32;
+
         let (xs, ys): (Vec<_>, Vec<_>) = data
             .into_iter()
             .map(Option::unwrap)
@@ -101,54 +156,66 @@ impl Loggable for MyPoint {
             .map(|p| (p.x, p.y))
             .unzip();
 
-        let x_array = arrow2::array::Float32Array::from_vec(xs).boxed();
-        let y_array = arrow2::array::Float32Array::from_vec(ys).boxed();
+        let x_array = Arc::new(arrow::array::Float32Array::from(xs));
+        let y_array = Arc::new(arrow::array::Float32Array::from(ys));
 
-        Ok(
-            arrow2::array::StructArray::new(Self::arrow_datatype(), vec![x_array, y_array], None)
-                .boxed(),
-        )
+        Ok(Arc::new(arrow::array::StructArray::new(
+            arrow::datatypes::Fields::from(vec![
+                arrow::datatypes::Field::new("x", Float32, false),
+                arrow::datatypes::Field::new("y", Float32, false),
+            ]),
+            vec![x_array, y_array],
+            None,
+        )))
     }
 
     fn from_arrow_opt(
-        data: &dyn arrow2::array::Array,
+        data: &dyn arrow::array::Array,
     ) -> re_types_core::DeserializationResult<Vec<Option<Self>>> {
         let array = data
-            .as_any()
-            .downcast_ref::<arrow2::array::StructArray>()
+            .downcast_array_ref::<arrow::array::StructArray>()
             .ok_or(DeserializationError::downcast_error::<
-                arrow2::array::StructArray,
+                arrow::array::StructArray,
             >())?;
 
-        let x_array = array.values()[0].as_ref();
-        let y_array = array.values()[1].as_ref();
+        let x_array = array.columns()[0].as_ref();
+        let y_array = array.columns()[1].as_ref();
 
         let xs = x_array
-            .as_any()
-            .downcast_ref::<arrow2::array::Float32Array>()
+            .downcast_array_ref::<arrow::array::Float32Array>()
             .ok_or(DeserializationError::downcast_error::<
-                arrow2::array::Float32Array,
+                arrow::array::Float32Array,
             >())?;
         let ys = y_array
-            .as_any()
-            .downcast_ref::<arrow2::array::Float32Array>()
+            .downcast_array_ref::<arrow::array::Float32Array>()
             .ok_or(DeserializationError::downcast_error::<
-                arrow2::array::Float32Array,
+                arrow::array::Float32Array,
             >())?;
 
         Ok(xs
-            .values_iter()
-            .copied()
-            .zip(ys.values_iter().copied())
-            .map(|(x, y)| Self { x, y })
-            .map(Some)
+            .iter()
+            .zip(ys.iter())
+            .map(|(x, y)| {
+                if let (Some(x), Some(y)) = (x, y) {
+                    Some(Self { x, y })
+                } else {
+                    None
+                }
+            })
             .collect())
+    }
+}
+
+impl Component for MyPoint {
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("example.MyPoint")
     }
 }
 
 // ----------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
 pub struct MyPoint64 {
     pub x: f64,
     pub y: f64,
@@ -182,26 +249,22 @@ impl SizeBytes for MyPoint64 {
 }
 
 impl Loggable for MyPoint64 {
-    type Name = re_types_core::ComponentName;
-
-    fn name() -> Self::Name {
-        "example.MyPoint64".into()
-    }
-
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        use arrow2::datatypes::DataType::Float64;
-        arrow2::datatypes::DataType::Struct(Arc::new(vec![
-            arrow2::datatypes::Field::new("x", Float64, false),
-            arrow2::datatypes::Field::new("y", Float64, false),
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        use arrow::datatypes::DataType::Float64;
+        arrow::datatypes::DataType::Struct(arrow::datatypes::Fields::from(vec![
+            arrow::datatypes::Field::new("x", Float64, false),
+            arrow::datatypes::Field::new("y", Float64, false),
         ]))
     }
 
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<std::borrow::Cow<'a, Self>>>>,
-    ) -> re_types_core::SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> re_types_core::SerializationResult<arrow::array::ArrayRef>
     where
         Self: 'a,
     {
+        use arrow::datatypes::DataType::Float64;
+
         let (xs, ys): (Vec<_>, Vec<_>) = data
             .into_iter()
             .map(Option::unwrap)
@@ -209,54 +272,65 @@ impl Loggable for MyPoint64 {
             .map(|p| (p.x, p.y))
             .unzip();
 
-        let x_array = arrow2::array::Float64Array::from_vec(xs).boxed();
-        let y_array = arrow2::array::Float64Array::from_vec(ys).boxed();
+        let x_array = Arc::new(arrow::array::Float64Array::from(xs));
+        let y_array = Arc::new(arrow::array::Float64Array::from(ys));
 
-        Ok(
-            arrow2::array::StructArray::new(Self::arrow_datatype(), vec![x_array, y_array], None)
-                .boxed(),
-        )
+        Ok(Arc::new(arrow::array::StructArray::new(
+            arrow::datatypes::Fields::from(vec![
+                arrow::datatypes::Field::new("x", Float64, false),
+                arrow::datatypes::Field::new("y", Float64, false),
+            ]),
+            vec![x_array, y_array],
+            None,
+        )))
     }
 
     fn from_arrow_opt(
-        data: &dyn arrow2::array::Array,
+        data: &dyn arrow::array::Array,
     ) -> re_types_core::DeserializationResult<Vec<Option<Self>>> {
         let array = data
-            .as_any()
-            .downcast_ref::<arrow2::array::StructArray>()
+            .downcast_array_ref::<arrow::array::StructArray>()
             .ok_or(DeserializationError::downcast_error::<
-                arrow2::array::StructArray,
+                arrow::array::StructArray,
             >())?;
 
-        let x_array = array.values()[0].as_ref();
-        let y_array = array.values()[1].as_ref();
+        let x_array = array.columns()[0].as_ref();
+        let y_array = array.columns()[1].as_ref();
 
         let xs = x_array
-            .as_any()
-            .downcast_ref::<arrow2::array::Float64Array>()
+            .downcast_array_ref::<arrow::array::Float64Array>()
             .ok_or(DeserializationError::downcast_error::<
-                arrow2::array::Float64Array,
+                arrow::array::Float64Array,
             >())?;
         let ys = y_array
-            .as_any()
-            .downcast_ref::<arrow2::array::Float64Array>()
+            .downcast_array_ref::<arrow::array::Float64Array>()
             .ok_or(DeserializationError::downcast_error::<
-                arrow2::array::Float64Array,
+                arrow::array::Float64Array,
             >())?;
 
         Ok(xs
-            .values_iter()
-            .copied()
-            .zip(ys.values_iter().copied())
-            .map(|(x, y)| Self { x, y })
-            .map(Some)
+            .iter()
+            .zip(ys.iter())
+            .map(|(x, y)| {
+                if let (Some(x), Some(y)) = (x, y) {
+                    Some(Self { x, y })
+                } else {
+                    None
+                }
+            })
             .collect())
+    }
+}
+
+impl Component for MyPoint64 {
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("example.MyPoint64")
     }
 }
 
 // ----------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[repr(transparent)]
 pub struct MyColor(pub u32);
@@ -294,19 +368,13 @@ impl SizeBytes for MyColor {
 }
 
 impl Loggable for MyColor {
-    type Name = re_types_core::ComponentName;
-
-    fn name() -> Self::Name {
-        "example.MyColor".into()
-    }
-
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        arrow2::datatypes::DataType::UInt32
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        arrow::datatypes::DataType::UInt32
     }
 
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<std::borrow::Cow<'a, Self>>>>,
-    ) -> re_types_core::SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> re_types_core::SerializationResult<arrow::array::ArrayRef>
     where
         Self: 'a,
     {
@@ -318,13 +386,19 @@ impl Loggable for MyColor {
     }
 
     fn from_arrow_opt(
-        data: &dyn arrow2::array::Array,
+        data: &dyn arrow::array::Array,
     ) -> re_types_core::DeserializationResult<Vec<Option<Self>>> {
         use re_types_core::datatypes::UInt32;
         Ok(UInt32::from_arrow_opt(data)?
             .into_iter()
             .map(|opt| opt.map(|v| Self(v.0)))
             .collect())
+    }
+}
+
+impl Component for MyColor {
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("example.MyColor")
     }
 }
 
@@ -345,19 +419,13 @@ impl SizeBytes for MyLabel {
 }
 
 impl Loggable for MyLabel {
-    type Name = re_types_core::ComponentName;
-
-    fn name() -> Self::Name {
-        "example.MyLabel".into()
-    }
-
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
+    fn arrow_datatype() -> arrow::datatypes::DataType {
         re_types_core::datatypes::Utf8::arrow_datatype()
     }
 
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<std::borrow::Cow<'a, Self>>>>,
-    ) -> re_types_core::SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> re_types_core::SerializationResult<arrow::array::ArrayRef>
     where
         Self: 'a,
     {
@@ -369,7 +437,7 @@ impl Loggable for MyLabel {
     }
 
     fn from_arrow_opt(
-        data: &dyn arrow2::array::Array,
+        data: &dyn arrow::array::Array,
     ) -> re_types_core::DeserializationResult<Vec<Option<Self>>> {
         use re_types_core::datatypes::Utf8;
         Ok(Utf8::from_arrow_opt(data)?
@@ -379,9 +447,15 @@ impl Loggable for MyLabel {
     }
 }
 
+impl Component for MyLabel {
+    fn descriptor() -> ComponentDescriptor {
+        ComponentDescriptor::new("example.MyLabel")
+    }
+}
+
 // ----------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[repr(transparent)]
 pub struct MyIndex(pub u64);
@@ -405,19 +479,13 @@ impl SizeBytes for MyIndex {
 }
 
 impl Loggable for MyIndex {
-    type Name = re_types_core::ComponentName;
-
-    fn name() -> Self::Name {
-        "example.MyIndex".into()
-    }
-
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
-        arrow2::datatypes::DataType::UInt64
+    fn arrow_datatype() -> arrow::datatypes::DataType {
+        arrow::datatypes::DataType::UInt64
     }
 
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<std::borrow::Cow<'a, Self>>>>,
-    ) -> re_types_core::SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> re_types_core::SerializationResult<arrow::array::ArrayRef>
     where
         Self: 'a,
     {
@@ -429,12 +497,18 @@ impl Loggable for MyIndex {
     }
 
     fn from_arrow_opt(
-        data: &dyn arrow2::array::Array,
+        data: &dyn arrow::array::Array,
     ) -> re_types_core::DeserializationResult<Vec<Option<Self>>> {
         use re_types_core::datatypes::UInt64;
         Ok(UInt64::from_arrow_opt(data)?
             .into_iter()
             .map(|opt| opt.map(|v| Self(v.0)))
             .collect())
+    }
+}
+
+impl Component for MyIndex {
+    fn descriptor() -> re_types_core::ComponentDescriptor {
+        ComponentDescriptor::new("example.MyIndex")
     }
 }

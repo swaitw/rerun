@@ -1,27 +1,33 @@
 //! The Rerun C SDK.
 //!
-//! The functions here must match `rerun.h`.
+//! The functions here must match `rerun_cpp/src/rerun/c/rerun.h`.
 
 #![crate_type = "staticlib"]
 #![allow(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)] // Too much unsafe
 
+mod arrow_utils;
 mod component_type_registry;
 mod error;
 mod ptr;
 mod recording_streams;
+mod video;
 
-use std::{
-    collections::BTreeMap,
-    ffi::{c_char, c_uchar, CString},
+use std::ffi::{c_char, c_uchar, CString};
+
+use arrow::array::{ArrayRef as ArrowArrayRef, ListArray as ArrowListArray};
+use arrow_utils::arrow_array_from_c_ffi;
+use once_cell::sync::Lazy;
+
+use re_arrow_util::ArrowArrayDowncastRef as _;
+use re_sdk::{
+    external::nohash_hasher::IntMap,
+    log::{Chunk, ChunkId, PendingRow, TimeColumn},
+    time::TimeType,
+    ComponentDescriptor, EntityPath, RecordingStream, RecordingStreamBuilder, StoreKind, TimePoint,
+    Timeline,
 };
 
 use component_type_registry::COMPONENT_TYPES;
-use once_cell::sync::Lazy;
-
-use re_sdk::{
-    log::PendingRow, ComponentName, EntityPath, RecordingStream, RecordingStreamBuilder, StoreKind,
-    TimePoint,
-};
 use recording_streams::{recording_stream, RECORDING_STREAMS};
 
 // ----------------------------------------------------------------------------
@@ -82,6 +88,8 @@ pub const RR_REC_STREAM_CURRENT_BLUEPRINT: CRecordingStream = 0xFFFFFFFE;
 pub const RR_COMPONENT_TYPE_HANDLE_INVALID: CComponentTypeHandle = 0xFFFFFFFF;
 
 /// C version of [`re_sdk::SpawnOptions`].
+///
+/// See `rr_spawn_options` in the C header.
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct CSpawnOptions {
@@ -141,7 +149,7 @@ impl From<CStoreKind> for StoreKind {
     }
 }
 
-/// Simple C version of [`CStoreInfo`]
+/// See `rr_store_info` in the C header.
 #[repr(C)]
 #[derive(Debug)]
 pub struct CStoreInfo {
@@ -156,14 +164,24 @@ pub struct CStoreInfo {
     pub store_kind: CStoreKind,
 }
 
+/// See `rr_component_descriptor` in the C header.
+#[repr(C)]
+pub struct CComponentDescriptor {
+    pub archetype_name: CStringView,
+    pub archetype_field_name: CStringView,
+    pub component_name: CStringView,
+}
+
+/// See `rr_component_type` in the C header.
 #[repr(C)]
 pub struct CComponentType {
-    pub name: CStringView,
+    pub descriptor: CComponentDescriptor,
     pub schema: arrow2::ffi::ArrowSchema,
 }
 
+/// See `rr_component_batch` in the C header.
 #[repr(C)]
-pub struct CDataCell {
+pub struct CComponentBatch {
     pub component_type: CComponentTypeHandle,
     pub array: arrow2::ffi::ArrowArray,
 }
@@ -172,7 +190,85 @@ pub struct CDataCell {
 pub struct CDataRow {
     pub entity_path: CStringView,
     pub num_data_cells: u32,
-    pub data_cells: *mut CDataCell,
+    pub batches: *mut CComponentBatch,
+}
+
+/// See `rr_component_column` in the C header.
+#[repr(C)]
+pub struct CComponentColumns {
+    pub component_type: CComponentTypeHandle,
+
+    /// A `ListArray` with the datatype `List(component_type)`.
+    pub array: arrow2::ffi::ArrowArray,
+}
+
+/// See `rr_sorting_status` in the C header.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CSortingStatus {
+    Unknown = 0,
+    Sorted = 1,
+    Unsorted = 2,
+}
+
+impl CSortingStatus {
+    fn is_sorted(&self) -> Option<bool> {
+        match self {
+            Self::Sorted => Some(true),
+            Self::Unsorted => Some(false),
+            Self::Unknown => None,
+        }
+    }
+}
+
+/// See `rr_time_type` in the C header.
+/// Equivalent to Rust [`re_sdk::time::TimeType`].
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+pub enum CTimeType {
+    /// Normal wall time.
+    Time = 0,
+
+    /// Used e.g. for frames in a film.
+    Sequence = 1,
+}
+
+/// See `rr_timeline` in the C header.
+/// Equivalent to Rust [`re_sdk::Timeline`].
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct CTimeline {
+    /// The name of the timeline.
+    pub name: CStringView,
+
+    /// The type of the timeline.
+    pub typ: CTimeType,
+}
+
+impl TryFrom<CTimeline> for Timeline {
+    type Error = CError;
+
+    fn try_from(timeline: CTimeline) -> Result<Self, CError> {
+        let name = timeline.name.as_str("timeline.name")?;
+        let typ = match timeline.typ {
+            CTimeType::Time => TimeType::Time,
+            CTimeType::Sequence => TimeType::Sequence,
+        };
+        Ok(Self::new(name, typ))
+    }
+}
+
+/// See `rr_time_column` in the C header.
+/// Equivalent to Rust [`re_sdk::log::TimeColumn`].
+#[repr(C)]
+pub struct CTimeColumn {
+    pub timeline: CTimeline,
+
+    /// Times, a primitive array of i64.
+    pub times: arrow2::ffi::ArrowArray,
+
+    /// The sorting order of the times array.
+    pub sorting_status: CSortingStatus,
 }
 
 #[repr(u32)]
@@ -183,9 +279,11 @@ pub enum CErrorCode {
     _CategoryArgument = 0x0000_00010,
     UnexpectedNullArgument,
     InvalidStringArgument,
+    InvalidEnumValue,
     InvalidRecordingStreamHandle,
     InvalidSocketAddress,
     InvalidComponentTypeHandle,
+    InvalidServerUrl = 0x0000_0001a,
 
     _CategoryRecordingStream = 0x0000_00100,
     RecordingStreamRuntimeFailure,
@@ -193,10 +291,14 @@ pub enum CErrorCode {
     RecordingStreamSaveFailure,
     RecordingStreamStdoutFailure,
     RecordingStreamSpawnFailure,
+    RecordingStreamChunkValidationFailure,
 
     _CategoryArrow = 0x0000_1000,
     ArrowFfiSchemaImportError,
     ArrowFfiArrayImportError,
+
+    _CategoryUtilities = 0x0001_0000,
+    VideoLoadError,
 
     Unknown = 0xFFFF_FFFF,
 }
@@ -251,8 +353,30 @@ pub extern "C" fn rr_spawn(spawn_opts: *const CSpawnOptions, error: *mut CError)
 fn rr_register_component_type_impl(
     component_type: &CComponentType,
 ) -> Result<CComponentTypeHandle, CError> {
-    let component_name = component_type.name.as_str("component_type.name")?;
-    let component_name = ComponentName::from(component_name);
+    let CComponentDescriptor {
+        archetype_name,
+        archetype_field_name,
+        component_name,
+    } = &component_type.descriptor;
+
+    let archetype_name = if !archetype_name.is_null() {
+        Some(archetype_name.as_str("component_type.descriptor.archetype_name")?)
+    } else {
+        None
+    };
+    let archetype_field_name = if !archetype_field_name.is_null() {
+        Some(archetype_field_name.as_str("component_type.descriptor.archetype_field_name")?)
+    } else {
+        None
+    };
+    let component_name = component_name.as_str("component_type.descriptor.component_name")?;
+
+    let component_descr = ComponentDescriptor {
+        archetype_name: archetype_name.map(Into::into),
+        archetype_field_name: archetype_field_name.map(Into::into),
+        component_name: component_name.into(),
+    };
+
     let schema =
         unsafe { arrow2::ffi::import_field_from_c(&component_type.schema) }.map_err(|err| {
             CError::new(
@@ -263,7 +387,7 @@ fn rr_register_component_type_impl(
 
     Ok(COMPONENT_TYPES
         .write()
-        .register(component_name, schema.data_type))
+        .register(component_descr, schema.data_type))
 }
 
 #[allow(unsafe_code)]
@@ -340,11 +464,52 @@ pub extern "C" fn rr_recording_stream_new(
     }
 }
 
+/// See `THREAD_LIFE_TRACKER` for more information.
+struct TrivialTypeWithDrop;
+
+impl Drop for TrivialTypeWithDrop {
+    fn drop(&mut self) {
+        // Try to ensure that drop doesn't get optimized away.
+        std::hint::black_box(self);
+    }
+}
+
+thread_local! {
+    /// It can happen that we end up inside of [`rr_recording_stream_free`] during a thread shutdown.
+    /// This happens either when:
+    /// * the application shuts down, causing the destructor of globally defined recordings to be invoked
+    ///   -> Not an issue, we likely already destroyed the recording list.
+    /// * the user stored their C++ recording in a thread local variable, and then shut down the thread.
+    ///   -> More problematic, since we can't access `RECORDING_STREAMS` now, meaning we leak the recording.
+    ///      (we can't access it because we use channels internally which in turn use thread-local storage)
+    /// In either case we have a problem, since destroying a recording bottoms out to some thread-local storage
+    /// access inside of channels, causing a crash!
+    ///
+    /// So how do we figure out that our thread is shutting down?
+    /// As of writing `std::thread::current()` panics if there's nothing on `std::sys_common::thread_info::current_thread()`.
+    /// Unfortunately, `std::sys_common` is a private implementation detail!
+    /// So instead, we try accessing a thread local variable and see if that's still possible.
+    /// If not, then we assume that the thread is shutting down.
+    ///
+    /// Just any thread local variable will not do though!
+    /// We need something that is guaranteed to be dropped with the thread shutting down.
+    /// A simple integer value won't do that, `Box` works but seems wasteful, so we use a trivial type with a drop implementation.
+    #[allow(clippy::unnecessary_box_returns)]
+    pub static THREAD_LIFE_TRACKER: TrivialTypeWithDrop = const { TrivialTypeWithDrop };
+}
+
 #[allow(unsafe_code)]
 #[no_mangle]
 pub extern "C" fn rr_recording_stream_free(id: CRecordingStream) {
-    if let Some(stream) = RECORDING_STREAMS.lock().remove(id) {
-        stream.disconnect();
+    if THREAD_LIFE_TRACKER.try_with(|_v| {}).is_ok() {
+        if let Some(stream) = RECORDING_STREAMS.lock().remove(id) {
+            stream.disconnect();
+        }
+    } else {
+        // Yes, at least as of writing we can still log things in this state!
+        re_log::debug!(
+            "rr_recording_stream_free called on a thread that is shutting down and can no longer access thread locals. We can't handle this and have to ignore this call."
+        );
     }
 }
 
@@ -414,6 +579,7 @@ fn rr_recording_stream_connect_impl(
     } else {
         None
     };
+    #[expect(deprecated)] // Will be removed once `connect` is removed.
     stream.connect_opts(tcp_addr, flush_timeout);
 
     Ok(())
@@ -428,6 +594,41 @@ pub extern "C" fn rr_recording_stream_connect(
     error: *mut CError,
 ) {
     if let Err(err) = rr_recording_stream_connect_impl(id, tcp_addr, flush_timeout_sec) {
+        err.write_error(error);
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn rr_recording_stream_connect_grpc_impl(
+    stream: CRecordingStream,
+    url: CStringView,
+    flush_timeout_sec: f32,
+) -> Result<(), CError> {
+    let stream = recording_stream(stream)?;
+
+    let url = url.as_str("url")?;
+    let flush_timeout = if flush_timeout_sec >= 0.0 {
+        Some(std::time::Duration::from_secs_f32(flush_timeout_sec))
+    } else {
+        None
+    };
+
+    if let Err(err) = stream.connect_grpc_opts(url, flush_timeout) {
+        return Err(CError::new(CErrorCode::InvalidServerUrl, &err.to_string()));
+    }
+
+    Ok(())
+}
+
+#[allow(unsafe_code)]
+#[no_mangle]
+pub extern "C" fn rr_recording_stream_connect_grpc(
+    id: CRecordingStream,
+    url: CStringView,
+    flush_timeout_sec: f32,
+    error: *mut CError,
+) {
+    if let Err(err) = rr_recording_stream_connect_grpc_impl(id, url, flush_timeout_sec) {
         err.write_error(error);
     }
 }
@@ -622,7 +823,7 @@ pub extern "C" fn rr_recording_stream_reset_time(stream: CRecordingStream) {
 #[allow(unsafe_code)]
 #[allow(clippy::result_large_err)]
 #[allow(clippy::needless_pass_by_value)] // Conceptually we're consuming the data_row, as we take ownership of data it points to.
-fn rr_log_impl(
+fn rr_recording_stream_log_impl(
     stream: CRecordingStream,
     data_row: CDataRow,
     inject_time: bool,
@@ -636,7 +837,7 @@ fn rr_log_impl(
     let CDataRow {
         entity_path,
         num_data_cells,
-        data_cells,
+        batches,
     } = data_row;
 
     let entity_path = entity_path.as_str("entity_path")?;
@@ -645,46 +846,21 @@ fn rr_log_impl(
     let num_data_cells = num_data_cells as usize;
     re_log::debug!("rerun_log {entity_path:?}, num_data_cells: {num_data_cells}");
 
-    let data_cells = unsafe { std::slice::from_raw_parts_mut(data_cells, num_data_cells) };
+    let batches = unsafe { std::slice::from_raw_parts_mut(batches, num_data_cells) };
 
-    let mut components = BTreeMap::default();
+    let mut components = IntMap::default();
     {
         let component_type_registry = COMPONENT_TYPES.read();
 
-        for data_cell in data_cells {
-            // Arrow2 implements drop for ArrowArray and ArrowSchema.
-            //
-            // Therefore, for things to work correctly we have to take ownership of the data cell!
-            // The C interface is documented to take ownership of the data cell - the user should NOT call `release`.
-            // This makes sense because from here on out we want to manage the lifetime of the underlying schema and array data:
-            // the schema won't survive a loop iteration since it's reference passed for import, whereas the ArrowArray lives
-            // on a longer within the resulting arrow::Array.
-            let CDataCell {
+        for batch in batches {
+            let CComponentBatch {
                 component_type,
                 array,
-            } = unsafe { std::ptr::read(data_cell) };
-
-            // It would be nice to now mark the data_cell as "consumed" by setting the original release method to nullptr.
-            // This would signifies to the calling code that the data_cell is no longer owned.
-            // However, Arrow2 doesn't allow us to access the fields of the ArrowArray and ArrowSchema structs.
-
-            let component_type = component_type_registry.get(component_type).ok_or_else(|| {
-                CError::new(
-                    CErrorCode::InvalidComponentTypeHandle,
-                    &format!("Invalid component type handle: {component_type}"),
-                )
-            })?;
-
-            let values =
-                unsafe { arrow2::ffi::import_array_from_c(array, component_type.datatype.clone()) }
-                    .map_err(|err| {
-                        CError::new(
-                            CErrorCode::ArrowFfiArrayImportError,
-                            &format!("Failed to import ffi array: {err}"),
-                        )
-                    })?;
-
-            components.insert(component_type.name, values);
+            } = &batch;
+            let component_type = component_type_registry.get(*component_type)?;
+            let datatype = component_type.datatype.clone();
+            let values = unsafe { arrow_array_from_c_ffi(array, datatype) }?;
+            components.insert(component_type.descriptor.clone(), values);
         }
     }
 
@@ -707,14 +883,14 @@ pub unsafe extern "C" fn rr_recording_stream_log(
     inject_time: bool,
     error: *mut CError,
 ) {
-    if let Err(err) = rr_log_impl(stream, data_row, inject_time) {
+    if let Err(err) = rr_recording_stream_log_impl(stream, data_row, inject_time) {
         err.write_error(error);
     }
 }
 
 #[allow(unsafe_code)]
 #[allow(clippy::result_large_err)]
-fn rr_log_file_from_path_impl(
+fn rr_recording_stream_log_file_from_path_impl(
     stream: CRecordingStream,
     filepath: CStringView,
     entity_path_prefix: CStringView,
@@ -746,14 +922,16 @@ pub unsafe extern "C" fn rr_recording_stream_log_file_from_path(
     static_: bool,
     error: *mut CError,
 ) {
-    if let Err(err) = rr_log_file_from_path_impl(stream, filepath, entity_path_prefix, static_) {
+    if let Err(err) =
+        rr_recording_stream_log_file_from_path_impl(stream, filepath, entity_path_prefix, static_)
+    {
         err.write_error(error);
     }
 }
 
 #[allow(unsafe_code)]
 #[allow(clippy::result_large_err)]
-fn rr_log_file_from_contents_impl(
+fn rr_recording_stream_log_file_from_contents_impl(
     stream: CRecordingStream,
     filepath: CStringView,
     contents: CBytesView,
@@ -793,8 +971,120 @@ pub unsafe extern "C" fn rr_recording_stream_log_file_from_contents(
     static_: bool,
     error: *mut CError,
 ) {
+    if let Err(err) = rr_recording_stream_log_file_from_contents_impl(
+        stream,
+        filepath,
+        contents,
+        entity_path_prefix,
+        static_,
+    ) {
+        err.write_error(error);
+    }
+}
+
+#[allow(unsafe_code)]
+#[allow(clippy::result_large_err)]
+fn rr_recording_stream_send_columns_impl(
+    stream: CRecordingStream,
+    entity_path: CStringView,
+    time_columns: &[CTimeColumn],
+    component_columns: &[CComponentColumns],
+) -> Result<(), CError> {
+    // Create chunk-id as early as possible. It has a timestamp and is used to estimate e2e latency.
+    let id = ChunkId::new();
+
+    let stream = recording_stream(stream)?;
+    let entity_path = entity_path.as_str("entity_path")?;
+
+    let time_columns: IntMap<Timeline, TimeColumn> = time_columns
+        .iter()
+        .map(|time_column| {
+            let timeline: Timeline = time_column.timeline.clone().try_into()?;
+            let datatype = arrow2::datatypes::DataType::Int64;
+            let time_values_untyped = unsafe { arrow_array_from_c_ffi(&time_column.times, datatype) }?;
+            let time_values = TimeColumn::read_array(&ArrowArrayRef::from(time_values_untyped)).map_err(|err| {
+                CError::new(
+                    CErrorCode::ArrowFfiArrayImportError,
+                    &format!("Arrow C FFI import did not produce a Int64 time array - please file an issue at https://github.com/rerun-io/rerun/issues if you see this! This shouldn't be possible since conversion from C was successful with this datatype. Details: {err}")
+                )
+            })?;
+
+            Ok((
+                timeline,
+                TimeColumn::new(
+                    time_column.sorting_status.is_sorted(),
+                    timeline,
+                    time_values.clone(),
+                ),
+            ))
+        })
+        .collect::<Result<_, CError>>()?;
+
+    let components: IntMap<ComponentDescriptor, ArrowListArray> = {
+        let component_type_registry = COMPONENT_TYPES.read();
+        component_columns
+            .iter()
+            .map(|batch| {
+                let CComponentColumns {
+                    component_type,
+                    array,
+                } = &batch;
+                let component_type = component_type_registry.get(*component_type)?;
+                let datatype = arrow2::array::ListArray::<i32>::default_datatype(
+                    component_type.datatype.clone(),
+                );
+
+                let component_values_untyped = unsafe { arrow_array_from_c_ffi(array, datatype) }?;
+                let component_values = component_values_untyped
+                    .downcast_array_ref::<ArrowListArray>()
+                    .ok_or_else(|| {
+                        CError::new(
+                            CErrorCode::ArrowFfiArrayImportError,
+                            "Arrow C FFI import did not produce a ListArray - please file an issue at https://github.com/rerun-io/rerun/issues if you see this! This shouldn't be possible since conversion from C was successful with this datatype.",
+                        )
+                    })?;
+
+                Ok((component_type.descriptor.clone(), component_values.clone()))
+            })
+            .collect::<Result<_, CError>>()?
+    };
+
+    let chunk = Chunk::from_auto_row_ids(
+        id,
+        entity_path.into(),
+        time_columns,
+        components.into_iter().collect(),
+    )
+    .map_err(|err| {
+        CError::new(
+            CErrorCode::RecordingStreamChunkValidationFailure,
+            &format!("Failed to create chunk: {err}"),
+        )
+    })?;
+
+    stream.send_chunk(chunk);
+
+    Ok(())
+}
+
+#[allow(unsafe_code)]
+#[no_mangle]
+pub unsafe extern "C" fn rr_recording_stream_send_columns(
+    stream: CRecordingStream,
+    entity_path: CStringView,
+    time_columns: *const CTimeColumn,
+    num_time_columns: u32,
+    component_batches: *const CComponentColumns,
+    num_component_batches: u32,
+    error: *mut CError,
+) {
+    let time_columns =
+        unsafe { std::slice::from_raw_parts(time_columns, num_time_columns as usize) };
+    let component_batches =
+        unsafe { std::slice::from_raw_parts(component_batches, num_component_batches as usize) };
+
     if let Err(err) =
-        rr_log_file_from_contents_impl(stream, filepath, contents, entity_path_prefix, static_)
+        rr_recording_stream_send_columns_impl(stream, entity_path, time_columns, component_batches)
     {
         err.write_error(error);
     }

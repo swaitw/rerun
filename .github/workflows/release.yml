@@ -87,7 +87,7 @@ jobs:
 
       - uses: prefix-dev/setup-pixi@v0.8.1
         with:
-          pixi-version: v0.25.0
+          pixi-version: v0.39.0
 
       - name: Update crate versions
         id: versioning
@@ -137,6 +137,10 @@ jobs:
           echo "current=$current"   >> "$GITHUB_OUTPUT"
           echo "final=$final"       >> "$GITHUB_OUTPUT"
 
+      - name: Update rerun_py & rerun_c version
+        run: |
+          pixi run python scripts/ci/update_rerun_py_and_c_version.py "${{ steps.versioning.outputs.current }}"
+
       - name: Update rerun_notebook package version
         run: |
           pixi run python scripts/ci/update_rerun_notebook_version.py "${{ steps.versioning.outputs.current }}"
@@ -144,12 +148,6 @@ jobs:
       - name: Update JS package versions
         run: |
           pixi run node rerun_js/scripts/version.mjs "${{ steps.versioning.outputs.current }}"
-
-      - name: Update rerun_c version
-
-        # Configuring CMake is enough to change the version on rerun.h!
-        run: |
-          cmake -B build -S .
 
       - run: pixi run toml-fmt
 
@@ -191,7 +189,8 @@ jobs:
                 - [ ] cargo install of cli tool: does it install and run?
                 - [ ] C++ SDK zip: does it contain rerun_c for all platforms?
               - [ ] Populate the release with the changelog and a nice header video/picture, check `Set as latest release`, then click `Publish release`.
-              - [ ] Update the [google colab notebooks](https://drive.google.com/drive/folders/0AC0q24MFKh3fUk9PVA) to install this version and re-execute the notebook.
+              - [ ] Update the [google colab notebooks](https://colab.research.google.com/drive/1R9I7s4o6wydQC_zkybqaSRFTtlEaked_) to install this version and re-execute the notebook.
+              - [ ] Update landing's version of the web viewer (@jprochazk)
 
           A few hours after the GitHub release is created, `regro-cf-autotick-bot` will create a
           [conda feedstock PR](https://github.com/conda-forge/rerun-sdk-feedstock/pulls).
@@ -236,7 +235,7 @@ jobs:
     secrets: inherit
 
   publish-rerun_c:
-    name: "Build and Publish rerun_c"
+    name: "Build and Publish C/C++ SDKs"
     needs: [version]
     uses: ./.github/workflows/reusable_publish_rerun_c.yml
     with:
@@ -322,7 +321,7 @@ jobs:
 
   github-release:
     name: "GitHub Release"
-    if: inputs.release-type == 'final'
+    if: inputs.release-type == 'rc' || inputs.release-type == 'final'
     needs:
       [
         version,
@@ -348,9 +347,16 @@ jobs:
         run: |
           version="${{ needs.version.outputs.final }}"
           commit="${{ needs.version.outputs.release-commit }}"
+
+          if [ ${{ inputs.release-type }} = "final" ]; then
+            pre_arg=""
+          else
+            pre_arg="--prerelease"
+          fi
+
           git tag $version $commit
           git push origin $version
-          gh release create $version --verify-tag --draft --title $version
+          gh release create $version --verify-tag --draft --title $version $pre_arg
 
       - name: Create comment
         env:
@@ -362,10 +368,7 @@ jobs:
           cat <<EOF > comment-body.txt
           GitHub release draft: [$version](https://github.com/rerun-io/rerun/releases/tag/$version)
 
-          Do NOT create a GitHub release yet!
-
-          The release will be automatically un-drafted by the "Sync Release Assets" job, which will run automatically.
-          EOF
+          Add a description, changelog, and a nice header video/picture, then click 'Publish release'.
 
           gh pr comment $pr_number --body-file comment-body.txt
 
@@ -400,7 +403,7 @@ jobs:
 
       - uses: prefix-dev/setup-pixi@v0.8.1
         with:
-          pixi-version: v0.25.0
+          pixi-version: v0.39.0
 
       - name: git config
         run: |
@@ -424,10 +427,9 @@ jobs:
         run: |
           pixi run node rerun_js/scripts/version.mjs "${{ steps.crates.outputs.version }}"
 
-      - name: Update rerun_c version
-        # Configuring CMake is enough to change the version on rerun.h!
+      - name: Update rerun_py & rerun_c version
         run: |
-          cmake -B build -S .
+          pixi run python scripts/ci/update_rerun_py_and_c_version.py "${{ steps.crates.outputs.version }}"
 
       - run: pixi run toml-fmt
 

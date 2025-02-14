@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from attrs import define, field
 
 from .. import components, datatypes
 from .._baseclasses import (
     Archetype,
+    ComponentColumnList,
 )
 from ..error_utils import catch_and_log_exceptions
 from .view_coordinates_ext import ViewCoordinatesExt
@@ -24,12 +26,16 @@ class ViewCoordinates(ViewCoordinatesExt, Archetype):
     """
     **Archetype**: How we interpret the coordinate system of an entity/space.
 
-    For instance: What is "up"? What does the Z axis mean? Is this right-handed or left-handed?
+    For instance: What is "up"? What does the Z axis mean?
 
     The three coordinates are always ordered as [x, y, z].
 
     For example [Right, Down, Forward] means that the X axis points to the right, the Y axis points
     down, and the Z axis points forward.
+
+    Make sure that this archetype is logged at or above the origin entity path of your 3D views.
+
+    ⚠ [Rerun does not yet support left-handed coordinate systems](https://github.com/rerun-io/rerun/issues/5032).
 
     Example
     -------
@@ -80,7 +86,7 @@ class ViewCoordinates(ViewCoordinatesExt, Archetype):
     def __attrs_clear__(self) -> None:
         """Convenience method for calling `__attrs_init__` with all `None`s."""
         self.__attrs_init__(
-            xyz=None,  # type: ignore[arg-type]
+            xyz=None,
         )
 
     @classmethod
@@ -90,9 +96,87 @@ class ViewCoordinates(ViewCoordinatesExt, Archetype):
         inst.__attrs_clear__()
         return inst
 
-    xyz: components.ViewCoordinatesBatch = field(
-        metadata={"component": "required"},
-        converter=components.ViewCoordinatesBatch._required,  # type: ignore[misc]
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        clear_unset: bool = False,
+        xyz: datatypes.ViewCoordinatesLike | None = None,
+    ) -> ViewCoordinates:
+        """
+        Update only some specific fields of a `ViewCoordinates`.
+
+        Parameters
+        ----------
+        clear_unset:
+            If true, all unspecified fields will be explicitly cleared.
+        xyz:
+            The directions of the [x, y, z] axes.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            kwargs = {
+                "xyz": xyz,
+            }
+
+            if clear_unset:
+                kwargs = {k: v if v is not None else [] for k, v in kwargs.items()}  # type: ignore[misc]
+
+            inst.__attrs_init__(**kwargs)
+            return inst
+
+        inst.__attrs_clear__()
+        return inst
+
+    @classmethod
+    def cleared(cls) -> ViewCoordinates:
+        """Clear all the fields of a `ViewCoordinates`."""
+        return cls.from_fields(clear_unset=True)
+
+    @classmethod
+    def columns(
+        cls,
+        *,
+        xyz: datatypes.ViewCoordinatesArrayLike | None = None,
+    ) -> ComponentColumnList:
+        """
+        Construct a new column-oriented component bundle.
+
+        This makes it possible to use `rr.send_columns` to send columnar data directly into Rerun.
+
+        The returned columns will be partitioned into unit-length sub-batches by default.
+        Use `ComponentColumnList.partition` to repartition the data as needed.
+
+        Parameters
+        ----------
+        xyz:
+            The directions of the [x, y, z] axes.
+
+        """
+
+        inst = cls.__new__(cls)
+        with catch_and_log_exceptions(context=cls.__name__):
+            inst.__attrs_init__(
+                xyz=xyz,
+            )
+
+        batches = inst.as_component_batches(include_indicators=False)
+        if len(batches) == 0:
+            return ComponentColumnList([])
+
+        lengths = np.ones(len(batches[0]._batch.as_arrow_array()))
+        columns = [batch.partition(lengths) for batch in batches]
+
+        indicator_column = cls.indicator().partition(np.zeros(len(lengths)))
+
+        return ComponentColumnList([indicator_column] + columns)
+
+    xyz: components.ViewCoordinatesBatch | None = field(
+        metadata={"component": True},
+        default=None,
+        converter=components.ViewCoordinatesBatch._converter,  # type: ignore[misc]
     )
     # The directions of the [x, y, z] axes.
     #

@@ -5,8 +5,9 @@ from typing import Any, Iterable
 
 import pyarrow as pa
 import rerun_bindings as bindings
+from typing_extensions import deprecated
 
-from ._baseclasses import AsComponents, ComponentBatchLike
+from ._baseclasses import AsComponents, ComponentDescriptor, DescribedComponentBatch
 from .error_utils import _send_warning_or_raise, catch_and_log_exceptions
 from .recording_stream import RecordingStream
 
@@ -35,6 +36,9 @@ class IndicatorComponentBatch:
 
         """
         self.data = pa.nulls(1, type=pa.null())
+        assert not archetype_name.startswith(
+            "rerun.archetypes.rerun.archetypes."
+        ), f"Bad archetype name '{archetype_name}' in IndicatorComponentBatch"
         self._archetype_name = archetype_name
 
     def component_name(self) -> str:
@@ -43,13 +47,15 @@ class IndicatorComponentBatch:
     def as_arrow_array(self) -> pa.Array:
         return self.data
 
+    def component_descriptor(self) -> ComponentDescriptor:
+        return ComponentDescriptor(self.component_name())
+
 
 @catch_and_log_exceptions()
 def log(
     entity_path: str | list[str],
-    entity: AsComponents | Iterable[ComponentBatchLike],
-    *extra: AsComponents | Iterable[ComponentBatchLike],
-    timeless: bool = False,
+    entity: AsComponents | Iterable[DescribedComponentBatch],
+    *extra: AsComponents | Iterable[DescribedComponentBatch],
     static: bool = False,
     recording: RecordingStream | None = None,
     strict: bool | None = None,
@@ -87,8 +93,6 @@ def log(
     )
     ```
 
-    See also: [`rerun.log_components`][].
-
     Parameters
     ----------
     entity_path:
@@ -108,9 +112,6 @@ def log(
     *extra:
         An arbitrary number of additional component bundles implementing the [`rerun.AsComponents`][]
         interface, that are logged to the same entity path.
-
-    timeless:
-        Deprecated. Refer to `static` instead.
 
     static:
         If true, the components will be logged as static data.
@@ -133,15 +134,6 @@ def log(
         if None, use the global default from `rerun.strict_mode()`
 
     """
-
-    if timeless is True:
-        import warnings
-
-        warnings.warn(
-            message=("`timeless` is deprecated as an argument to `log`; prefer `static` instead"),
-            category=DeprecationWarning,
-        )
-        static = True
 
     # TODO(jleibs): Profile is_instance with runtime_checkable vs has_attr
     # Note from: https://docs.python.org/3/library/typing.html#typing.runtime_checkable
@@ -171,27 +163,23 @@ def log(
                 f"but got {type(entity)} instead."
             )
 
-    if hasattr(entity, "num_instances"):
-        num_instances = entity.num_instances()
-    else:
-        num_instances = None
-
-    log_components(
+    _log_components(
         entity_path=entity_path,
         components=components,
-        num_instances=num_instances,
         static=static,
-        recording=recording,
+        recording=recording,  # NOLINT
     )
 
 
+@deprecated(
+    """Use `log` with partial update APIs instead.
+  See: https://www.rerun.io/docs/reference/migration/migration-0-22 for more details."""
+)
 @catch_and_log_exceptions()
 def log_components(
     entity_path: str | list[str],
-    components: Iterable[ComponentBatchLike],
+    components: Iterable[DescribedComponentBatch],
     *,
-    num_instances: int | None = None,
-    timeless: bool = False,
     static: bool = False,
     recording: RecordingStream | None = None,
     strict: bool | None = None,
@@ -215,14 +203,7 @@ def log_components(
         See <https://www.rerun.io/docs/concepts/entity-path> for more on entity paths.
 
     components:
-        A collection of `ComponentBatchLike` objects that
-
-    num_instances:
-        Optional. The number of instances in each batch. If not provided, the max of all
-        components will be used instead.
-
-    timeless:
-        Deprecated. Refer to `static` instead.
+        A collection of `ComponentBatchLike` objects.
 
     static:
         If true, the components will be logged as static data.
@@ -246,34 +227,70 @@ def log_components(
 
     """
 
-    if timeless is True:
-        import warnings
+    _log_components(
+        entity_path=entity_path,
+        components=list(components),
+        static=static,
+        recording=recording,  # NOLINT
+    )
 
-        warnings.warn(
-            message=("`timeless` is deprecated as an argument to `log`; prefer `static` instead"),
-            category=DeprecationWarning,
-        )
-        static = True
 
-    # Convert to a native recording
-    recording = RecordingStream.to_native(recording)
+def _log_components(
+    entity_path: str | list[str],
+    components: list[DescribedComponentBatch],
+    *,
+    static: bool = False,
+    recording: RecordingStream | None = None,
+) -> None:
+    r"""
+    Internal method to log an entity from a collection of `ComponentBatchLike` objects.
 
-    instanced: dict[str, pa.Array] = {}
+    See also: [`rerun.log`][].
 
-    components = list(components)
+    Parameters
+    ----------
+    entity_path:
+        Path to the entity in the space hierarchy.
 
-    names = [comp.component_name() for comp in components]
+        The entity path can either be a string
+        (with special characters escaped, split on unescaped slashes)
+        or a list of unescaped strings.
+        This means that logging to `"world/my\ image\!"` is the same as logging
+        to ["world", "my image!"].
+
+        See <https://www.rerun.io/docs/concepts/entity-path> for more on entity paths.
+
+    components:
+        A collection of `ComponentBatchLike` objects.
+
+    static:
+        If true, the components will be logged as static data.
+
+        Static data has no time associated with it, exists on all timelines, and unconditionally shadows
+        any temporal data of the same type.
+
+        Otherwise, the data will be timestamped automatically with `log_time` and `log_tick`.
+        Additional timelines set by [`rerun.set_time_sequence`][], [`rerun.set_time_seconds`][] or
+        [`rerun.set_time_nanos`][] will also be included.
+
+    recording:
+        Specifies the [`rerun.RecordingStream`][] to use. If left unspecified,
+        defaults to the current active data recording, if there is one. See
+        also: [`rerun.init`][], [`rerun.set_global_data_recording`][].
+
+    """
+
+    instanced: dict[ComponentDescriptor, pa.Array] = {}
+
+    descriptors = [comp.component_descriptor() for comp in components]
     arrow_arrays = [comp.as_arrow_array() for comp in components]
-
-    if num_instances is None:
-        num_instances = max(len(arr) for arr in arrow_arrays)
 
     if isinstance(entity_path, list):
         entity_path = bindings.new_entity_path([str(part) for part in entity_path])
 
     added = set()
 
-    for name, array in zip(names, arrow_arrays):
+    for descr, array in zip(descriptors, arrow_arrays):
         # Array could be None if there was an error producing the empty array
         # Nothing we can do at this point other than ignore it. Some form of error
         # should have been logged.
@@ -281,27 +298,22 @@ def log_components(
             continue
 
         # Skip components which were logged multiple times.
-        if name in added:
+        if descr in added:
             _send_warning_or_raise(
-                f"Component {name} was included multiple times. Only the first instance will be used.",
+                f"Component {descr} was included multiple times. Only the first instance will be used.",
                 depth_to_user_code=1,
             )
             continue
         else:
-            added.add(name)
+            added.add(descr)
 
-        # Strip off the ExtensionArray if it's present. We will always log via component_name.
-        # TODO(jleibs): Maybe warn if there is a name mismatch here.
-        if isinstance(array, pa.ExtensionArray):
-            array = array.storage
-
-        instanced[name] = array
+        instanced[descr] = array
 
     bindings.log_arrow_msg(  # pyright: ignore[reportGeneralTypeIssues]
         entity_path,
         components=instanced,
         static_=static,
-        recording=recording,
+        recording=recording.to_native() if recording is not None else None,
     )
 
 
@@ -312,7 +324,6 @@ def log_file_from_path(
     *,
     entity_path_prefix: str | None = None,
     static: bool = False,
-    timeless: bool = False,
     recording: RecordingStream | None = None,
 ) -> None:
     r"""
@@ -333,9 +344,6 @@ def log_file_from_path(
     entity_path_prefix:
         What should the logged entity paths be prefixed with?
 
-    timeless:
-        Deprecated. Refer to `static` instead.
-
     static:
         If true, the components will be logged as static data.
 
@@ -352,20 +360,11 @@ def log_file_from_path(
         also: [`rerun.init`][], [`rerun.set_global_data_recording`][].
 
     """
-    if timeless is True:
-        import warnings
-
-        warnings.warn(
-            message=("`timeless` is deprecated as an argument to `log`; prefer `static` instead"),
-            category=DeprecationWarning,
-        )
-        static = True
-
     bindings.log_file_from_path(
         Path(file_path),
         entity_path_prefix=entity_path_prefix,
         static_=static,
-        recording=recording,
+        recording=recording.to_native() if recording is not None else None,
     )
 
 
@@ -377,7 +376,6 @@ def log_file_from_contents(
     *,
     entity_path_prefix: str | None = None,
     static: bool = False,
-    timeless: bool | None = None,
     recording: RecordingStream | None = None,
 ) -> None:
     r"""
@@ -401,9 +399,6 @@ def log_file_from_contents(
     entity_path_prefix:
         What should the logged entity paths be prefixed with?
 
-    timeless:
-        Deprecated. Refer to `static` instead.
-
     static:
         If true, the components will be logged as static data.
 
@@ -426,7 +421,7 @@ def log_file_from_contents(
         file_contents,
         entity_path_prefix=entity_path_prefix,
         static_=static,
-        recording=recording,
+        recording=recording.to_native() if recording is not None else None,
     )
 
 

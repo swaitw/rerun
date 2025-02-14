@@ -1,13 +1,10 @@
 //! Demonstrates outline rendering.
 
-// TODO(#3408): remove unwrap()
-#![allow(clippy::unwrap_used)]
-
 use itertools::Itertools;
 use re_renderer::{
-    renderer::MeshInstance,
+    renderer::GpuMeshInstance,
     view_builder::{Projection, TargetConfiguration, ViewBuilder},
-    OutlineConfig, OutlineMaskPreference,
+    Color32, OutlineConfig, OutlineMaskPreference,
 };
 use winit::event::ElementState;
 
@@ -16,7 +13,7 @@ mod framework;
 struct Outlines {
     is_paused: bool,
     seconds_since_startup: f32,
-    model_mesh_instances: Vec<MeshInstance>,
+    model_mesh_instances: Vec<GpuMeshInstance>,
 }
 
 struct MeshProperties {
@@ -34,7 +31,8 @@ impl framework::Example for Outlines {
         Self {
             is_paused: false,
             seconds_since_startup: 0.0,
-            model_mesh_instances: crate::framework::load_rerun_mesh(re_ctx),
+            model_mesh_instances: crate::framework::load_rerun_mesh(re_ctx)
+                .expect("Failed to load rerun mesh"),
         }
     }
 
@@ -44,7 +42,7 @@ impl framework::Example for Outlines {
         resolution: [u32; 2],
         time: &framework::Time,
         pixels_per_point: f32,
-    ) -> Vec<framework::ViewDrawResult> {
+    ) -> anyhow::Result<Vec<framework::ViewDrawResult>> {
         if !self.is_paused {
             self.seconds_since_startup += time.last_frame_duration.as_secs_f32();
         }
@@ -62,7 +60,7 @@ impl framework::Example for Outlines {
                     glam::Vec3::ZERO,
                     glam::Vec3::Y,
                 )
-                .unwrap(),
+                .ok_or(anyhow::format_err!("invalid camera"))?,
                 projection_from_view: Projection::Perspective {
                     vertical_fov: 70.0 * std::f32::consts::TAU / 360.0,
                     near_plane_distance: 0.01,
@@ -110,15 +108,15 @@ impl framework::Example for Outlines {
             .flat_map(|props| {
                 self.model_mesh_instances
                     .iter()
-                    .map(move |instance| MeshInstance {
+                    .map(move |instance| GpuMeshInstance {
                         gpu_mesh: instance.gpu_mesh.clone(),
-                        mesh: None,
                         world_from_mesh: glam::Affine3A::from_rotation_translation(
                             props.rotation,
                             props.position,
                         ) * instance.world_from_mesh,
                         outline_mask_ids: props.outline_mask_ids,
-                        ..Default::default()
+                        picking_layer_id: Default::default(),
+                        additive_tint: Color32::TRANSPARENT,
                     })
             })
             .collect_vec();
@@ -127,18 +125,17 @@ impl framework::Example for Outlines {
             re_ctx,
             Default::default(),
         ));
-        view_builder
-            .queue_draw(re_renderer::renderer::MeshDrawData::new(re_ctx, &instances).unwrap());
+        view_builder.queue_draw(re_renderer::renderer::MeshDrawData::new(
+            re_ctx, &instances,
+        )?);
 
-        let command_buffer = view_builder
-            .draw(re_ctx, re_renderer::Rgba::TRANSPARENT)
-            .unwrap();
+        let command_buffer = view_builder.draw(re_ctx, re_renderer::Rgba::TRANSPARENT)?;
 
-        vec![framework::ViewDrawResult {
+        Ok(vec![framework::ViewDrawResult {
             view_builder,
             command_buffer,
             target_location: glam::Vec2::ZERO,
-        }]
+        }])
     }
 
     fn on_key_event(&mut self, input: winit::event::KeyEvent) {

@@ -2,10 +2,21 @@ from __future__ import annotations
 
 import functools
 import random
+import sys
+import warnings
 from typing import Any, Callable, TypeVar, cast
 from uuid import UUID
 
 import numpy as np
+
+__version__ = "0.23.0-alpha.1+dev"
+__version_info__ = (0, 23, 0, "alpha.1")
+
+if sys.version_info < (3, 9):
+    warnings.warn(
+        "Python 3.8 is past EOL (https://devguide.python.org/versions/). Rerun version 0.21 will drop support/testing of Python 3.8.",
+        DeprecationWarning,
+    )
 
 # =====================================
 # API RE-EXPORTS
@@ -16,16 +27,25 @@ import rerun_bindings as bindings  # type: ignore[attr-defined]
 
 from . import (
     blueprint as blueprint,
+    dataframe as dataframe,
     experimental as experimental,
     notebook as notebook,
+    remote as remote,
 )
-from ._image_chroma_downsampled import (
-    ImageChromaDownsampled as ImageChromaDownsampled,
+from ._baseclasses import (
+    ComponentBatchLike as ComponentBatchLike,
+    ComponentBatchMixin as ComponentBatchMixin,
+    ComponentColumn as ComponentColumn,
+    ComponentColumnList as ComponentColumnList,
+    ComponentDescriptor as ComponentDescriptor,
+    DescribedComponentBatch as DescribedComponentBatch,
+)
+from ._image_encoded import (
+    ImageEncoded as ImageEncoded,
     ImageFormat as ImageFormat,
 )
 from ._log import (
     AsComponents as AsComponents,
-    ComponentBatchLike as ComponentBatchLike,
     IndicatorComponentBatch as IndicatorComponentBatch,
     escape_entity_path_part as escape_entity_path_part,
     log as log,
@@ -34,7 +54,14 @@ from ._log import (
     log_file_from_path as log_file_from_path,
     new_entity_path as new_entity_path,
 )
+from ._send_columns import (
+    TimeNanosColumn as TimeNanosColumn,
+    TimeSecondsColumn as TimeSecondsColumn,
+    TimeSequenceColumn as TimeSequenceColumn,
+    send_columns as send_columns,
+)
 from .any_value import (
+    AnyBatchValue as AnyBatchValue,
     AnyValues as AnyValues,
 )
 from .archetypes import (
@@ -42,15 +69,21 @@ from .archetypes import (
     Arrows2D as Arrows2D,
     Arrows3D as Arrows3D,
     Asset3D as Asset3D,
+    AssetVideo as AssetVideo,
     BarChart as BarChart,
     Boxes2D as Boxes2D,
     Boxes3D as Boxes3D,
+    Capsules3D as Capsules3D,
     Clear as Clear,
     DepthImage as DepthImage,
-    DisconnectedSpace as DisconnectedSpace,
-    Ellipsoids as Ellipsoids,
+    Ellipsoids3D as Ellipsoids3D,
+    EncodedImage as EncodedImage,
+    GeoLineStrings as GeoLineStrings,
+    GeoPoints as GeoPoints,
+    GraphEdges as GraphEdges,
+    GraphNodes as GraphNodes,
     Image as Image,
-    ImageEncoded as ImageEncoded,
+    InstancePoses3D as InstancePoses3D,
     LineStrips2D as LineStrips2D,
     LineStrips3D as LineStrips3D,
     Mesh3D as Mesh3D,
@@ -65,6 +98,7 @@ from .archetypes import (
     TextDocument as TextDocument,
     TextLog as TextLog,
     Transform3D as Transform3D,
+    VideoFrameReference as VideoFrameReference,
     ViewCoordinates as ViewCoordinates,
 )
 from .archetypes.boxes2d_ext import (
@@ -75,17 +109,22 @@ from .blueprint.api import (
 )
 from .components import (
     AlbedoFactor as AlbedoFactor,
+    GraphEdge as GraphEdge,
+    GraphType as GraphType,
     MediaType as MediaType,
-    OutOfTreeTransform3D as OutOfTreeTransform3D,
-    OutOfTreeTransform3DBatch as OutOfTreeTransform3DBatch,
     Radius as Radius,
     Scale3D as Scale3D,
     TensorDimensionIndexSelection as TensorDimensionIndexSelection,
     TextLogLevel as TextLogLevel,
+    TransformRelation as TransformRelation,
 )
 from .datatypes import (
+    Angle as Angle,
     AnnotationInfo as AnnotationInfo,
+    ChannelDatatype as ChannelDatatype,
     ClassDescription as ClassDescription,
+    ColorModel as ColorModel,
+    PixelFormat as PixelFormat,
     Quaternion as Quaternion,
     RotationAxisAngle as RotationAxisAngle,
     TensorData as TensorData,
@@ -97,6 +136,9 @@ from .datatypes import (
 )
 from .error_utils import (
     set_strict_mode as set_strict_mode,
+)
+from .legacy_notebook import (
+    legacy_notebook_show as legacy_notebook_show,
 )
 from .logging_handler import (
     LoggingHandler as LoggingHandler,
@@ -131,18 +173,14 @@ from .script_helpers import (
 )
 from .sinks import (
     connect as connect,
+    connect_grpc as connect_grpc,
     disconnect as disconnect,
     save as save,
     send_blueprint as send_blueprint,
     serve as serve,
+    serve_web as serve_web,
     spawn as spawn,
     stdout as stdout,
-)
-from .temporal_batch import (
-    TimeNanosBatch as TimeNanosBatch,
-    TimeSecondsBatch as TimeSecondsBatch,
-    TimeSequenceBatch as TimeSequenceBatch,
-    log_temporal_batch as log_temporal_batch,
 )
 from .time import (
     disable_timeline as disable_timeline,

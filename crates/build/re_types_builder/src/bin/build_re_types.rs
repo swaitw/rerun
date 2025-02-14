@@ -1,9 +1,9 @@
 //! This binary runs the codegen manually.
 //!
-//! It is easiest to call this using `just codegen`,
+//! It is easiest to call this using `pixi run codegen`,
 //! which will set up the necessary tools.
 
-// TODO(#3408): remove unwrap()
+// TODO(#6330): remove unwrap()
 #![allow(clippy::unwrap_used)]
 
 use re_build_tools::{
@@ -21,6 +21,7 @@ const CPP_OUTPUT_DIR_PATH: &str = "rerun_cpp";
 const PYTHON_OUTPUT_DIR_PATH: &str = "rerun_py/rerun_sdk/rerun";
 const PYTHON_TESTING_OUTPUT_DIR_PATH: &str = "rerun_py/tests/test_types";
 const DOCS_CONTENT_DIR_PATH: &str = "docs/content/reference/types";
+const SNIPPETS_REF_DIR_PATH: &str = "docs/snippets/";
 
 /// This uses [`rayon::scope`] to spawn all closures as tasks
 /// running in parallel. It blocks until all tasks are done.
@@ -37,6 +38,7 @@ macro_rules! join {
 fn main() {
     re_log::setup_logging();
 
+    #[cfg(feature = "tracing")]
     let mut profiler = re_tracing::Profiler::default(); // must be started early and dropped late to catch everything
 
     // This isn't a build.rs script, so opt out of cargo build instructions
@@ -52,11 +54,14 @@ fn main() {
                 return;
             }
             "--force" => always_run = true,
-            "--profile" => profiler.start(),
             "--check" => {
                 always_run = true;
                 check = true;
             }
+
+            #[cfg(feature = "tracing")]
+            "--profile" => profiler.start(),
+
             _ => {
                 eprintln!("Unknown argument: {arg:?}");
                 return;
@@ -87,6 +92,7 @@ fn main() {
     let python_output_dir_path = workspace_dir.join(PYTHON_OUTPUT_DIR_PATH);
     let python_testing_output_dir_path = workspace_dir.join(PYTHON_TESTING_OUTPUT_DIR_PATH);
     let docs_content_dir_path = workspace_dir.join(DOCS_CONTENT_DIR_PATH);
+    let snippets_ref_dir_path = workspace_dir.join(SNIPPETS_REF_DIR_PATH);
 
     let cur_hash = read_versioning_hash(&re_types_source_hash_path);
     re_log::debug!("cur_hash: {cur_hash:?}");
@@ -151,6 +157,13 @@ fn main() {
         || re_types_builder::generate_docs(
             &reporter,
             docs_content_dir_path,
+            &objects,
+            &arrow_registry,
+            check,
+        ),
+        || re_types_builder::generate_snippets_ref(
+            &reporter,
+            snippets_ref_dir_path,
             &objects,
             &arrow_registry,
             check,

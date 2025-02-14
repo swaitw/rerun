@@ -84,7 +84,7 @@ fn top_bar_ui(
     ui: &mut egui::Ui,
     gpu_resource_stats: &WgpuResourcePoolStatistics,
 ) {
-    app.rerun_menu_button_ui(frame, store_context, ui);
+    app.rerun_menu_button_ui(frame.wgpu_render_state(), store_context, ui);
 
     ui.add_space(12.0);
     website_link_ui(ui);
@@ -160,15 +160,15 @@ fn connection_status_ui(ui: &mut egui::Ui, rx: &ReceiveSet<re_log_types::LogMsg>
             match source.as_ref() {
                 SmartChannelSource::File(_)
                 | SmartChannelSource::RrdHttpStream { .. }
+                | SmartChannelSource::RerunGrpcStream { .. }
                 | SmartChannelSource::Stdin => {
                     false // These show up in the recordings panel as a "Loading…" in `recordings_panel.rs`
                 }
 
-                re_smart_channel::SmartChannelSource::RrdWebEventListener
-                | re_smart_channel::SmartChannelSource::Sdk
-                | re_smart_channel::SmartChannelSource::WsClient { .. }
-                | re_smart_channel::SmartChannelSource::TcpServer { .. }
-                | re_smart_channel::SmartChannelSource::JsChannel { .. } => true,
+                SmartChannelSource::RrdWebEventListener
+                | SmartChannelSource::Sdk
+                | SmartChannelSource::MessageProxy { .. }
+                | SmartChannelSource::JsChannel { .. } => true,
             }
         })
         .collect_vec();
@@ -198,12 +198,12 @@ fn connection_status_ui(ui: &mut egui::Ui, rx: &ReceiveSet<re_log_types::LogMsg>
             SmartChannelSource::File(_)
             | SmartChannelSource::Stdin
             | SmartChannelSource::RrdHttpStream { .. }
+            | SmartChannelSource::RerunGrpcStream { .. }
             | SmartChannelSource::RrdWebEventListener
             | SmartChannelSource::JsChannel { .. }
-            | SmartChannelSource::Sdk
-            | SmartChannelSource::WsClient { .. } => None,
+            | SmartChannelSource::Sdk => None,
 
-            SmartChannelSource::TcpServer { .. } => {
+            SmartChannelSource::MessageProxy { .. } => {
                 Some("Waiting for an SDK to connect".to_owned())
             }
         };
@@ -221,8 +221,10 @@ fn connection_status_ui(ui: &mut egui::Ui, rx: &ReceiveSet<re_log_types::LogMsg>
                 format!("Loading {}…", path.display())
             }
             re_smart_channel::SmartChannelSource::Stdin => "Loading stdin…".to_owned(),
-            re_smart_channel::SmartChannelSource::RrdHttpStream { url, .. } => {
-                format!("Loading {url}…")
+            re_smart_channel::SmartChannelSource::RrdHttpStream { url, .. }
+            | re_smart_channel::SmartChannelSource::RerunGrpcStream { url }
+            | re_smart_channel::SmartChannelSource::MessageProxy { url } => {
+                format!("Waiting for data on {url}…")
             }
             re_smart_channel::SmartChannelSource::RrdWebEventListener
             | re_smart_channel::SmartChannelSource::JsChannel { .. } => {
@@ -231,19 +233,12 @@ fn connection_status_ui(ui: &mut egui::Ui, rx: &ReceiveSet<re_log_types::LogMsg>
             re_smart_channel::SmartChannelSource::Sdk => {
                 "Waiting for logging data from SDK".to_owned()
             }
-            re_smart_channel::SmartChannelSource::WsClient { ws_server_url } => {
-                // TODO(emilk): it would be even better to know whether or not we are connected, or are attempting to connect
-                format!("Waiting for data from {ws_server_url}")
-            }
-            re_smart_channel::SmartChannelSource::TcpServer { port } => {
-                format!("Listening on TCP port {port}")
-            }
         }
     }
 }
 
 /// Lay out the panel button right-to-left
-fn panel_buttons_r2l(app: &App, app_blueprint: &AppBlueprint<'_>, ui: &mut egui::Ui) {
+fn panel_buttons_r2l(app: &mut App, app_blueprint: &AppBlueprint<'_>, ui: &mut egui::Ui) {
     #[cfg(target_arch = "wasm32")]
     if app.is_fullscreen_allowed() {
         let icon = if app.is_fullscreen_mode() {
@@ -308,12 +303,14 @@ fn panel_buttons_r2l(app: &App, app_blueprint: &AppBlueprint<'_>, ui: &mut egui:
     {
         app_blueprint.toggle_blueprint_panel(&app.command_sender);
     }
+
+    re_ui::notifications::notification_toggle_button(ui, &mut app.notifications);
 }
 
 /// Shows clickable website link as an image (text doesn't look as nice)
 fn website_link_ui(ui: &mut egui::Ui) {
     let desired_height = ui.max_rect().height();
-    let desired_height = desired_height.at_most(28.0); // figma size 2023-02-03
+    let desired_height = desired_height.at_most(20.0);
 
     let image = re_ui::icons::RERUN_IO_TEXT
         .as_image()
@@ -374,7 +371,7 @@ fn memory_use_label_ui(ui: &mut egui::Ui, gpu_resource_stats: &WgpuResourcePoolS
             .on_hover_ui(|ui| add_contents_on_hover(ui))
             .clicked()
         {
-            ui.ctx().output_mut(|o| o.copied_text = CODE.to_owned());
+            ui.ctx().copy_text(CODE.to_owned());
         }
     }
 

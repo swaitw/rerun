@@ -7,7 +7,14 @@ use crate::{
     Object, Objects, Reporter, ATTR_PYTHON_ALIASES, ATTR_RERUN_VIEW_IDENTIFIER,
 };
 
-pub fn code_for_view(reporter: &Reporter, objects: &Objects, obj: &Object) -> String {
+use super::ExtensionClass;
+
+pub fn code_for_view(
+    reporter: &Reporter,
+    objects: &Objects,
+    ext_class: &ExtensionClass,
+    obj: &Object,
+) -> String {
     assert!(obj.is_struct());
 
     let mut code = String::new();
@@ -21,13 +28,22 @@ from ... import datatypes
 from ... import components
 from ..._baseclasses import AsComponents, ComponentBatchLike
 from ...datatypes import EntityPathLike, Utf8Like
-from ..api import SpaceView, SpaceViewContentsLike
+from ..api import View, ViewContentsLike
 ",
         1,
     );
     code.push('\n');
 
-    code.push_indented(0, format!("class {}(SpaceView):", obj.name), 1);
+    let superclasses = {
+        let mut superclasses = vec![];
+        if ext_class.found {
+            // Extension class needs to come first, so its __init__ method is called if there is one.
+            superclasses.push(ext_class.name.clone());
+        }
+        superclasses.push("View".to_owned());
+        superclasses.join(",")
+    };
+    code.push_indented(0, format!("class {}({superclasses}):", obj.name), 1);
     code.push_indented(1, quote_obj_docs(reporter, objects, obj), 1);
 
     code.push_indented(1, init_method(reporter, objects, obj), 1);
@@ -39,7 +55,7 @@ fn init_method(reporter: &Reporter, objects: &Objects, obj: &Object) -> String {
     let mut code = r#"def __init__(
     self, *,
     origin: EntityPathLike = "/",
-    contents: SpaceViewContentsLike = "$origin/**",
+    contents: ViewContentsLike = "$origin/**",
     name: Utf8Like | None = None,
     visible: datatypes.BoolLike | None = None,
     defaults: list[Union[AsComponents, ComponentBatchLike]] = [],
@@ -61,7 +77,7 @@ fn init_method(reporter: &Reporter, objects: &Objects, obj: &Object) -> String {
 
         // Right now we don't create "<ArchetypeName>Like" type aliases for archetypes.
         // So we have to list all the possible types here.
-        // For archetypes in general this would only be confusing, but for Space View properties it
+        // For archetypes in general this would only be confusing, but for View properties it
         // could be useful to make the annotation here shorter.
         let additional_type_annotations = property_type
             .try_get_attr::<String>(ATTR_PYTHON_ALIASES)
@@ -101,7 +117,7 @@ All other entities will be transformed to be displayed relative to this origin."
             "contents",
             "The contents of the view specified as a query expression.
 This is either a single expression, or a list of multiple expressions.
-See [rerun.blueprint.archetypes.SpaceViewContents][]."
+See [rerun.blueprint.archetypes.ViewContents][]."
                 .to_owned(),
         ),
         ("name", "The display name of the view.".to_owned()),
@@ -114,21 +130,21 @@ Defaults to true if not specified."
         ),
         (
             "defaults",
-            "List of default components or component batches to add to the space view. When an archetype
+            "List of default components or component batches to add to the view. When an archetype
 in the view is missing a component included in this set, the value of default will be used
 instead of the normal fallback for the visualizer.".to_owned(),
         ),
         (
             "overrides",
-            "Dictionary of overrides to apply to the space view. The key is the path to the entity where the override
+            "Dictionary of overrides to apply to the view. The key is the path to the entity where the override
 should be applied. The value is a list of component or component batches to apply to the entity.
 
 Important note: the path must be a fully qualified entity path starting at the root. The override paths
 do not yet support `$origin` relative paths or glob expressions.
-This will be addressed in: [https://github.com/rerun-io/rerun/issues/6673][].".to_owned(),)
+This will be addressed in <https://github.com/rerun-io/rerun/issues/6673>.".to_owned(),)
     ];
     for field in &obj.fields {
-        let doc_content = field.docs.lines_for(objects, Target::Python);
+        let doc_content = field.docs.lines_for(reporter, objects, Target::Python);
         if doc_content.is_empty() {
             reporter.error(
                 &field.virtpath,
@@ -172,26 +188,26 @@ This will be addressed in: [https://github.com/rerun-io/rerun/issues/6673][].".t
         let property_type = &objects[property_type_fqname];
         let property_name = &property_type.name;
         let property_type_name = format!("blueprint_archetypes.{}", &property_type.name);
-        code.push_indented(1, &format!("if {parameter_name} is not None:"), 1);
+        code.push_indented(1, format!("if {parameter_name} is not None:"), 1);
         code.push_indented(
             2,
-            &format!("if not isinstance({parameter_name}, {property_type_name}):"),
+            format!("if not isinstance({parameter_name}, {property_type_name}):"),
             1,
         );
         code.push_indented(
             3,
-            &format!("{parameter_name} = {property_type_name}({parameter_name})"),
+            format!("{parameter_name} = {property_type_name}({parameter_name})"),
             1,
         );
         code.push_indented(
             2,
-            &format!(r#"properties["{property_name}"] = {parameter_name}"#),
+            format!(r#"properties["{property_name}"] = {parameter_name}"#),
             2,
         );
     }
     code.push_indented(
         1,
-        &format!(r#"super().__init__(class_identifier="{identifier}", origin=origin, contents=contents, name=name, visible=visible, properties=properties, defaults=defaults, overrides=overrides)"#),
+        format!(r#"super().__init__(class_identifier="{identifier}", origin=origin, contents=contents, name=name, visible=visible, properties=properties, defaults=defaults, overrides=overrides)"#),
         1,
     );
 

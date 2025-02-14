@@ -12,21 +12,20 @@ use rerun::{
 const NUM_POINTS: usize = 100;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let rec = rerun::RecordingStreamBuilder::new("rerun_example_dna_abacus")
-        .save("/tmp/helix_chunks.rrd")?;
+    let rec = rerun::RecordingStreamBuilder::new("rerun_example_dna_abacus").spawn()?;
 
     let (points1, colors1) = color_spiral(NUM_POINTS, 2.0, 0.02, 0.0, 0.1);
     let (points2, colors2) = color_spiral(NUM_POINTS, 2.0, 0.02, TAU * 0.5, 0.1);
 
     rec.set_time_seconds("stable_time", 0f64);
 
-    rec.log(
+    rec.log_static(
         "dna/structure/left",
         &rerun::Points3D::new(points1.iter().copied())
             .with_colors(colors1)
             .with_radii([0.08]),
     )?;
-    rec.log(
+    rec.log_static(
         "dna/structure/right",
         &rerun::Points3D::new(points2.iter().copied())
             .with_colors(colors2)
@@ -41,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|chunk| chunk.into_iter().collect_vec().try_into().unwrap())
         .collect_vec();
 
-    rec.log(
+    rec.log_static(
         "dna/structure/scaffolding",
         &rerun::LineStrips3D::new(points_interleaved.iter().cloned())
             .with_colors([rerun::Color::from([128, 128, 128, 255])]),

@@ -5,34 +5,66 @@
 
 #include "../../collection_adapter_builtins.hpp"
 
-namespace rerun::blueprint::archetypes {}
+namespace rerun::blueprint::archetypes {
+    PlotLegend PlotLegend::clear_fields() {
+        auto archetype = PlotLegend();
+        archetype.corner =
+            ComponentBatch::empty<rerun::blueprint::components::Corner2D>(Descriptor_corner)
+                .value_or_throw();
+        archetype.visible =
+            ComponentBatch::empty<rerun::blueprint::components::Visible>(Descriptor_visible)
+                .value_or_throw();
+        return archetype;
+    }
+
+    Collection<ComponentColumn> PlotLegend::columns(const Collection<uint32_t>& lengths_) {
+        std::vector<ComponentColumn> columns;
+        columns.reserve(3);
+        if (corner.has_value()) {
+            columns.push_back(corner.value().partitioned(lengths_).value_or_throw());
+        }
+        if (visible.has_value()) {
+            columns.push_back(visible.value().partitioned(lengths_).value_or_throw());
+        }
+        columns.push_back(
+            ComponentColumn::from_indicators<PlotLegend>(static_cast<uint32_t>(lengths_.size()))
+                .value_or_throw()
+        );
+        return columns;
+    }
+
+    Collection<ComponentColumn> PlotLegend::columns() {
+        if (corner.has_value()) {
+            return columns(std::vector<uint32_t>(corner.value().length(), 1));
+        }
+        if (visible.has_value()) {
+            return columns(std::vector<uint32_t>(visible.value().length(), 1));
+        }
+        return Collection<ComponentColumn>();
+    }
+} // namespace rerun::blueprint::archetypes
 
 namespace rerun {
 
-    Result<std::vector<DataCell>> AsComponents<blueprint::archetypes::PlotLegend>::serialize(
+    Result<Collection<ComponentBatch>> AsComponents<blueprint::archetypes::PlotLegend>::as_batches(
         const blueprint::archetypes::PlotLegend& archetype
     ) {
         using namespace blueprint::archetypes;
-        std::vector<DataCell> cells;
+        std::vector<ComponentBatch> cells;
         cells.reserve(3);
 
         if (archetype.corner.has_value()) {
-            auto result = DataCell::from_loggable(archetype.corner.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.corner.value());
         }
         if (archetype.visible.has_value()) {
-            auto result = DataCell::from_loggable(archetype.visible.value());
-            RR_RETURN_NOT_OK(result.error);
-            cells.push_back(std::move(result.value));
+            cells.push_back(archetype.visible.value());
         }
         {
-            auto indicator = PlotLegend::IndicatorComponent();
-            auto result = DataCell::from_loggable(indicator);
+            auto result = ComponentBatch::from_indicator<PlotLegend>();
             RR_RETURN_NOT_OK(result.error);
             cells.emplace_back(std::move(result.value));
         }
 
-        return cells;
+        return rerun::take_ownership(std::move(cells));
     }
 } // namespace rerun

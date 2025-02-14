@@ -1,9 +1,12 @@
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::Mutex;
-use re_log_encoding::encoder::EncodeError;
-use re_log_encoding::encoder::{encode_as_bytes_local, local_encoder};
+use re_grpc_client::message_proxy::write::{Client as MessageProxyClient, Options};
+use re_grpc_client::message_proxy::MessageProxyUrl;
+use re_log_encoding::encoder::encode_as_bytes_local;
+use re_log_encoding::encoder::{local_raw_encoder, EncodeError};
 use re_log_types::{BlueprintActivationCommand, LogMsg, StoreId};
 
 use crate::RecordingStream;
@@ -31,11 +34,12 @@ pub trait LogSink: Send + Sync + 'static {
 
     /// Blocks until all pending data in the sink's send buffers has been fully flushed.
     ///
+    /// If applicable, this should flush all data to any underlying OS-managed file descriptors.
     /// See also [`LogSink::drop_if_disconnected`].
     fn flush_blocking(&self);
 
     /// Drops all pending data currently sitting in the sink's send buffers if it is unable to
-    /// flush it for any reason (e.g. a broken TCP connection for a [`TcpSink`]).
+    /// flush it for any reason.
     #[inline]
     fn drop_if_disconnected(&self) {}
 
@@ -56,7 +60,7 @@ pub trait LogSink: Send + Sync + 'static {
                 // Let the viewer know that the blueprint has been fully received,
                 // and that it can now be activated.
                 // We don't want to activate half-loaded blueprints, because that can be confusing,
-                // and can also lead to problems with space-view heuristics.
+                // and can also lead to problems with view heuristics.
                 self.send(activation_cmd.into());
             } else {
                 re_log::warn!(
@@ -250,7 +254,7 @@ impl MemorySinkStorage {
     /// This automatically takes care of flushing the underlying [`crate::RecordingStream`].
     #[inline]
     pub fn concat_memory_sinks_as_bytes(sinks: &[&Self]) -> Result<Vec<u8>, EncodeError> {
-        let mut encoder = local_encoder()?;
+        let mut encoder = local_raw_encoder()?;
 
         for sink in sinks {
             // NOTE: It's fine, this is an in-memory sink so by definition there's no I/O involved
@@ -263,6 +267,8 @@ impl MemorySinkStorage {
                 encoder.append(message)?;
             }
         }
+
+        encoder.finish()?;
 
         Ok(encoder.into_inner())
     }
@@ -279,7 +285,7 @@ impl MemorySinkStorage {
         let mut inner = self.inner.lock();
         inner.has_been_used = true;
 
-        encode_as_bytes_local(std::mem::take(&mut inner.msgs).iter())
+        encode_as_bytes_local(std::mem::take(&mut inner.msgs).into_iter().map(Ok))
     }
 
     #[inline]
@@ -328,40 +334,41 @@ impl LogSink for CallbackSink {
 
 // ----------------------------------------------------------------------------
 
-/// Stream log messages to a Rerun TCP server.
-#[derive(Debug)]
-pub struct TcpSink {
-    client: re_sdk_comms::Client,
+/// Stream log messages to an a remote Rerun server.
+pub struct GrpcSink {
+    client: MessageProxyClient,
 }
 
-impl TcpSink {
-    /// Connect to the given address in a background thread.
-    /// Retries until successful.
+impl GrpcSink {
+    /// Connect to the in-memory storage node over HTTP.
     ///
-    /// `flush_timeout` is the minimum time the [`TcpSink`] will wait during a flush
+    /// `flush_timeout` is the minimum time the [`GrpcSink`] will wait during a flush
     /// before potentially dropping data. Note: Passing `None` here can cause a
     /// call to `flush` to block indefinitely if a connection cannot be established.
+    ///
+    /// ### Example
+    ///
+    /// ```ignore
+    /// GrpcSink::new("http://127.0.0.1:9434");
+    /// ```
     #[inline]
-    pub fn new(addr: std::net::SocketAddr, flush_timeout: Option<std::time::Duration>) -> Self {
+    pub fn new(url: MessageProxyUrl, flush_timeout: Option<Duration>) -> Self {
+        let options = Options {
+            flush_timeout,
+            ..Default::default()
+        };
         Self {
-            client: re_sdk_comms::Client::new(addr, flush_timeout),
+            client: MessageProxyClient::new(url, options),
         }
     }
 }
 
-impl LogSink for TcpSink {
-    #[inline]
+impl LogSink for GrpcSink {
     fn send(&self, msg: LogMsg) {
         self.client.send(msg);
     }
 
-    #[inline]
     fn flush_blocking(&self) {
         self.client.flush();
-    }
-
-    #[inline]
-    fn drop_if_disconnected(&self) {
-        self.client.drop_if_disconnected();
     }
 }

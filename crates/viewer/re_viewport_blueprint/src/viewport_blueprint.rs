@@ -1,152 +1,160 @@
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use ahash::HashMap;
 use egui_tiles::{SimplificationOptions, TileId};
 use nohash_hasher::IntSet;
-use re_types::{Archetype as _, SpaceViewClassIdentifier};
+use parking_lot::Mutex;
+use re_log_types::EntityPathSubs;
 use smallvec::SmallVec;
+use std::ops::ControlFlow;
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use re_chunk_store::LatestAtQuery;
 use re_entity_db::EntityPath;
-use re_types::blueprint::components::ViewerRecommendationHash;
-use re_types_blueprint::blueprint::archetypes as blueprint_archetypes;
-use re_types_blueprint::blueprint::components::{
-    AutoLayout, AutoSpaceViews, IncludedSpaceView, RootContainer, SpaceViewMaximized,
+use re_types::blueprint::{
+    archetypes as blueprint_archetypes,
+    components::{AutoLayout, AutoViews, RootContainer, ViewMaximized},
+};
+use re_types::{
+    blueprint::components::ViewerRecommendationHash, Archetype as _, ViewClassIdentifier,
 };
 use re_viewer_context::{
-    blueprint_id_to_tile_id, ContainerId, Contents, Item, SpaceViewId, ViewerContext,
+    blueprint_id_to_tile_id, ContainerId, Contents, Item, ViewId, ViewerContext, VisitorControlFlow,
 };
 
-use crate::{container::ContainerBlueprint, SpaceViewBlueprint, TreeAction, VIEWPORT_PATH};
+use crate::{container::ContainerBlueprint, ViewBlueprint, ViewportCommand, VIEWPORT_PATH};
 
 // ----------------------------------------------------------------------------
 
 /// Describes the layout and contents of the Viewport Panel.
+///
+/// This datastructure is loaded from the blueprint store at the start of each frame.
+///
+/// It remain immutable during the frame.
+///
+/// Any change is queued up into [`Self::deferred_commands`] and applied at the end of the frame,
+/// right before saving to the blueprint store.
 pub struct ViewportBlueprint {
-    /// Where the space views are stored.
+    /// Where the views are stored.
     ///
-    /// Not a hashmap in order to preserve the order of the space views.
-    pub space_views: BTreeMap<SpaceViewId, SpaceViewBlueprint>,
+    /// Not a hashmap in order to preserve the order of the views.
+    pub views: BTreeMap<ViewId, ViewBlueprint>,
 
     /// All the containers found in the viewport.
     pub containers: BTreeMap<ContainerId, ContainerBlueprint>,
 
     /// The root container.
-    pub root_container: Option<ContainerId>,
+    pub root_container: ContainerId,
 
-    /// The layouts of all the space views.
-    pub tree: egui_tiles::Tree<SpaceViewId>,
+    /// The layouts of all the views.
+    ///
+    /// If [`Self::maximized`] is set, this tree is ignored.
+    pub tree: egui_tiles::Tree<ViewId>,
 
-    /// Show one tab as maximized?
-    pub maximized: Option<SpaceViewId>,
+    /// Show only one view as maximized?
+    ///
+    /// If set, [`Self::tree`] is ignored.
+    pub maximized: Option<ViewId>,
 
     /// Whether the viewport layout is determined automatically.
     ///
+    /// If `true`, we auto-layout all views whenever a new view is added.
+    ///
     /// Set to `false` the first time the user messes around with the viewport blueprint.
-    /// Note: we use a mutex here because writes needs to be effective immediately during the frame.
+    /// Note: we use an atomic here because writes needs to be effective immediately during the frame.
     auto_layout: AtomicBool,
 
-    /// Whether space views should be created automatically.
+    /// Whether views should be created automatically for entities that are not already in a space.
     ///
-    /// Note: we use a mutex here because writes needs to be effective immediately during the frame.
-    auto_space_views: AtomicBool,
+    /// Note: we use an atomic here because writes needs to be effective immediately during the frame.
+    auto_views: AtomicBool,
 
-    /// Hashes of all recommended space views the viewer has already added and that should not be added again.
+    /// Hashes of all recommended views the viewer has already added and that should not be added again.
     past_viewer_recommendations: IntSet<ViewerRecommendationHash>,
 
-    /// Channel to pass Blueprint mutation messages back to the Viewport.
-    tree_action_sender: std::sync::mpsc::Sender<TreeAction>,
+    /// Blueprint mutation events that will be processed at the end of the frame.
+    pub deferred_commands: Arc<Mutex<Vec<ViewportCommand>>>,
 }
 
 impl ViewportBlueprint {
-    /// Attempt to load a [`SpaceViewBlueprint`] from the blueprint store.
-    pub fn try_from_db(
-        blueprint_db: &re_entity_db::EntityDb,
-        query: &LatestAtQuery,
-        tree_action_sender: std::sync::mpsc::Sender<TreeAction>,
-    ) -> Self {
+    /// Attempt to load a [`ViewBlueprint`] from the blueprint store.
+    pub fn try_from_db(blueprint_db: &re_entity_db::EntityDb, query: &LatestAtQuery) -> Self {
         re_tracing::profile_function!();
 
-        let resolver = blueprint_db.resolver();
-        let results = blueprint_db.query_caches().latest_at(
-            blueprint_db.store(),
+        let blueprint_engine = blueprint_db.storage_engine();
+
+        let results = blueprint_engine.cache().latest_at(
             query,
             &VIEWPORT_PATH.into(),
-            blueprint_archetypes::ViewportBlueprint::all_components()
-                .iter()
-                .copied(),
+            blueprint_archetypes::ViewportBlueprint::all_components().iter(),
         );
 
-        let blueprint_archetypes::ViewportBlueprint {
-            root_container,
-            maximized,
-            auto_layout,
-            auto_space_views,
-            past_viewer_recommendations,
-        } = blueprint_archetypes::ViewportBlueprint {
-            root_container: results.get_instance(resolver, 0),
-            maximized: results.get_instance(resolver, 0),
-            auto_layout: results.get_instance(resolver, 0),
-            auto_space_views: results.get_instance(resolver, 0),
-            past_viewer_recommendations: results.get_vec(resolver),
-        };
+        let root_container = results.component_mono::<RootContainer>();
+        let maximized = results.component_mono::<ViewMaximized>();
+        let auto_layout = results.component_mono::<AutoLayout>();
+        let auto_views = results.component_mono::<AutoViews>();
+        let past_viewer_recommendations = results.component_batch::<ViewerRecommendationHash>();
 
-        let all_space_view_ids: Vec<SpaceViewId> = blueprint_db
-            .tree()
-            .children
-            .get(SpaceViewId::registry_part())
-            .map(|tree| {
-                tree.children
-                    .values()
-                    .map(|subtree| SpaceViewId::from_entity_path(&subtree.path))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let root_container: Option<ContainerId> = root_container.map(|id| id.0.into());
+        re_log::trace_once!("Loaded root_container: {root_container:?}");
 
-        let space_views: BTreeMap<SpaceViewId, SpaceViewBlueprint> = all_space_view_ids
+        let mut containers: BTreeMap<ContainerId, ContainerBlueprint> = Default::default();
+        let mut all_view_ids: Vec<ViewId> = Default::default();
+
+        if let Some(root_container) = root_container {
+            re_tracing::profile_scope!("visit_all_containers");
+            let mut container_ids_to_visit: Vec<ContainerId> = vec![root_container];
+            while let Some(id) = container_ids_to_visit.pop() {
+                if let Some(container) = ContainerBlueprint::try_from_db(blueprint_db, query, id) {
+                    re_log::trace_once!("Container {id} contents: {:?}", container.contents);
+                    for &content in &container.contents {
+                        match content {
+                            Contents::Container(id) => container_ids_to_visit.push(id),
+                            Contents::View(id) => {
+                                all_view_ids.push(id);
+                            }
+                        }
+                    }
+                    containers.insert(id, container);
+                } else {
+                    re_log::warn_once!("Failed to load container {id}");
+                }
+            }
+        }
+
+        let views: BTreeMap<ViewId, ViewBlueprint> = all_view_ids
             .into_iter()
-            .filter_map(|space_view: SpaceViewId| {
-                SpaceViewBlueprint::try_from_db(space_view, blueprint_db, query)
-            })
+            .filter_map(|view: ViewId| ViewBlueprint::try_from_db(view, blueprint_db, query))
             .map(|sv| (sv.id, sv))
             .collect();
 
-        let all_container_ids: Vec<ContainerId> = blueprint_db
-            .tree()
-            .children
-            .get(ContainerId::registry_part())
-            .map(|tree| {
-                tree.children
-                    .values()
-                    .map(|subtree| ContainerId::from_entity_path(&subtree.path))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let containers: BTreeMap<ContainerId, ContainerBlueprint> = all_container_ids
-            .into_iter()
-            .filter_map(|id| ContainerBlueprint::try_from_db(blueprint_db, query, id))
-            .map(|c| (c.id, c))
-            .collect();
-
-        let root_container = root_container.map(|id| id.0.into());
-
-        // Auto layouting and auto space view are only enabled if no blueprint has been provided by the user.
-        // Only enable auto-space-views if this is the app-default blueprint
+        // Auto layouting and auto view are only enabled if no blueprint has been provided by the user.
+        // Only enable auto-views if this is the app-default blueprint
         let is_app_default_blueprint = blueprint_db
             .store_info()
-            .map_or(false, |ri| ri.is_app_default_blueprint());
+            .is_some_and(|ri| ri.is_app_default_blueprint());
         let auto_layout =
             AtomicBool::new(auto_layout.map_or(is_app_default_blueprint, |auto| *auto.0));
-        let auto_space_views =
-            AtomicBool::new(auto_space_views.map_or(is_app_default_blueprint, |auto| *auto.0));
+        let auto_views =
+            AtomicBool::new(auto_views.map_or(is_app_default_blueprint, |auto| *auto.0));
 
-        let tree = build_tree_from_space_views_and_containers(
-            space_views.values(),
+        let root_container = root_container.unwrap_or_else(|| {
+            let new_root_id = ContainerId::hashed_from_str("placeholder_root_container");
+            containers.insert(new_root_id, ContainerBlueprint::new(new_root_id));
+            new_root_id
+        });
+
+        let tree = build_tree_from_views_and_containers(
+            views.values(),
             containers.values(),
             root_container,
         );
+
+        re_log::trace_once!("Loaded tree: {tree:#?}");
 
         let past_viewer_recommendations = past_viewer_recommendations
             .unwrap_or_default()
@@ -155,15 +163,15 @@ impl ViewportBlueprint {
             .collect();
 
         Self {
-            space_views,
+            views,
             containers,
             root_container,
             tree,
             maximized: maximized.map(|id| id.0.into()),
             auto_layout,
-            auto_space_views,
+            auto_views,
             past_viewer_recommendations,
-            tree_action_sender,
+            deferred_commands: Default::default(),
         }
     }
 
@@ -177,79 +185,54 @@ impl ViewportBlueprint {
     /// take the conservative stance that if any view is still usable we will still
     /// treat the blueprint as valid and show it.
     pub fn is_invalid(&self) -> bool {
-        !self.space_views.is_empty()
+        !self.views.is_empty()
             && self
-                .space_views
+                .views
                 .values()
-                .all(|sv| sv.class_identifier() == SpaceViewClassIdentifier::invalid())
+                .all(|sv| sv.class_identifier() == ViewClassIdentifier::invalid())
     }
 
-    pub fn space_view_ids(&self) -> impl Iterator<Item = &SpaceViewId> + '_ {
-        self.space_views.keys()
+    pub fn view_ids(&self) -> impl Iterator<Item = &ViewId> + '_ {
+        self.views.keys()
     }
 
-    pub fn view(&self, space_view: &SpaceViewId) -> Option<&SpaceViewBlueprint> {
-        self.space_views.get(space_view)
+    /// Find the parent container of a given contents.
+    ///
+    /// Returns `None` if this is unknown contents, or if it is the root contaioner.
+    pub fn parent(&self, needle: &Contents) -> Option<ContainerId> {
+        self.containers
+            .iter()
+            .find_map(|(container_id, container)| {
+                container.contents.contains(needle).then_some(*container_id)
+            })
+    }
+
+    pub fn view(&self, view: &ViewId) -> Option<&ViewBlueprint> {
+        self.views.get(view)
     }
 
     pub fn container(&self, container_id: &ContainerId) -> Option<&ContainerBlueprint> {
         self.containers.get(container_id)
     }
 
-    pub fn space_view_mut(
-        &mut self,
-        space_view_id: &SpaceViewId,
-    ) -> Option<&mut SpaceViewBlueprint> {
-        self.space_views.get_mut(space_view_id)
-    }
+    /// Duplicates a view and its entity property overrides.
+    pub fn duplicate_view(&self, view_id: &ViewId, ctx: &ViewerContext<'_>) -> Option<ViewId> {
+        let view = self.view(view_id)?;
 
-    pub fn remove_space_view(&self, space_view_id: &SpaceViewId, ctx: &ViewerContext<'_>) {
-        self.mark_user_interaction(ctx);
+        let new_view = view.duplicate(ctx.store_context, ctx.blueprint_query);
+        let new_view_id = new_view.id;
 
-        // Remove the space view from the store
-        if let Some(space_view) = self.space_views.get(space_view_id) {
-            space_view.clear(ctx);
-        }
+        let parent_and_pos = self.find_parent_and_position_index(&Contents::View(*view_id));
 
-        // If the space-view was maximized, clean it up
-        if self.maximized == Some(*space_view_id) {
-            self.set_maximized(None, ctx);
-        }
-
-        // Filter the space-view from the included space-views
-        let components = self
-            .space_views
-            .keys()
-            .filter(|id| id != &space_view_id)
-            .map(|id| IncludedSpaceView((*id).into()))
-            .collect::<Vec<_>>();
-        ctx.save_blueprint_component(&VIEWPORT_PATH.into(), &components);
-    }
-
-    /// Duplicates a space view and its entity property overrides.
-    pub fn duplicate_space_view(
-        &self,
-        space_view_id: &SpaceViewId,
-        ctx: &ViewerContext<'_>,
-    ) -> Option<SpaceViewId> {
-        let space_view = self.view(space_view_id)?;
-
-        let new_space_view = space_view.duplicate(ctx.store_context, ctx.blueprint_query);
-        let new_space_view_id = new_space_view.id;
-
-        let parent_and_pos =
-            self.find_parent_and_position_index(&Contents::SpaceView(*space_view_id));
-
-        self.add_space_views(
-            std::iter::once(new_space_view),
-            ctx,
+        self.add_views(
+            std::iter::once(new_view),
             parent_and_pos.map(|(parent, _)| parent),
             parent_and_pos.map(|(_, pos)| pos),
         );
 
         self.mark_user_interaction(ctx);
 
-        Some(new_space_view_id)
+        Some(new_view_id)
     }
 
     /// If `false`, the item is referring to data that is not present in this blueprint.
@@ -273,20 +256,20 @@ impl ViewportBlueprint {
             | Item::ComponentPath(_)
             | Item::InstancePath(_) => true,
 
-            Item::SpaceView(space_view_id) => self.view(space_view_id).is_some(),
+            Item::View(view_id) => self.view(view_id).is_some(),
 
-            Item::DataResult(space_view_id, instance_path) => {
-                self.view(space_view_id).map_or(false, |space_view| {
+            Item::DataResult(view_id, instance_path) => {
+                self.view(view_id).is_some_and(|view| {
                     let entity_path = &instance_path.entity_path;
 
                     // TODO(#5742): including any path that is—or descend from—the space origin is
                     // necessary because such items may actually be displayed in the blueprint tree.
-                    entity_path == &space_view.space_origin
-                        || entity_path.is_descendant_of(&space_view.space_origin)
-                        || space_view
+                    entity_path == &view.space_origin
+                        || entity_path.is_descendant_of(&view.space_origin)
+                        || view
                             .contents
-                            .entity_path_filter
-                            .is_included(&instance_path.entity_path)
+                            .entity_path_filter()
+                            .matches(&instance_path.entity_path)
                 })
             }
 
@@ -294,10 +277,8 @@ impl ViewportBlueprint {
         }
     }
 
-    fn send_tree_action(&self, action: TreeAction) {
-        if self.tree_action_sender.send(action).is_err() {
-            re_log::warn_once!("Channel between ViewportBlueprint and Viewport is broken");
-        }
+    fn enqueue_command(&self, action: ViewportCommand) {
+        self.deferred_commands.lock().push(action);
     }
 
     pub fn mark_user_interaction(&self, ctx: &ViewerContext<'_>) {
@@ -306,33 +287,32 @@ impl ViewportBlueprint {
         }
 
         self.set_auto_layout(false, ctx);
-        self.set_auto_space_views(false, ctx);
+        self.set_auto_views(false, ctx);
     }
 
-    pub fn on_frame_start(&self, ctx: &ViewerContext<'_>) {
-        if self.auto_space_views() {
-            self.spawn_heuristic_space_views(ctx);
+    /// Spawns new views if enabled.
+    pub fn spawn_heuristic_views(&self, ctx: &ViewerContext<'_>) {
+        if !self.auto_views() {
+            return;
         }
-    }
 
-    fn spawn_heuristic_space_views(&self, ctx: &ViewerContext<'_>) {
         re_tracing::profile_function!();
 
-        for entry in ctx.space_view_class_registry.iter_registry() {
+        for entry in ctx.view_class_registry.iter_registry() {
             let class_id = entry.identifier;
-            let mut recommended_space_views = entry.class.spawn_heuristics(ctx).into_vec();
+            let mut recommended_views = entry.class.spawn_heuristics(ctx).into_vec();
 
             re_tracing::profile_scope!("filter_recommendations_for", class_id);
 
-            // Remove all space views that we already spawned via heuristic before.
-            recommended_space_views.retain(|recommended_view| {
+            // Remove all views that we already spawned via heuristic before.
+            recommended_views.retain(|recommended_view| {
                 !self
                     .past_viewer_recommendations
                     .contains(&recommended_view.recommendation_hash(class_id))
             });
 
             // Each of the remaining recommendations would individually be a candidate for spawning if there were
-            // no other space views in the viewport.
+            // no other views in the viewport.
             // In the following steps we further filter this list depending on what's on screen already,
             // as well as redundancy within the recommendation itself BUT this is an important checkpoint:
             // All the other views may change due to user interaction, but this does *not* mean
@@ -343,19 +323,19 @@ impl ViewportBlueprint {
             // Example:
             // Recommendation contains `/**` and `/camera/**`.
             // We filter out `/camera/**` because that would be redundant to `/**`.
-            // If now the user edits the space view at `/**` to be `/points/**`, that does *not*
+            // If now the user edits the view at `/**` to be `/points/**`, that does *not*
             // mean we should suddenly add `/camera/**` to the viewport.
-            if !recommended_space_views.is_empty() {
-                let new_viewer_recommendation_hashes = self
+            if !recommended_views.is_empty() {
+                let new_viewer_recommendation_hashes: Vec<ViewerRecommendationHash> = self
                     .past_viewer_recommendations
                     .iter()
                     .cloned()
                     .chain(
-                        recommended_space_views
+                        recommended_views
                             .iter()
                             .map(|recommendation| recommendation.recommendation_hash(class_id)),
                     )
-                    .collect::<Vec<_>>();
+                    .collect();
 
                 ctx.save_blueprint_component(
                     &VIEWPORT_PATH.into(),
@@ -363,89 +343,82 @@ impl ViewportBlueprint {
                 );
             }
 
-            // Remove all space views that have all the entities we already have on screen.
-            let existing_path_filters = self
-                .space_views
-                .values()
-                .filter(|space_view| space_view.class_identifier() == class_id)
-                .map(|space_view| &space_view.contents.entity_path_filter)
-                .collect::<Vec<_>>();
-            recommended_space_views.retain(|recommended_view| {
-                existing_path_filters.iter().all(|existing_filter| {
-                    !existing_filter.is_superset_of(&recommended_view.query_filter)
+            // Resolve query filters for the recommended views.
+            let mut recommended_views = recommended_views
+                .into_iter()
+                .map(|view| {
+                    // Today this looks trivial and something like we could do during recommendation-creation. But in the future variable substitutions might become more complex!
+                    let path_subs = EntityPathSubs::new_with_origin(&view.origin);
+                    let query_filter = view.query_filter.resolve_forgiving(&path_subs);
+                    (query_filter, view)
                 })
+                .collect::<Vec<_>>();
+
+            // Remove all views that have all the entities we already have on screen.
+            let existing_path_filters = self
+                .views
+                .values()
+                .filter(|view| view.class_identifier() == class_id)
+                .map(|view| view.contents.entity_path_filter())
+                .collect::<Vec<_>>();
+            recommended_views.retain(|(query_filter, _)| {
+                existing_path_filters
+                    .iter()
+                    .all(|existing_filter| !existing_filter.is_superset_of(query_filter))
             });
 
-            // Remove all space views that are redundant within the remaining recommendation.
-            // This n^2 loop should only run ever for frames that add new space views.
-            let final_recommendations = recommended_space_views
+            // Remove all views that are redundant within the remaining recommendation.
+            // This n^2 loop should only run ever for frames that add new views.
+            let final_recommendations = recommended_views
                 .iter()
                 .enumerate()
-                .filter(|(j, candidate)| {
-                    recommended_space_views
+                .filter(|(j, (candidate_query_filter, _))| {
+                    recommended_views
                         .iter()
                         .enumerate()
-                        .all(|(i, other)| {
-                            i == *j || !other.query_filter.is_superset_of(&candidate.query_filter)
+                        .all(|(i, (other_query_filter, _))| {
+                            i == *j || !other_query_filter.is_superset_of(candidate_query_filter)
                         })
                 })
                 .map(|(_, recommendation)| recommendation);
 
-            self.add_space_views(
-                final_recommendations.map(|recommendation| {
-                    SpaceViewBlueprint::new(class_id, recommendation.clone())
+            self.add_views(
+                final_recommendations.map(|(_, recommendation)| {
+                    ViewBlueprint::new(class_id, recommendation.clone())
                 }),
-                ctx,
                 None,
                 None,
             );
         }
     }
 
-    /// Add a set of space views to the viewport.
+    /// Add a set of views to the viewport.
     ///
-    /// The space view is added to the root container, or, if provided, to a given parent container.
-    /// The list of created space view IDs is returned.
+    /// The view is added to the root container, or, if provided, to a given parent container.
+    /// The list of created view IDs is returned.
     ///
     /// Note that this doesn't focus the corresponding tab. Use [`Self::focus_tab`] with the returned ID
     /// if needed.
-    pub fn add_space_views(
+    pub fn add_views(
         &self,
-        space_views: impl Iterator<Item = SpaceViewBlueprint>,
-        ctx: &ViewerContext<'_>,
+        views: impl Iterator<Item = ViewBlueprint>,
         parent_container: Option<ContainerId>,
         position_in_parent: Option<usize>,
-    ) -> Vec<SpaceViewId> {
-        let mut new_ids: Vec<_> = vec![];
-
-        for space_view in space_views {
-            let space_view_id = space_view.id;
-
-            // Save the space view to the store
-            space_view.save_to_blueprint_store(ctx);
-
-            // Update the space-view ids:
-            new_ids.push(space_view_id);
+    ) {
+        for view in views {
+            self.enqueue_command(ViewportCommand::AddView {
+                view,
+                parent_container,
+                position_in_parent,
+            });
         }
-
-        if !new_ids.is_empty() {
-            for id in &new_ids {
-                self.send_tree_action(TreeAction::AddSpaceView(
-                    *id,
-                    parent_container,
-                    position_in_parent,
-                ));
-            }
-        }
-
-        new_ids
     }
 
-    /// Returns an iterator over all the contents (space views and containers) in the viewport.
+    /// Returns an iterator over all the contents (views and containers) in the viewport.
     pub fn contents_iter(&self) -> impl Iterator<Item = Contents> + '_ {
-        self.space_views
+        self.views
             .keys()
-            .map(|space_view_id| Contents::SpaceView(*space_view_id))
+            .map(|view_id| Contents::View(*view_id))
             .chain(
                 self.containers
                     .keys()
@@ -455,59 +428,61 @@ impl ViewportBlueprint {
 
     /// Walk the entire [`Contents`] tree, starting from the root container.
     ///
-    /// See [`Self::visit_contents_in_container`] for details.
-    pub fn visit_contents(&self, visitor: &mut impl FnMut(&Contents, &SmallVec<[ContainerId; 4]>)) {
-        if let Some(root_container) = self.root_container {
-            self.visit_contents_in_container(&root_container, visitor);
-        }
+    /// See [`VisitorControlFlow`] for details on traversal behavior.
+    pub fn visit_contents<B>(
+        &self,
+        visitor: &mut impl FnMut(&Contents, &SmallVec<[ContainerId; 4]>) -> VisitorControlFlow<B>,
+    ) -> ControlFlow<B> {
+        self.visit_contents_in_container(&self.root_container, visitor)
     }
 
     /// Walk the subtree defined by the provided container id and call `visitor` for each
     /// [`Contents`].
     ///
     /// Note:
+    /// - Returns as soon as `visitor` returns `false`.
     /// - `visitor` is first called for the container passed in argument
     /// - `visitor`'s second argument contains the hierarchy leading to the visited contents, from
     ///   (and including) the container passed in argument
-    pub fn visit_contents_in_container(
+    pub fn visit_contents_in_container<B>(
         &self,
         container_id: &ContainerId,
-        visitor: &mut impl FnMut(&Contents, &SmallVec<[ContainerId; 4]>),
-    ) {
+        visitor: &mut impl FnMut(&Contents, &SmallVec<[ContainerId; 4]>) -> VisitorControlFlow<B>,
+    ) -> ControlFlow<B> {
         let mut hierarchy = SmallVec::new();
-        self.visit_contents_in_container_impl(container_id, &mut hierarchy, visitor);
+        self.visit_contents_impl(&Contents::Container(*container_id), &mut hierarchy, visitor)
     }
 
-    fn visit_contents_in_container_impl(
+    fn visit_contents_impl<B>(
         &self,
-        container_id: &ContainerId,
+        contents: &Contents,
         hierarchy: &mut SmallVec<[ContainerId; 4]>,
-        visitor: &mut impl FnMut(&Contents, &SmallVec<[ContainerId; 4]>),
-    ) {
-        visitor(&Contents::Container(*container_id), hierarchy);
-        if let Some(container) = self.container(container_id) {
-            hierarchy.push(*container_id);
-            for contents in &container.contents {
-                visitor(contents, hierarchy);
-                match contents {
-                    Contents::Container(container_id) => {
-                        self.visit_contents_in_container_impl(container_id, hierarchy, visitor);
+        visitor: &mut impl FnMut(&Contents, &SmallVec<[ContainerId; 4]>) -> VisitorControlFlow<B>,
+    ) -> ControlFlow<B> {
+        let visit_children = visitor(contents, hierarchy).visit_children()?;
+
+        if visit_children {
+            match contents {
+                Contents::Container(container_id) => {
+                    if let Some(container) = self.container(container_id) {
+                        hierarchy.push(*container_id);
+                        for contents in &container.contents {
+                            self.visit_contents_impl(contents, hierarchy, visitor)?;
+                        }
+                        hierarchy.pop();
                     }
-                    Contents::SpaceView(_) => {}
                 }
+                Contents::View(_) => {} // no children
             }
-            hierarchy.pop();
         }
+
+        ControlFlow::Continue(())
     }
 
     /// Given a predicate, finds the (first) matching contents by recursively walking from the root
     /// container.
     pub fn find_contents_by(&self, predicate: &impl Fn(&Contents) -> bool) -> Option<Contents> {
-        if let Some(root_container) = self.root_container {
-            self.find_contents_in_container_by(predicate, &root_container)
-        } else {
-            None
-        }
+        self.find_contents_in_container_by(predicate, &self.root_container)
     }
 
     /// Given a predicate, finds the (first) matching contents by recursively walking from the given
@@ -517,29 +492,19 @@ impl ViewportBlueprint {
         predicate: &impl Fn(&Contents) -> bool,
         container_id: &ContainerId,
     ) -> Option<Contents> {
-        if predicate(&Contents::Container(*container_id)) {
-            return Some(Contents::Container(*container_id));
-        }
-
-        let container = self.container(container_id)?;
-
-        for contents in &container.contents {
+        let result = self.visit_contents_in_container(container_id, &mut |contents, _| {
             if predicate(contents) {
-                return Some(*contents);
+                VisitorControlFlow::Break(*contents)
+            } else {
+                VisitorControlFlow::Continue
             }
+        });
 
-            match contents {
-                Contents::Container(container_id) => {
-                    let res = self.find_contents_in_container_by(predicate, container_id);
-                    if res.is_some() {
-                        return res;
-                    }
-                }
-                Contents::SpaceView(_) => {}
-            }
+        //TODO(ab): starting with rust 1.83, we can use `break_value()` instead of this match statement
+        match result {
+            ControlFlow::Break(contents) => Some(contents),
+            ControlFlow::Continue(_) => None,
         }
-
-        None
     }
 
     /// Checks if some content is (directly or indirectly) contained in the given container.
@@ -552,20 +517,16 @@ impl ViewportBlueprint {
             .is_some()
     }
 
-    /// Given a container or a space view, find its enclosing container and its position within it.
+    /// Given a container or a view, find its enclosing container and its position within it.
     pub fn find_parent_and_position_index(
         &self,
         contents: &Contents,
     ) -> Option<(ContainerId, usize)> {
-        if let Some(container_id) = self.root_container {
-            if *contents == Contents::Container(container_id) {
-                // root doesn't have a parent
-                return None;
-            }
-            self.find_parent_and_position_index_impl(contents, &container_id)
-        } else {
-            None
+        if *contents == Contents::Container(self.root_container) {
+            // root doesn't have a parent
+            return None;
         }
+        self.find_parent_and_position_index_impl(contents, &self.root_container)
     }
 
     fn find_parent_and_position_index_impl(
@@ -588,7 +549,7 @@ impl ViewportBlueprint {
                         return res;
                     }
                 }
-                Contents::SpaceView(_) => {}
+                Contents::View(_) => {}
             }
         }
 
@@ -603,23 +564,26 @@ impl ViewportBlueprint {
         kind: egui_tiles::ContainerKind,
         parent_container: Option<ContainerId>,
     ) {
-        self.send_tree_action(TreeAction::AddContainer(kind, parent_container));
+        self.enqueue_command(ViewportCommand::AddContainer {
+            container_kind: kind,
+            parent_container,
+        });
     }
 
-    /// Recursively remove a container or a space view.
+    /// Recursively remove a container or a view.
     pub fn remove_contents(&self, contents: Contents) {
-        self.send_tree_action(TreeAction::RemoveContents(contents));
+        self.enqueue_command(ViewportCommand::RemoveContents(contents));
     }
 
-    /// Move the `contents` container or space view to the specified target container and position.
+    /// Move the `contents` container or view to the specified target container and position.
     pub fn move_contents(
         &self,
-        contents: Contents,
+        contents_to_move: Vec<Contents>,
         target_container: ContainerId,
         target_position_in_container: usize,
     ) {
-        self.send_tree_action(TreeAction::MoveContents {
-            contents_to_move: contents,
+        self.enqueue_command(ViewportCommand::MoveContents {
+            contents_to_move,
             target_container,
             target_position_in_container,
         });
@@ -633,7 +597,7 @@ impl ViewportBlueprint {
         target_container: ContainerId,
         target_position_in_container: usize,
     ) {
-        self.send_tree_action(TreeAction::MoveContentsToNewContainer {
+        self.enqueue_command(ViewportCommand::MoveContentsToNewContainer {
             contents_to_move: contents,
             new_container_kind,
             target_container,
@@ -641,9 +605,9 @@ impl ViewportBlueprint {
         });
     }
 
-    /// Make sure the tab corresponding to this space view is focused.
-    pub fn focus_tab(&self, space_view_id: SpaceViewId) {
-        self.send_tree_action(TreeAction::FocusTab(space_view_id));
+    /// Make sure the tab corresponding to this view is focused.
+    pub fn focus_tab(&self, view_id: ViewId) {
+        self.enqueue_command(ViewportCommand::FocusTab(view_id));
     }
 
     /// Set the kind of the provided container.
@@ -655,7 +619,7 @@ impl ViewportBlueprint {
             }
         }
 
-        self.send_tree_action(TreeAction::SetContainerKind(container_id, kind));
+        self.enqueue_command(ViewportCommand::SetContainerKind(container_id, kind));
     }
 
     /// Simplify the container tree with the provided options.
@@ -664,7 +628,7 @@ impl ViewportBlueprint {
         container_id: &ContainerId,
         simplification_options: SimplificationOptions,
     ) {
-        self.send_tree_action(TreeAction::SimplifyContainer(
+        self.enqueue_command(ViewportCommand::SimplifyContainer(
             *container_id,
             simplification_options,
         ));
@@ -672,7 +636,7 @@ impl ViewportBlueprint {
 
     /// Make all children of the given container the same size.
     pub fn make_all_children_same_size(&self, container_id: &ContainerId) {
-        self.send_tree_action(TreeAction::MakeAllChildrenSameSize(*container_id));
+        self.enqueue_command(ViewportCommand::MakeAllChildrenSameSize(*container_id));
     }
 
     /// Check the visibility of the provided content.
@@ -691,12 +655,12 @@ impl ViewportBlueprint {
                     false
                 }
             }
-            Contents::SpaceView(space_view_id) => {
-                if let Some(space_view) = self.view(space_view_id) {
-                    space_view.visible
+            Contents::View(view_id) => {
+                if let Some(view) = self.view(view_id) {
+                    view.visible
                 } else {
                     re_log::warn_once!(
-                        "Visibility check failed due to unknown space view id {space_view_id:?}"
+                        "Visibility check failed due to unknown view id {view_id:?}"
                     );
 
                     false
@@ -733,21 +697,19 @@ impl ViewportBlueprint {
                     );
                 }
             }
-            Contents::SpaceView(space_view_id) => {
-                if let Some(space_view) = self.view(space_view_id) {
-                    if visible != space_view.visible {
+            Contents::View(view_id) => {
+                if let Some(view) = self.view(view_id) {
+                    if visible != view.visible {
                         if self.auto_layout() {
-                            re_log::trace!(
-                                "Space-view visibility changed - will no longer auto-layout"
-                            );
+                            re_log::trace!("view visibility changed - will no longer auto-layout");
                         }
 
                         self.set_auto_layout(false, ctx);
-                        space_view.set_visible(ctx, visible);
+                        view.set_visible(ctx, visible);
                     }
                 } else {
                     re_log::warn_once!(
-                        "Visibility change failed due to unknown space view id {space_view_id:?}"
+                        "Visibility change failed due to unknown view id {view_id:?}"
                     );
                 }
             }
@@ -755,17 +717,17 @@ impl ViewportBlueprint {
     }
 
     #[allow(clippy::unused_self)]
-    pub fn space_views_containing_entity_path(
+    pub fn views_containing_entity_path(
         &self,
         ctx: &ViewerContext<'_>,
         path: &EntityPath,
-    ) -> Vec<SpaceViewId> {
-        self.space_views
+    ) -> Vec<ViewId> {
+        self.views
             .iter()
-            .filter_map(|(space_view_id, space_view)| {
-                let query_result = ctx.lookup_query_result(space_view.id);
+            .filter_map(|(view_id, view)| {
+                let query_result = ctx.lookup_query_result(view.id);
                 if query_result.tree.lookup_result_by_path(path).is_some() {
-                    Some(*space_view_id)
+                    Some(*view_id)
                 } else {
                     None
                 }
@@ -773,53 +735,62 @@ impl ViewportBlueprint {
             .collect()
     }
 
-    #[inline]
-    pub fn set_auto_layout(&self, value: bool, ctx: &ViewerContext<'_>) {
-        let old_value = self.auto_layout.swap(value, Ordering::SeqCst);
-
-        if old_value != value {
-            let component = AutoLayout::from(value);
-            ctx.save_blueprint_component(&VIEWPORT_PATH.into(), &component);
-        }
-    }
-
+    /// Whether the viewport layout is determined automatically.
+    ///
+    /// If `true`, we auto-layout all views whenever a new view is added.
+    ///
+    /// Set to `false` the first time the user messes around with the viewport blueprint.
     #[inline]
     pub fn auto_layout(&self) -> bool {
         self.auto_layout.load(Ordering::SeqCst)
     }
 
+    /// Whether the viewport layout is determined automatically.
+    ///
+    /// If `true`, we auto-layout all views whenever a new view is added.
+    ///
+    /// Set to `false` the first time the user messes around with the viewport blueprint.
     #[inline]
-    pub fn set_auto_space_views(&self, value: bool, ctx: &ViewerContext<'_>) {
-        let old_value = self.auto_space_views.swap(value, Ordering::SeqCst);
+    pub fn set_auto_layout(&self, value: bool, ctx: &ViewerContext<'_>) {
+        let old_value = self.auto_layout.swap(value, Ordering::SeqCst);
 
         if old_value != value {
-            let component = AutoSpaceViews::from(value);
-            ctx.save_blueprint_component(&VIEWPORT_PATH.into(), &component);
+            let auto_layout = AutoLayout::from(value);
+            ctx.save_blueprint_component(&VIEWPORT_PATH.into(), &auto_layout);
+        }
+    }
+
+    /// Whether views should be created automatically for entities that are not already in a space.
+    #[inline]
+    pub fn auto_views(&self) -> bool {
+        self.auto_views.load(Ordering::SeqCst)
+    }
+
+    /// Whether views should be created automatically for entities that are not already in a space.
+    #[inline]
+    pub fn set_auto_views(&self, value: bool, ctx: &ViewerContext<'_>) {
+        let old_value = self.auto_views.swap(value, Ordering::SeqCst);
+
+        if old_value != value {
+            let auto_views = AutoViews::from(value);
+            ctx.save_blueprint_component(&VIEWPORT_PATH.into(), &auto_views);
         }
     }
 
     #[inline]
-    pub fn auto_space_views(&self) -> bool {
-        self.auto_space_views.load(Ordering::SeqCst)
-    }
-
-    #[inline]
-    pub fn set_maximized(&self, space_view_id: Option<SpaceViewId>, ctx: &ViewerContext<'_>) {
-        if self.maximized != space_view_id {
-            let component_batch = space_view_id.map(|id| SpaceViewMaximized(id.into()));
-            ctx.save_blueprint_component(&VIEWPORT_PATH.into(), &component_batch);
+    pub fn set_maximized(&self, view_id: Option<ViewId>, ctx: &ViewerContext<'_>) {
+        if self.maximized != view_id {
+            let view_maximized = view_id.map(|id| ViewMaximized(id.into()));
+            ctx.save_blueprint_component(&VIEWPORT_PATH.into(), &view_maximized);
         }
     }
 
     /// Save the current state of the viewport to the blueprint store.
     /// This should only be called if the tree was edited.
-    pub fn save_tree_as_containers(
-        &self,
-        tree: &egui_tiles::Tree<SpaceViewId>,
-        ctx: &ViewerContext<'_>,
-    ) {
+    pub fn save_tree_as_containers(&self, ctx: &ViewerContext<'_>) {
         re_tracing::profile_function!();
-        re_log::trace!("Saving tree: {tree:#?}");
+
+        re_log::trace!("Saving tree: {:#?}", self.tree);
 
         // First, update the mapping for all the previously known containers.
         // These were inserted with their ids, so we want to keep these
@@ -831,35 +802,34 @@ impl ViewportBlueprint {
             .collect();
 
         // Now, update the content mapping for all the new tiles in the tree.
-        for (tile_id, tile) in tree.tiles.iter() {
+        for (tile_id, tile) in self.tree.tiles.iter() {
             // If we already know about this tile, then we don't need
             // to do anything.
             if contents_from_tile_id.contains_key(tile_id) {
                 continue;
             }
             match tile {
-                egui_tiles::Tile::Pane(space_view_id) => {
-                    // If a container has a pointer to a space-view
-                    // we want it to point at the space-view in the blueprint.
-                    contents_from_tile_id.insert(*tile_id, Contents::SpaceView(*space_view_id));
+                egui_tiles::Tile::Pane(view_id) => {
+                    // If a container has a pointer to a view
+                    // we want it to point at the view in the blueprint.
+                    contents_from_tile_id.insert(*tile_id, Contents::View(*view_id));
                 }
                 egui_tiles::Tile::Container(container) => {
-                    if tree.root != Some(*tile_id)
+                    if self.tree.root != Some(*tile_id)
                         && container.kind() == egui_tiles::ContainerKind::Tabs
                         && container.num_children() == 1
                     {
                         // If this is a tab-container with a single child, then it might be a
-                        // "Trivial Tab", which egui_tiles adds to all space-views during simplification
+                        // "Trivial Tab", which egui_tiles adds to all views during simplification
                         // but doesn't need to be persisted back to the store.
-                        if let Some(egui_tiles::Tile::Pane(space_view_id)) = container
+                        if let Some(egui_tiles::Tile::Pane(view_id)) = container
                             .children()
                             .next()
-                            .and_then(|child| tree.tiles.get(*child))
+                            .and_then(|child| self.tree.tiles.get(*child))
                         {
                             // This is a trivial tab -- this tile can point directly to
-                            // the SpaceView and not to a Container.
-                            contents_from_tile_id
-                                .insert(*tile_id, Contents::SpaceView(*space_view_id));
+                            // the View and not to a Container.
+                            contents_from_tile_id.insert(*tile_id, Contents::View(*view_id));
                             continue;
                         }
                     }
@@ -872,11 +842,11 @@ impl ViewportBlueprint {
             }
         }
 
-        // Clear any existing container blueprints that aren't referenced
-        // by any tiles.
+        // Clear any existing container blueprints that aren't referenced by any tiles,
+        // allowing the GC to remove the previous (non-clear) data from the store (saving RAM).
         for (container_id, container) in &self.containers {
             let tile_id = blueprint_id_to_tile_id(container_id);
-            if tree.tiles.get(tile_id).is_none() {
+            if self.tree.tiles.get(tile_id).is_none() {
                 container.clear(ctx);
             }
         }
@@ -884,8 +854,9 @@ impl ViewportBlueprint {
         // Now save any contents that are a container back to the blueprint
         for (tile_id, contents) in &contents_from_tile_id {
             if let Contents::Container(container_id) = contents {
-                if let Some(egui_tiles::Tile::Container(container)) = tree.tiles.get(*tile_id) {
-                    let visible = tree.is_visible(*tile_id);
+                if let Some(egui_tiles::Tile::Container(container)) = self.tree.tiles.get(*tile_id)
+                {
+                    let visible = self.tree.is_visible(*tile_id);
 
                     // TODO(jleibs): Make this only update the changed fields.
                     let blueprint = ContainerBlueprint::from_egui_tiles_container(
@@ -901,33 +872,294 @@ impl ViewportBlueprint {
         }
 
         // Finally update the root
-        if let Some(root_container) = tree
+        if let Some(root_container) = self
+            .tree
             .root()
             .and_then(|root| contents_from_tile_id.get(&root))
             .and_then(|contents| contents.as_container_id())
             .map(|container_id| RootContainer((container_id).into()))
         {
+            re_log::trace!("Saving with a root container");
             ctx.save_blueprint_component(&VIEWPORT_PATH.into(), &root_container);
         } else {
+            re_log::trace!("Saving empty viewport");
             ctx.save_empty_blueprint_component::<RootContainer>(&VIEWPORT_PATH.into());
+        }
+    }
+
+    /// Process any deferred [`ViewportCommand`] and then save to blueprint store (if needed).
+    pub fn save_to_blueprint_store(mut self, ctx: &ViewerContext<'_>) {
+        re_tracing::profile_function!();
+
+        let commands: Vec<ViewportCommand> = self.deferred_commands.lock().drain(..).collect();
+
+        if commands.is_empty() {
+            return; // No changes this frame - no need to save to blueprint store.
+        }
+
+        let mut run_auto_layout = false;
+
+        for command in commands {
+            apply_viewport_command(ctx, &mut self, command, &mut run_auto_layout);
+        }
+
+        if run_auto_layout {
+            self.tree = super::auto_layout::tree_from_views(ctx.view_class_registry, &self.views);
+        }
+
+        // Simplify before we save the tree.
+        // `egui_tiles` also runs a simplifying pass when calling `tree.ui`, but that is too late.
+        // We want the simplified changes saved to the store:
+        self.tree.simplify(&tree_simplification_options());
+
+        // TODO(emilk): consider diffing the tree against the state it was in at the start of the frame,
+        // so that we only save it if it actually changed.
+
+        self.save_tree_as_containers(ctx);
+    }
+}
+
+pub fn tree_simplification_options() -> egui_tiles::SimplificationOptions {
+    egui_tiles::SimplificationOptions {
+        prune_empty_tabs: false,
+        all_panes_must_have_tabs: true,
+        prune_empty_containers: false,
+        prune_single_child_tabs: false,
+        prune_single_child_containers: false,
+        join_nested_linear_containers: true,
+    }
+}
+
+fn apply_viewport_command(
+    ctx: &ViewerContext<'_>,
+    bp: &mut ViewportBlueprint,
+    command: ViewportCommand,
+    run_auto_layout: &mut bool,
+) {
+    re_log::trace!("Processing viewport command: {command:?}");
+    match command {
+        ViewportCommand::SetTree(new_tree) => {
+            bp.tree = new_tree;
+        }
+
+        ViewportCommand::AddView {
+            view,
+            parent_container,
+            position_in_parent,
+        } => {
+            let view_id = view.id;
+
+            view.save_to_blueprint_store(ctx);
+            bp.views.insert(view_id, view);
+
+            if bp.auto_layout() {
+                // No need to add to the tree - we'll create a new tree from scratch instead.
+                re_log::trace!(
+                    "Running auto-layout after adding a view because auto_layout is turned on"
+                );
+                *run_auto_layout = true;
+            } else {
+                // Add the view to the tree:
+                let parent_id = parent_container.unwrap_or(bp.root_container);
+                re_log::trace!("Adding view {view_id} to parent {parent_id}");
+                let tile_id = bp.tree.tiles.insert_pane(view_id);
+                let container_tile_id = blueprint_id_to_tile_id(&parent_id);
+                if let Some(egui_tiles::Tile::Container(container)) =
+                    bp.tree.tiles.get_mut(container_tile_id)
+                {
+                    re_log::trace!("Inserting new view into root container");
+                    container.add_child(tile_id);
+                    if let Some(position_in_parent) = position_in_parent {
+                        bp.tree.move_tile_to_container(
+                            tile_id,
+                            container_tile_id,
+                            position_in_parent,
+                            true,
+                        );
+                    }
+                } else {
+                    re_log::trace!(
+                        "Parent was not a container (or not found) - will re-run auto-layout"
+                    );
+                    *run_auto_layout = true;
+                }
+            }
+        }
+
+        ViewportCommand::AddContainer {
+            container_kind,
+            parent_container,
+        } => {
+            let parent_id = parent_container.unwrap_or(bp.root_container);
+
+            let tile_id = bp
+                .tree
+                .tiles
+                .insert_container(egui_tiles::Container::new(container_kind, vec![]));
+
+            re_log::trace!("Adding container {container_kind:?} to parent {parent_id}");
+
+            if let Some(egui_tiles::Tile::Container(parent_container)) =
+                bp.tree.tiles.get_mut(blueprint_id_to_tile_id(&parent_id))
+            {
+                re_log::trace!("Inserting new view into container {parent_id:?}");
+                parent_container.add_child(tile_id);
+            } else {
+                re_log::trace!("Parent or root was not a container - will re-run auto-layout");
+                *run_auto_layout = true;
+            }
+        }
+
+        ViewportCommand::SetContainerKind(container_id, container_kind) => {
+            if let Some(egui_tiles::Tile::Container(container)) = bp
+                .tree
+                .tiles
+                .get_mut(blueprint_id_to_tile_id(&container_id))
+            {
+                re_log::trace!("Mutating container {container_id:?} to {container_kind:?}");
+                container.set_kind(container_kind);
+            } else {
+                re_log::trace!("No root found - will re-run auto-layout");
+            }
+        }
+
+        ViewportCommand::FocusTab(view_id) => {
+            let found = bp.tree.make_active(|_, tile| match tile {
+                egui_tiles::Tile::Pane(this_view_id) => *this_view_id == view_id,
+                egui_tiles::Tile::Container(_) => false,
+            });
+            re_log::trace!("Found tab to focus on for view ID {view_id}: {found}");
+        }
+
+        ViewportCommand::RemoveContents(contents) => {
+            let tile_id = contents.as_tile_id();
+
+            for tile in bp.tree.remove_recursively(tile_id) {
+                re_log::trace!("Removing tile {tile_id:?}");
+                match tile {
+                    egui_tiles::Tile::Pane(view_id) => {
+                        re_log::trace!("Removing view {view_id}");
+
+                        // Remove the view from the store
+                        if let Some(view) = bp.views.get(&view_id) {
+                            view.clear(ctx);
+                        }
+
+                        // If the view was maximized, clean it up
+                        if bp.maximized == Some(view_id) {
+                            bp.set_maximized(None, ctx);
+                        }
+
+                        bp.views.remove(&view_id);
+                    }
+                    egui_tiles::Tile::Container(_) => {
+                        // Empty containers (like this one) will be auto-removed by the tree simplification algorithm,
+                        // that will run later because of this tree edit.
+                    }
+                }
+            }
+
+            bp.mark_user_interaction(ctx);
+
+            if Some(tile_id) == bp.tree.root {
+                bp.tree.root = None;
+            }
+        }
+
+        ViewportCommand::SimplifyContainer(container_id, options) => {
+            re_log::trace!("Simplifying tree with options: {options:?}");
+            let tile_id = blueprint_id_to_tile_id(&container_id);
+            bp.tree.simplify_children_of_tile(tile_id, &options);
+        }
+
+        ViewportCommand::MakeAllChildrenSameSize(container_id) => {
+            let tile_id = blueprint_id_to_tile_id(&container_id);
+            if let Some(egui_tiles::Tile::Container(container)) = bp.tree.tiles.get_mut(tile_id) {
+                match container {
+                    egui_tiles::Container::Tabs(_) => {}
+                    egui_tiles::Container::Linear(linear) => {
+                        linear.shares = Default::default();
+                    }
+                    egui_tiles::Container::Grid(grid) => {
+                        grid.col_shares = Default::default();
+                        grid.row_shares = Default::default();
+                    }
+                }
+            }
+        }
+
+        ViewportCommand::MoveContents {
+            contents_to_move,
+            target_container,
+            target_position_in_container,
+        } => {
+            re_log::trace!(
+                "Moving {contents_to_move:?} to container {target_container:?} at pos \
+                        {target_position_in_container}"
+            );
+
+            // TODO(ab): the `rev()` is better preserve ordering when moving a group of items. There
+            // remains some ordering (and possibly insertion point error) edge cases when dragging
+            // multiple item within the same container. This should be addressed by egui_tiles:
+            // https://github.com/rerun-io/egui_tiles/issues/90
+            for contents in contents_to_move.iter().rev() {
+                let contents_tile_id = contents.as_tile_id();
+                let target_container_tile_id = blueprint_id_to_tile_id(&target_container);
+
+                bp.tree.move_tile_to_container(
+                    contents_tile_id,
+                    target_container_tile_id,
+                    target_position_in_container,
+                    true,
+                );
+            }
+        }
+
+        ViewportCommand::MoveContentsToNewContainer {
+            contents_to_move,
+            new_container_kind,
+            target_container,
+            target_position_in_container,
+        } => {
+            let new_container_tile_id = bp
+                .tree
+                .tiles
+                .insert_container(egui_tiles::Container::new(new_container_kind, vec![]));
+
+            let target_container_tile_id = blueprint_id_to_tile_id(&target_container);
+            bp.tree.move_tile_to_container(
+                new_container_tile_id,
+                target_container_tile_id,
+                target_position_in_container,
+                true, // reflow grid if needed
+            );
+
+            for (pos, content) in contents_to_move.into_iter().enumerate() {
+                bp.tree.move_tile_to_container(
+                    content.as_tile_id(),
+                    new_container_tile_id,
+                    pos,
+                    true, // reflow grid if needed
+                );
+            }
         }
     }
 }
 
-fn build_tree_from_space_views_and_containers<'a>(
-    space_views: impl Iterator<Item = &'a SpaceViewBlueprint>,
+fn build_tree_from_views_and_containers<'a>(
+    views: impl Iterator<Item = &'a ViewBlueprint>,
     containers: impl Iterator<Item = &'a ContainerBlueprint>,
-    root_container: Option<ContainerId>,
-) -> egui_tiles::Tree<SpaceViewId> {
+    root_container: ContainerId,
+) -> egui_tiles::Tree<ViewId> {
     re_tracing::profile_function!();
     let mut tree = egui_tiles::Tree::empty("viewport_tree");
 
-    // First add all the space_views
-    for space_view in space_views {
-        let tile_id = blueprint_id_to_tile_id(&space_view.id);
-        let pane = egui_tiles::Tile::Pane(space_view.id);
+    // First add all the views
+    for view in views {
+        let tile_id = blueprint_id_to_tile_id(&view.id);
+        let pane = egui_tiles::Tile::Pane(view.id);
         tree.tiles.insert(tile_id, pane);
-        tree.set_visible(tile_id, space_view.visible);
+        tree.set_visible(tile_id, view.visible);
     }
 
     // Now add all the containers
@@ -939,9 +1171,8 @@ fn build_tree_from_space_views_and_containers<'a>(
     }
 
     // And finally, set the root
-    if let Some(root_container) = root_container.map(|id| blueprint_id_to_tile_id(&id)) {
-        tree.root = Some(root_container);
-    }
+
+    tree.root = Some(blueprint_id_to_tile_id(&root_container));
 
     tree
 }

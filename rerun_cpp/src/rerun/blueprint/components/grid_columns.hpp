@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../../component_descriptor.hpp"
 #include "../../datatypes/uint32.hpp"
 #include "../../result.hpp"
 
@@ -45,7 +46,7 @@ namespace rerun {
     /// \private
     template <>
     struct Loggable<blueprint::components::GridColumns> {
-        static constexpr const char Name[] = "rerun.blueprint.components.GridColumns";
+        static constexpr ComponentDescriptor Descriptor = "rerun.blueprint.components.GridColumns";
 
         /// Returns the arrow data type this type corresponds to.
         static const std::shared_ptr<arrow::DataType>& arrow_datatype() {
@@ -56,7 +57,19 @@ namespace rerun {
         static Result<std::shared_ptr<arrow::Array>> to_arrow(
             const blueprint::components::GridColumns* instances, size_t num_instances
         ) {
-            return Loggable<rerun::datatypes::UInt32>::to_arrow(&instances->columns, num_instances);
+            if (num_instances == 0) {
+                return Loggable<rerun::datatypes::UInt32>::to_arrow(nullptr, 0);
+            } else if (instances == nullptr) {
+                return rerun::Error(
+                    ErrorCode::UnexpectedNullArgument,
+                    "Passed array instances is null when num_elements> 0."
+                );
+            } else {
+                return Loggable<rerun::datatypes::UInt32>::to_arrow(
+                    &instances->columns,
+                    num_instances
+                );
+            }
         }
     };
 } // namespace rerun

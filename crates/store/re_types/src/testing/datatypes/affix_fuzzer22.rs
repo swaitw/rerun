@@ -12,10 +12,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::too_many_lines)]
 
-use ::re_types_core::external::arrow2;
-use ::re_types_core::ComponentName;
+use ::re_types_core::try_serialize_field;
 use ::re_types_core::SerializationResult;
-use ::re_types_core::{ComponentBatch, MaybeOwnedComponentBatch};
+use ::re_types_core::{ComponentBatch, SerializedComponentBatch};
+use ::re_types_core::{ComponentDescriptor, ComponentName};
 use ::re_types_core::{DeserializationError, DeserializationResult};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -23,51 +23,18 @@ pub struct AffixFuzzer22 {
     pub fixed_sized_native: [u8; 4usize],
 }
 
-impl ::re_types_core::SizeBytes for AffixFuzzer22 {
-    #[inline]
-    fn heap_size_bytes(&self) -> u64 {
-        self.fixed_sized_native.heap_size_bytes()
-    }
-
-    #[inline]
-    fn is_pod() -> bool {
-        <[u8; 4usize]>::is_pod()
-    }
-}
-
-impl From<[u8; 4usize]> for AffixFuzzer22 {
-    #[inline]
-    fn from(fixed_sized_native: [u8; 4usize]) -> Self {
-        Self { fixed_sized_native }
-    }
-}
-
-impl From<AffixFuzzer22> for [u8; 4usize] {
-    #[inline]
-    fn from(value: AffixFuzzer22) -> Self {
-        value.fixed_sized_native
-    }
-}
-
 ::re_types_core::macros::impl_into_cow!(AffixFuzzer22);
 
 impl ::re_types_core::Loggable for AffixFuzzer22 {
-    type Name = ::re_types_core::DatatypeName;
-
     #[inline]
-    fn name() -> Self::Name {
-        "rerun.testing.datatypes.AffixFuzzer22".into()
-    }
-
-    #[inline]
-    fn arrow_datatype() -> arrow2::datatypes::DataType {
+    fn arrow_datatype() -> arrow::datatypes::DataType {
         #![allow(clippy::wildcard_imports)]
-        use arrow2::datatypes::*;
-        DataType::Struct(std::sync::Arc::new(vec![Field::new(
+        use arrow::datatypes::*;
+        DataType::Struct(Fields::from(vec![Field::new(
             "fixed_sized_native",
             DataType::FixedSizeList(
                 std::sync::Arc::new(Field::new("item", DataType::UInt8, false)),
-                4usize,
+                4,
             ),
             false,
         )]))
@@ -75,14 +42,23 @@ impl ::re_types_core::Loggable for AffixFuzzer22 {
 
     fn to_arrow_opt<'a>(
         data: impl IntoIterator<Item = Option<impl Into<::std::borrow::Cow<'a, Self>>>>,
-    ) -> SerializationResult<Box<dyn arrow2::array::Array>>
+    ) -> SerializationResult<arrow::array::ArrayRef>
     where
         Self: Clone + 'a,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, datatypes::*};
+        #![allow(clippy::manual_is_variant_and)]
+        use ::re_types_core::{arrow_helpers::as_array_ref, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
+            let fields = Fields::from(vec![Field::new(
+                "fixed_sized_native",
+                DataType::FixedSizeList(
+                    std::sync::Arc::new(Field::new("item", DataType::UInt8, false)),
+                    4,
+                ),
+                false,
+            )]);
             let (somes, data): (Vec<_>, Vec<_>) = data
                 .into_iter()
                 .map(|datum| {
@@ -90,12 +66,12 @@ impl ::re_types_core::Loggable for AffixFuzzer22 {
                     (datum.is_some(), datum)
                 })
                 .unzip();
-            let bitmap: Option<arrow2::bitmap::Bitmap> = {
+            let validity: Option<arrow::buffer::NullBuffer> = {
                 let any_nones = somes.iter().any(|some| !*some);
                 any_nones.then(|| somes.into())
             };
-            StructArray::new(
-                Self::arrow_datatype(),
+            as_array_ref(StructArray::new(
+                fields,
                 vec![{
                     let (somes, fixed_sized_native): (Vec<_>, Vec<_>) = data
                         .iter()
@@ -105,12 +81,11 @@ impl ::re_types_core::Loggable for AffixFuzzer22 {
                             (datum.is_some(), datum)
                         })
                         .unzip();
-                    let fixed_sized_native_bitmap: Option<arrow2::bitmap::Bitmap> = {
+                    let fixed_sized_native_validity: Option<arrow::buffer::NullBuffer> = {
                         let any_nones = somes.iter().any(|some| !*some);
                         any_nones.then(|| somes.into())
                     };
                     {
-                        use arrow2::{buffer::Buffer, offset::OffsetsBuffer};
                         let fixed_sized_native_inner_data: Vec<_> = fixed_sized_native
                             .into_iter()
                             .flat_map(|v| match v {
@@ -120,50 +95,48 @@ impl ::re_types_core::Loggable for AffixFuzzer22 {
                                 ),
                             })
                             .collect();
-                        let fixed_sized_native_inner_bitmap: Option<arrow2::bitmap::Bitmap> =
-                            fixed_sized_native_bitmap.as_ref().map(|bitmap| {
-                                bitmap
+                        let fixed_sized_native_inner_validity: Option<arrow::buffer::NullBuffer> =
+                            fixed_sized_native_validity.as_ref().map(|validity| {
+                                validity
                                     .iter()
                                     .map(|b| std::iter::repeat(b).take(4usize))
                                     .flatten()
                                     .collect::<Vec<_>>()
                                     .into()
                             });
-                        FixedSizeListArray::new(
-                            DataType::FixedSizeList(
-                                std::sync::Arc::new(Field::new("item", DataType::UInt8, false)),
-                                4usize,
-                            ),
-                            PrimitiveArray::new(
-                                DataType::UInt8,
-                                fixed_sized_native_inner_data.into_iter().collect(),
-                                fixed_sized_native_inner_bitmap,
-                            )
-                            .boxed(),
-                            fixed_sized_native_bitmap,
-                        )
-                        .boxed()
+                        as_array_ref(FixedSizeListArray::new(
+                            std::sync::Arc::new(Field::new("item", DataType::UInt8, false)),
+                            4,
+                            as_array_ref(PrimitiveArray::<UInt8Type>::new(
+                                ScalarBuffer::from(
+                                    fixed_sized_native_inner_data
+                                        .into_iter()
+                                        .collect::<Vec<_>>(),
+                                ),
+                                fixed_sized_native_inner_validity,
+                            )),
+                            fixed_sized_native_validity,
+                        ))
                     }
                 }],
-                bitmap,
-            )
-            .boxed()
+                validity,
+            ))
         })
     }
 
     fn from_arrow_opt(
-        arrow_data: &dyn arrow2::array::Array,
+        arrow_data: &dyn arrow::array::Array,
     ) -> DeserializationResult<Vec<Option<Self>>>
     where
         Self: Sized,
     {
         #![allow(clippy::wildcard_imports)]
-        use ::re_types_core::{Loggable as _, ResultExt as _};
-        use arrow2::{array::*, buffer::*, datatypes::*};
+        use ::re_types_core::{arrow_zip_validity::ZipValidity, Loggable as _, ResultExt as _};
+        use arrow::{array::*, buffer::*, datatypes::*};
         Ok({
             let arrow_data = arrow_data
                 .as_any()
-                .downcast_ref::<arrow2::array::StructArray>()
+                .downcast_ref::<arrow::array::StructArray>()
                 .ok_or_else(|| {
                     let expected = Self::arrow_datatype();
                     let actual = arrow_data.data_type().clone();
@@ -174,10 +147,10 @@ impl ::re_types_core::Loggable for AffixFuzzer22 {
                 Vec::new()
             } else {
                 let (arrow_data_fields, arrow_data_arrays) =
-                    (arrow_data.fields(), arrow_data.values());
+                    (arrow_data.fields(), arrow_data.columns());
                 let arrays_by_name: ::std::collections::HashMap<_, _> = arrow_data_fields
                     .iter()
-                    .map(|field| field.name.as_str())
+                    .map(|field| field.name().as_str())
                     .zip(arrow_data_arrays)
                     .collect();
                 let fixed_sized_native = {
@@ -192,11 +165,11 @@ impl ::re_types_core::Loggable for AffixFuzzer22 {
                     {
                         let arrow_data = arrow_data
                             .as_any()
-                            .downcast_ref::<arrow2::array::FixedSizeListArray>()
+                            .downcast_ref::<arrow::array::FixedSizeListArray>()
                             .ok_or_else(|| {
                                 let expected = DataType::FixedSizeList(
                                     std::sync::Arc::new(Field::new("item", DataType::UInt8, false)),
-                                    4usize,
+                                    4,
                                 );
                                 let actual = arrow_data.data_type().clone();
                                 DeserializationError::datatype_mismatch(expected, actual)
@@ -224,42 +197,39 @@ impl ::re_types_core::Loggable for AffixFuzzer22 {
                                         "rerun.testing.datatypes.AffixFuzzer22#fixed_sized_native",
                                     )?
                                     .into_iter()
-                                    .map(|opt| opt.copied())
                                     .collect::<Vec<_>>()
                             };
-                            arrow2::bitmap::utils::ZipValidity::new_with_validity(
-                                offsets,
-                                arrow_data.validity(),
-                            )
-                            .map(|elem| {
-                                elem.map(|(start, end): (usize, usize)| {
-                                    debug_assert!(end - start == 4usize);
-                                    if end > arrow_data_inner.len() {
-                                        return Err(DeserializationError::offset_slice_oob(
-                                            (start, end),
-                                            arrow_data_inner.len(),
-                                        ));
-                                    }
+                            ZipValidity::new_with_validity(offsets, arrow_data.nulls())
+                                .map(|elem| {
+                                    elem.map(|(start, end): (usize, usize)| {
+                                        debug_assert!(end - start == 4usize);
+                                        if arrow_data_inner.len() < end {
+                                            return Err(DeserializationError::offset_slice_oob(
+                                                (start, end),
+                                                arrow_data_inner.len(),
+                                            ));
+                                        }
 
-                                    #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
-                                    let data =
-                                        unsafe { arrow_data_inner.get_unchecked(start..end) };
-                                    let data = data.iter().cloned().map(Option::unwrap_or_default);
+                                        #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+                                        let data =
+                                            unsafe { arrow_data_inner.get_unchecked(start..end) };
+                                        let data =
+                                            data.iter().cloned().map(Option::unwrap_or_default);
 
-                                    // NOTE: Unwrapping cannot fail: the length must be correct.
-                                    #[allow(clippy::unwrap_used)]
-                                    Ok(array_init::from_iter(data).unwrap())
+                                        // NOTE: Unwrapping cannot fail: the length must be correct.
+                                        #[allow(clippy::unwrap_used)]
+                                        Ok(array_init::from_iter(data).unwrap())
+                                    })
+                                    .transpose()
                                 })
-                                .transpose()
-                            })
-                            .collect::<DeserializationResult<Vec<Option<_>>>>()?
+                                .collect::<DeserializationResult<Vec<Option<_>>>>()?
                         }
                         .into_iter()
                     }
                 };
-                arrow2::bitmap::utils::ZipValidity::new_with_validity(
+                ZipValidity::new_with_validity(
                     ::itertools::izip!(fixed_sized_native),
-                    arrow_data.validity(),
+                    arrow_data.nulls(),
                 )
                 .map(|opt| {
                     opt.map(|(fixed_sized_native)| {
@@ -277,5 +247,31 @@ impl ::re_types_core::Loggable for AffixFuzzer22 {
                 .with_context("rerun.testing.datatypes.AffixFuzzer22")?
             }
         })
+    }
+}
+
+impl From<[u8; 4usize]> for AffixFuzzer22 {
+    #[inline]
+    fn from(fixed_sized_native: [u8; 4usize]) -> Self {
+        Self { fixed_sized_native }
+    }
+}
+
+impl From<AffixFuzzer22> for [u8; 4usize] {
+    #[inline]
+    fn from(value: AffixFuzzer22) -> Self {
+        value.fixed_sized_native
+    }
+}
+
+impl ::re_byte_size::SizeBytes for AffixFuzzer22 {
+    #[inline]
+    fn heap_size_bytes(&self) -> u64 {
+        self.fixed_sized_native.heap_size_bytes()
+    }
+
+    #[inline]
+    fn is_pod() -> bool {
+        <[u8; 4usize]>::is_pod()
     }
 }
